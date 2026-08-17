@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kkamegawa/gh-repobootstrapper/blob/main/schema/repobootstrapper.schema.json",
+  "title": "gh-repobootstrapper configuration",
+  "description": "SchemaVersion 1 declarative GitHub repository bootstrap configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repository"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "repository": { "$ref": "#/$defs/repository" },
+    "seed": { "$ref": "#/$defs/seed" },
+    "actions": { "$ref": "#/$defs/actions" },
+    "rulesets": { "type": "array", "items": { "$ref": "#/$defs/ruleset" } },
+    "security": { "$ref": "#/$defs/security" },
+    "agents": { "$ref": "#/$defs/agents" },
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } }
+  },
+  "$defs": {
+    "repository": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owner", "name", "visibility"],
+      "properties": {
+        "owner": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "create": { "type": "boolean" },
+        "description": { "type": "string" },
+        "visibility": { "enum": ["public", "private"] },
+        "allowVisibilityChange": { "type": "boolean" },
+        "defaultBranch": { "type": "string", "minLength": 1 },
+        "topics": { "$ref": "#/$defs/stringList" },
+        "allowMergeCommit": { "type": "boolean" },
+        "allowSquashMerge": { "type": "boolean" },
+        "allowRebaseMerge": { "type": "boolean" },
+        "allowAutoMerge": { "type": "boolean" },
+        "deleteBranchOnMerge": { "type": "boolean" }
+      }
+    },
+    "seed": {
+      "type": "object", "additionalProperties": false,
+      "oneOf": [
+        { "required": ["template"] }, { "required": ["directory"] }, { "required": ["zip"] }
+      ],
+      "properties": {
+        "template": { "type": "object", "additionalProperties": false, "required": ["repository"], "properties": { "repository": { "type": "string", "minLength": 1 } } },
+        "directory": { "type": "object", "additionalProperties": false, "required": ["path"], "properties": { "path": { "type": "string", "minLength": 1 } } },
+        "zip": { "type": "object", "additionalProperties": false, "required": ["path"], "properties": { "path": { "type": "string", "minLength": 5, "pattern": "(?i)\\.zip$" } } },
+        "overwrite": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "actions": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "allowedActions": { "enum": ["all", "local_only", "selected"] },
+        "requireSHAForGitHubActions": { "type": "boolean" },
+        "defaultWorkflowPermissions": { "enum": ["read", "write"] },
+        "canApprovePullRequestWorkflows": { "type": "boolean" },
+        "variables": { "type": "array", "items": { "$ref": "#/$defs/variable" } },
+        "secrets": { "type": "array", "items": { "$ref": "#/$defs/secret" } },
+        "environments": { "type": "array", "items": { "$ref": "#/$defs/environment" } }
+      }
+    },
+    "variable": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } },
+    "secret": { "type": "object", "additionalProperties": false, "required": ["name", "sourceEnv"], "properties": { "name": { "type": "string", "minLength": 1 }, "sourceEnv": { "type": "string", "minLength": 1 }, "updatePolicy": { "enum": ["createOnly", "always"] } } },
+    "environment": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
+    "ruleset": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "enforcement", "target", "include", "rules"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 }, "enforcement": { "enum": ["active", "disabled"] }, "target": { "type": "string", "minLength": 1 },
+        "include": { "$ref": "#/$defs/stringList" }, "exclude": { "$ref": "#/$defs/stringList" },
+        "rules": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["type"], "properties": { "type": { "type": "string", "minLength": 1 }, "parameters": { "type": "object" } } }
+      }
+    },
+    "feature": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "optional": { "type": "boolean" } } },
+    "security": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "dependencyGraph": { "$ref": "#/$defs/feature" }, "dependabotAlerts": { "$ref": "#/$defs/feature" }, "dependabotSecurityUpdates": { "$ref": "#/$defs/feature" }, "secretScanning": { "$ref": "#/$defs/feature" }, "pushProtection": { "$ref": "#/$defs/feature" }, "codeqlDefaultSetup": { "$ref": "#/$defs/feature" }, "privateVulnerabilityReporting": { "$ref": "#/$defs/feature" }
+      }
+    },
+    "agents": {
+      "type": "object", "additionalProperties": false,
+      "properties": {
+        "variables": { "type": "array", "items": { "$ref": "#/$defs/variable" } }, "secrets": { "type": "array", "items": { "$ref": "#/$defs/secret" } },
+        "mcpConfigPath": { "type": "string" }, "instructionsPath": { "type": "string" }, "customAgentsPath": { "type": "string" }, "skillsPath": { "type": "string" }
+      }
+    },
+    "command": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "program", "timeout"],
+      "properties": { "id": { "type": "string", "minLength": 1 }, "program": { "type": "string", "minLength": 1 }, "args": { "$ref": "#/$defs/stringList" }, "cwd": { "type": "string" }, "timeout": { "type": "string", "minLength": 2 }, "environment": { "$ref": "#/$defs/stringList" } }
+    },
+    "stringList": { "type": "array", "items": { "type": "string", "minLength": 1 }, "uniqueItems": true }
+  }
+}
