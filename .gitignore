@@ -4,3 +4,7 @@ apm_modules/
 
 # Local GitHub wiki staging copy
 wiki-staging/
+
+# APM-deployed agent skill directories
+.agents/
+.claude/
