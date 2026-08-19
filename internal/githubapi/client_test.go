@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,18 +21,19 @@ import (
 
 func TestRepositoryOperationsUseVersionedGitHubRequests(t *testing.T) {
 	t.Parallel()
+	assertions := newHandlerAssertions(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.Header.Get("X-GitHub-Api-Version"), APIVersion; got != want {
-			t.Fatalf("API version = %q, want %q", got, want)
+			assertions.Errorf("API version = %q, want %q", got, want)
 		}
 		if got, want := r.Header.Get("Accept"), "application/vnd.github+json"; got != want {
-			t.Fatalf("Accept = %q, want %q", got, want)
+			assertions.Errorf("Accept = %q, want %q", got, want)
 		}
 		if got, want := r.URL.Path, "/repos/octo/demo"; got != want {
-			t.Fatalf("path = %q, want %q", got, want)
+			assertions.Errorf("path = %q, want %q", got, want)
 		}
 		if r.Method != http.MethodPatch {
-			t.Fatalf("method = %q", r.Method)
+			assertions.Errorf("method = %q, want %q", r.Method, http.MethodPatch)
 		}
 		_ = json.NewEncoder(w).Encode(RepositoryInfo{Name: "demo", FullName: "octo/demo", DefaultBranch: "main"})
 	}))
@@ -52,6 +55,7 @@ func TestRepositoryOperationsUseVersionedGitHubRequests(t *testing.T) {
 func TestAgentSecretAndVariableEndpoints(t *testing.T) {
 	t.Parallel()
 	var secretRequest, variableRequest bool
+	assertions := newHandlerAssertions(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/repos/octo/demo/agents/secrets/KEY":
@@ -61,7 +65,7 @@ func TestAgentSecretAndVariableEndpoints(t *testing.T) {
 			variableRequest = r.Method == http.MethodPatch
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			t.Fatalf("unexpected path %s", r.URL.Path)
+			assertions.Errorf("unexpected path %s", r.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -93,7 +97,11 @@ func TestRetriesIdempotentRateLimitedRequest(t *testing.T) {
 	defer server.Close()
 	client, _ := NewClient(server.Client(), server.URL)
 	client.SetRetryPolicy(RetryPolicy{MaxAttempts: 2, BaseDelay: time.Millisecond})
-	started := time.Now()
+	var waits []time.Duration
+	client.setRetryWait(func(_ context.Context, delay time.Duration) error {
+		waits = append(waits, delay)
+		return nil
+	})
 	settings, err := client.GetActionsPermissions(context.Background(), Repository{Owner: "octo", Name: "demo"})
 	if err != nil {
 		t.Fatal(err)
@@ -101,8 +109,8 @@ func TestRetriesIdempotentRateLimitedRequest(t *testing.T) {
 	if !settings.Enabled || requests.Load() != 2 {
 		t.Fatalf("settings=%+v requests=%d", settings, requests.Load())
 	}
-	if time.Since(started) < time.Second {
-		t.Fatal("Retry-After was not honored")
+	if !slices.Equal(waits, []time.Duration{time.Second}) {
+		t.Fatalf("retry waits = %v, want [%v]", waits, time.Second)
 	}
 }
 
@@ -145,6 +153,7 @@ func TestTypedNotFoundError(t *testing.T) {
 func TestCommitFilesCreatesOneNonForcedCommit(t *testing.T) {
 	t.Parallel()
 	var requests []string
+	assertions := newHandlerAssertions(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests = append(requests, r.Method+" "+r.URL.RequestURI())
 		switch r.Method + " " + r.URL.Path {
@@ -154,10 +163,10 @@ func TestCommitFilesCreatesOneNonForcedCommit(t *testing.T) {
 				Encoding string `json:"encoding"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatal(err)
+				assertions.Errorf("decode blob request: %v", err)
 			}
 			if request.Encoding != "base64" || request.Content == "" {
-				t.Fatalf("blob request = %+v", request)
+				assertions.Errorf("blob request = %+v", request)
 			}
 			_ = json.NewEncoder(w).Encode(GitBlob{SHA: "blob-" + request.Content})
 		case "GET /repos/octo/demo/git/ref/heads/main":
@@ -174,14 +183,14 @@ func TestCommitFilesCreatesOneNonForcedCommit(t *testing.T) {
 				Force bool   `json:"force"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-				t.Fatal(err)
+				assertions.Errorf("decode ref request: %v", err)
 			}
 			if request.SHA != "new-commit" || request.Force {
-				t.Fatalf("ref request = %+v", request)
+				assertions.Errorf("ref request = %+v", request)
 			}
 			_ = json.NewEncoder(w).Encode(GitReference{Object: GitObject{SHA: request.SHA}})
 		default:
-			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+			assertions.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
 	}))
 	defer server.Close()
@@ -216,9 +225,10 @@ func TestCommitFilesCreatesOneNonForcedCommit(t *testing.T) {
 
 func TestGetTreePreservesRecursiveQuery(t *testing.T) {
 	t.Parallel()
+	assertions := newHandlerAssertions(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Query().Get("recursive"), "1"; got != want {
-			t.Fatalf("recursive = %q, want %q", got, want)
+			assertions.Errorf("recursive = %q, want %q", got, want)
 		}
 		_ = json.NewEncoder(w).Encode(GitTree{SHA: "tree"})
 	}))
@@ -236,9 +246,10 @@ func TestMaterializeTemplateArchiveStripsGitHubRootDirectory(t *testing.T) {
 		"template-sha/README.md":    "hello",
 		"template-sha/.github/x.md": "settings",
 	})
+	assertions := newHandlerAssertions(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.URL.Path, "/repos/octo/template/zipball/main"; got != want {
-			t.Fatalf("path = %q, want %q", got, want)
+			assertions.Errorf("path = %q, want %q", got, want)
 		}
 		w.Header().Set("Content-Type", "application/zip")
 		_, _ = w.Write(archive)
@@ -249,7 +260,7 @@ func TestMaterializeTemplateArchiveStripsGitHubRootDirectory(t *testing.T) {
 	if err := client.MaterializeTemplateArchive(context.Background(), Repository{Owner: "octo", Name: "template"}, "main", destination); err != nil {
 		t.Fatal(err)
 	}
-	content, err := os.ReadFile(filepath.Join(destination, "README.md"))
+	content, err := os.ReadFile(filepath.Join(destination, "README.md")) //nolint:gosec // destination is a t.TempDir path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,6 +269,31 @@ func TestMaterializeTemplateArchiveStripsGitHubRootDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(destination, "template-sha")); !os.IsNotExist(err) {
 		t.Fatalf("archive root was not removed: %v", err)
+	}
+}
+
+func TestMaterializeTemplateArchiveRejectsProhibitedGitMetadata(t *testing.T) {
+	t.Parallel()
+	archive := templateArchive(t, map[string]string{
+		"template-sha/.git/config": "metadata",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "materialized")
+	err = client.MaterializeTemplateArchive(context.Background(), Repository{Owner: "octo", Name: "template"}, "main", destination)
+	if err == nil || !strings.Contains(err.Error(), ".git") {
+		t.Fatalf("MaterializeTemplateArchive() error = %v, want prohibited .git path", err)
+	}
+	if _, err := os.Stat(destination); !os.IsNotExist(err) {
+		t.Fatalf("unsafe archive created destination: %v", err)
 	}
 }
 
@@ -286,4 +322,31 @@ func templateArchive(t *testing.T, entries map[string]string) []byte {
 		t.Fatal(err)
 	}
 	return buffer.Bytes()
+}
+
+// handlerAssertions collects request validation failures in the test goroutine.
+// net/http invokes handlers on a separate goroutine, where Fatal/Fatalf would
+// call FailNow on the wrong goroutine.
+type handlerAssertions struct {
+	mu     sync.Mutex
+	errors []string
+}
+
+func newHandlerAssertions(t *testing.T) *handlerAssertions {
+	t.Helper()
+	assertions := &handlerAssertions{}
+	t.Cleanup(func() {
+		assertions.mu.Lock()
+		defer assertions.mu.Unlock()
+		if len(assertions.errors) != 0 {
+			t.Error(strings.Join(assertions.errors, "; "))
+		}
+	})
+	return assertions
+}
+
+func (a *handlerAssertions) Errorf(format string, args ...any) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.errors = append(a.errors, fmt.Sprintf(format, args...))
 }

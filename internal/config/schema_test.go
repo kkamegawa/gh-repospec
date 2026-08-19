@@ -15,7 +15,7 @@ import (
 func TestSchemaDocumentIsValidJSON(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join("..", "..", "schema", "repobootstrapper.schema.json")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the test path comes from t.TempDir
 	if err != nil {
 		t.Fatalf("read schema document: %v", err)
 	}

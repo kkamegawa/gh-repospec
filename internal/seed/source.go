@@ -40,27 +40,22 @@ type StageOptions struct {
 }
 
 // StageSource materializes source into workspace/seed. The destination is empty
-// on success and may safely be used as the input to ApplyOverlay.
+// on success and may safely be used as the input to ApplyOverlay. Template
+// materializers receive a destination that does not yet exist so they can
+// finalize an isolated staging directory atomically.
 func StageSource(ctx context.Context, workspace *Workspace, source Source, materializer TemplateMaterializer, options StageOptions) (string, error) {
 	if workspace == nil || workspace.Root == "" {
 		return "", errors.New("workspace is required")
 	}
 	destination := workspace.SeedDir()
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		return "", fmt.Errorf("create seed directory: %w", err)
-	}
-	entries, err := os.ReadDir(destination)
-	if err != nil {
-		return "", fmt.Errorf("read seed directory: %w", err)
-	}
-	if len(entries) != 0 {
-		return "", errors.New("seed directory is not empty")
-	}
 
 	switch source.Kind {
 	case SourceDirectory:
 		if source.Path == "" {
 			return "", errors.New("directory seed path is required")
+		}
+		if err := prepareEmptySeedDirectory(destination); err != nil {
+			return "", err
 		}
 		if err := copyDirectory(source.Path, destination); err != nil {
 			return "", err
@@ -68,6 +63,9 @@ func StageSource(ctx context.Context, workspace *Workspace, source Source, mater
 	case SourceZIP:
 		if source.Path == "" {
 			return "", errors.New("zip seed path is required")
+		}
+		if err := prepareEmptySeedDirectory(destination); err != nil {
+			return "", err
 		}
 		if err := ExtractZIP(source.Path, destination, options.ZipLimits); err != nil {
 			return "", err
@@ -79,6 +77,9 @@ func StageSource(ctx context.Context, workspace *Workspace, source Source, mater
 		if materializer == nil {
 			return "", errors.New("template source requires a template materializer")
 		}
+		if err := requireMissingSeedDirectory(destination); err != nil {
+			return "", err
+		}
 		if err := materializer.MaterializeTemplate(ctx, source.Template, destination); err != nil {
 			return "", fmt.Errorf("materialize template: %w", err)
 		}
@@ -89,6 +90,39 @@ func StageSource(ctx context.Context, workspace *Workspace, source Source, mater
 		return "", fmt.Errorf("unsupported seed source %q", source.Kind)
 	}
 	return destination, nil
+}
+
+func prepareEmptySeedDirectory(destination string) error {
+	info, err := os.Lstat(destination)
+	if err == nil {
+		if info.Mode()&fs.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("seed destination is not a directory: %s", destination)
+		}
+		entries, readErr := os.ReadDir(destination)
+		if readErr != nil {
+			return fmt.Errorf("read seed directory: %w", readErr)
+		}
+		if len(entries) != 0 {
+			return errors.New("seed directory is not empty")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect seed directory: %w", err)
+	}
+	if err := os.MkdirAll(destination, 0o700); err != nil {
+		return fmt.Errorf("create seed directory: %w", err)
+	}
+	return nil
+}
+
+func requireMissingSeedDirectory(destination string) error {
+	if _, err := os.Lstat(destination); err == nil {
+		return fmt.Errorf("template seed destination already exists: %s", destination)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect template seed destination: %w", err)
+	}
+	return nil
 }
 
 func copyDirectory(source, destination string) error {
@@ -156,12 +190,12 @@ func validateDirectory(root string, rejectGit bool) error {
 }
 
 func copyFile(source, destination string, permissions fs.FileMode) error {
-	in, err := os.Open(source)
+	in, err := os.Open(source) //nolint:gosec // source is constrained to the validated seed directory
 	if err != nil {
 		return err
 	}
-	defer in.Close()
-	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, permissions&0o777)
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, permissions&0o777) //nolint:gosec // destination is derived beneath the workspace seed root
 	if err != nil {
 		return err
 	}

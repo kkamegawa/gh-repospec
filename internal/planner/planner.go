@@ -309,7 +309,7 @@ func (e *Engine) applyRepository(ctx context.Context, repository githubapi.Repos
 		request.DefaultBranch = desired.DefaultBranch
 		changed = true
 	}
-	if desired.Visibility != actual.Visibility && !(desired.Visibility == "private" && actual.Private) {
+	if desired.Visibility != actual.Visibility && (desired.Visibility != "private" || !actual.Private) {
 		if !desired.AllowVisibilityChange {
 			return errors.New("repository visibility change requires allowVisibilityChange")
 		}
@@ -343,11 +343,11 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 	if err != nil {
 		return err
 	}
-	defer workspace.Close()
+	defer func() { _ = workspace.Close() }()
 
 	var sourceDir string
 	if cfg.Seed != nil {
-		source := seed.Source{}
+		var source seed.Source
 		var materializer seed.TemplateMaterializer
 		switch {
 		case cfg.Seed.Directory != nil:
@@ -468,7 +468,7 @@ func stagedFiles(root string) ([]githubapi.File, error) {
 		if relErr != nil {
 			return relErr
 		}
-		content, readErr := os.ReadFile(path)
+		content, readErr := os.ReadFile(path) //nolint:gosec // path comes from the confined temporary staging workspace
 		if readErr != nil {
 			return readErr
 		}
@@ -668,7 +668,7 @@ func (e *Engine) applySecurity(ctx context.Context, repository githubapi.Reposit
 			}
 		}
 	} else if (desired.DependabotAlerts != nil && !desired.DependabotAlerts.Optional) || (desired.DependabotSecurityUpdates != nil && !desired.DependabotSecurityUpdates.Optional) {
-		return errors.New("Dependabot operations are unavailable from the configured GitHub service")
+		return errors.New("dependabot operations are unavailable from the configured GitHub service")
 	}
 	request := githubapi.SecurityAndAnalysisRequest{
 		SecretScanning:            securityFeature(desired.SecretScanning),
@@ -895,7 +895,7 @@ func resolveRepository(repository config.RepositoryConfig, override string) (git
 }
 
 func appendRepositoryChanges(plan *Plan, desired config.RepositoryConfig, actual githubapi.RepositoryInfo) {
-	if desired.Visibility != actual.Visibility && !(desired.Visibility == "private" && actual.Private) {
+	if desired.Visibility != actual.Visibility && (desired.Visibility != "private" || !actual.Private) {
 		if desired.AllowVisibilityChange {
 			plan.Changes = append(plan.Changes, Change{Stage: StageRepository, Resource: "repository.visibility", State: ChangeUpdate, Summary: desired.Visibility})
 		} else {
@@ -908,19 +908,19 @@ func appendRepositoryChanges(plan *Plan, desired config.RepositoryConfig, actual
 	if desired.DefaultBranch != "" && desired.DefaultBranch != actual.DefaultBranch {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.defaultBranch", State: ChangeUpdate, Summary: desired.DefaultBranch})
 	}
-	appendBoolChange(plan, "repository.allowMergeCommit", StageSettings, desired.AllowMergeCommit, actual.AllowMergeCommit)
-	appendBoolChange(plan, "repository.allowSquashMerge", StageSettings, desired.AllowSquashMerge, actual.AllowSquashMerge)
-	appendBoolChange(plan, "repository.allowRebaseMerge", StageSettings, desired.AllowRebaseMerge, actual.AllowRebaseMerge)
-	appendBoolChange(plan, "repository.allowAutoMerge", StageSettings, desired.AllowAutoMerge, actual.AllowAutoMerge)
-	appendBoolChange(plan, "repository.deleteBranchOnMerge", StageSettings, desired.DeleteBranchOnMerge, actual.DeleteBranchOnMerge)
+	appendBoolChange(plan, "repository.allowMergeCommit", desired.AllowMergeCommit, actual.AllowMergeCommit)
+	appendBoolChange(plan, "repository.allowSquashMerge", desired.AllowSquashMerge, actual.AllowSquashMerge)
+	appendBoolChange(plan, "repository.allowRebaseMerge", desired.AllowRebaseMerge, actual.AllowRebaseMerge)
+	appendBoolChange(plan, "repository.allowAutoMerge", desired.AllowAutoMerge, actual.AllowAutoMerge)
+	appendBoolChange(plan, "repository.deleteBranchOnMerge", desired.DeleteBranchOnMerge, actual.DeleteBranchOnMerge)
 	if desired.Topics != nil && !sameStrings(desired.Topics, actual.Topics) {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.topics", State: ChangeUpdate, Summary: "replace declared topics"})
 	}
 }
 
-func appendBoolChange(plan *Plan, resource string, stage Stage, desired *bool, actual bool) {
+func appendBoolChange(plan *Plan, resource string, desired *bool, actual bool) {
 	if desired != nil && *desired != actual {
-		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", *desired)})
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", *desired)})
 	}
 }
 
@@ -973,11 +973,8 @@ func appendSecurityChanges(plan *Plan, desired *config.SecurityConfig) {
 	if desired == nil {
 		return
 	}
-	dependencyGraphUnavailable := true
-	if desired.DependabotAlerts != nil && desired.DependabotAlerts.Enabled {
-		// GitHub enables the dependency graph as part of enabling Dependabot alerts.
-		dependencyGraphUnavailable = false
-	}
+	// GitHub enables the dependency graph as part of enabling Dependabot alerts.
+	dependencyGraphUnavailable := desired.DependabotAlerts == nil || !desired.DependabotAlerts.Enabled
 	appendFeatureChange(plan, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphUnavailable)
 	appendFeatureChange(plan, "security.dependabotAlerts", desired.DependabotAlerts, false)
 	appendFeatureChange(plan, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, false)

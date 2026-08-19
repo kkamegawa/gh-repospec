@@ -11,6 +11,10 @@ Serverは拒否し、Enterprise Cloudはサポート対象外です。
 リポジトリへの変更は宣言的かつ追加的です。設定に含まれないフィールド、ファイル、
 rulesetは削除しません。
 
+`cmd/gh-repobootstrapper`の実行入口は標準入出力を`internal/cli`へ渡すだけにし、
+コマンド実装を分離します。製品パッケージはルートの`go test ./...`と`go vet ./...`で
+検証し、生成されたAPM依存ツリーは`apm_modules/go.mod`で分離します。
+
 ## 設定契約
 
 公開設定形式は`schemaVersion: 1`であり、

@@ -16,7 +16,7 @@ import (
 // accepts JSON as a YAML subset, detects duplicate mapping keys, and its
 // KnownFields option rejects fields that do not belong to the typed contract.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // the path is explicitly supplied by the user
 	if err != nil {
 		return nil, fmt.Errorf("read configuration %q: %w", path, err)
 	}

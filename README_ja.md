@@ -16,16 +16,18 @@ Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team
 gh extension install kkamegawa/gh-repobootstrapper
 ```
 
-ローカル開発では、リポジトリ直下に実行ファイルをビルドしてから、現在のディレクトリを拡張機能としてインストールします。
+ローカル開発では、`bin` 配下へ実行ファイルをビルドしてから、そのディレクトリを拡張機能としてインストールします。
 
 ```bash
-go build -o gh-repobootstrapper ./cmd/gh-repobootstrapper
-gh extension install .
+mkdir -p bin
+go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+gh extension install ./bin
 ```
 
 ```powershell
-go build -o gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
-gh extension install .
+New-Item -ItemType Directory -Path bin -Force
+go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+gh extension install ./bin
 ```
 
 `plan` または `apply` の前に、GitHub.com に対して GitHub CLI へログインしてください。
@@ -87,16 +89,20 @@ gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve
 
 Go 1.26 以降を使用します。
 
+APM依存ディレクトリはネストしたGo moduleとして分離しています。生成されたskillのサンプルコードが製品moduleの`go test ./...`および`go vet ./...`の対象にならないようにするためです。
+
 ```bash
-go test ./cmd/... ./internal/...
-go vet ./cmd/... ./internal/...
-go build ./cmd/gh-repobootstrapper
+go test ./...
+go vet ./...
+mkdir -p bin
+go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
 ```
 
 ```powershell
-go test ./cmd/... ./internal/...
-go vet ./cmd/... ./internal/...
-go build ./cmd/gh-repobootstrapper
+go test ./...
+go vet ./...
+New-Item -ItemType Directory -Path bin -Force
+go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
 ```
 
 貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design.md](docs/design.md) を参照してください。

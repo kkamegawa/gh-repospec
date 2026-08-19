@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	ghapi "github.com/cli/go-gh/v2/pkg/api"
@@ -34,7 +35,9 @@ type RetryPolicy struct {
 type Client struct {
 	baseURL     *url.URL
 	httpClient  Doer
+	retryMu     sync.RWMutex
 	retryPolicy RetryPolicy
+	retryWait   func(context.Context, time.Duration) error
 }
 
 // NewAuthenticatedClient creates a GitHub.com client using the existing gh login.
@@ -67,6 +70,7 @@ func NewClient(httpClient Doer, baseURL string) (*Client, error) {
 		baseURL:     u,
 		httpClient:  httpClient,
 		retryPolicy: RetryPolicy{MaxAttempts: 3, BaseDelay: 200 * time.Millisecond},
+		retryWait:   waitForRetry,
 	}, nil
 }
 
@@ -78,7 +82,15 @@ func (c *Client) SetRetryPolicy(policy RetryPolicy) {
 	if policy.BaseDelay <= 0 {
 		policy.BaseDelay = 200 * time.Millisecond
 	}
+	c.retryMu.Lock()
 	c.retryPolicy = policy
+	c.retryMu.Unlock()
+}
+
+func (c *Client) setRetryWait(wait func(context.Context, time.Duration) error) {
+	c.retryMu.Lock()
+	c.retryWait = wait
+	c.retryMu.Unlock()
 }
 
 func (c *Client) do(ctx context.Context, method, apiPath string, input, output any) error {
@@ -94,7 +106,8 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 		}
 	}
 
-	attempts := c.retryPolicy.MaxAttempts
+	policy, wait := c.retryConfiguration()
+	attempts := policy.MaxAttempts
 	for attempt := 1; attempt <= attempts; attempt++ {
 		requestURL, err := c.resolveAPIPath(apiPath)
 		if err != nil {
@@ -113,7 +126,7 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			if attempt < attempts && retryableMethod(method) && ctx.Err() == nil {
-				if waitErr := waitForRetry(ctx, retryDelay(c.retryPolicy, attempt, 0)); waitErr != nil {
+				if waitErr := wait(ctx, retryDelay(policy, attempt, 0)); waitErr != nil {
 					return waitErr
 				}
 				continue
@@ -124,14 +137,14 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 		apiErr := responseError(method, apiPath, resp)
 		if apiErr != nil {
 			if attempt < attempts && retryableMethod(method) && shouldRetry(apiErr) {
-				if waitErr := waitForRetry(ctx, retryDelay(c.retryPolicy, attempt, apiErr.RetryAfter)); waitErr != nil {
+				if waitErr := wait(ctx, retryDelay(policy, attempt, apiErr.RetryAfter)); waitErr != nil {
 					return waitErr
 				}
 				continue
 			}
 			return apiErr
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 		if output != nil && resp.StatusCode != http.StatusNoContent {
 			if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(output); err != nil && !errors.Is(err, io.EOF) {
 				return fmt.Errorf("decode GitHub API response: %w", err)
@@ -140,6 +153,17 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 		return nil
 	}
 	return errors.New("GitHub API retry loop exhausted")
+}
+
+func (c *Client) retryConfiguration() (RetryPolicy, func(context.Context, time.Duration) error) {
+	c.retryMu.RLock()
+	defer c.retryMu.RUnlock()
+	policy := c.retryPolicy
+	wait := c.retryWait
+	if wait == nil {
+		wait = waitForRetry
+	}
+	return policy, wait
 }
 
 func (c *Client) resolveAPIPath(apiPath string) (*url.URL, error) {
@@ -157,7 +181,7 @@ func responseError(method, path string, resp *http.Response) *APIError {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var payload struct {
 		Message string `json:"message"`
 	}

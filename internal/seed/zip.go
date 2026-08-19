@@ -46,7 +46,7 @@ func ExtractZIP(archivePath, destination string, limits ZipLimits) error {
 	if err != nil {
 		return fmt.Errorf("open zip archive: %w", err)
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if len(reader.File) > limits.MaxEntries {
 		return fmt.Errorf("zip archive has more than %d entries", limits.MaxEntries)
 	}
@@ -90,12 +90,12 @@ func ExtractZIP(archivePath, destination string, limits ZipLimits) error {
 		if err != nil {
 			return fmt.Errorf("open zip entry %q: %w", name, err)
 		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777)
+		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777) //nolint:gosec // target is checked by ensureWithin before opening
 		if err != nil {
-			input.Close()
+			_ = input.Close()
 			return fmt.Errorf("create zip entry %q: %w", name, err)
 		}
-		_, copyErr := io.Copy(output, input)
+		_, copyErr := io.Copy(output, input) //nolint:gosec // per-entry and total expansion limits are enforced before copying
 		closeOutErr := output.Close()
 		closeInErr := input.Close()
 		if copyErr != nil {

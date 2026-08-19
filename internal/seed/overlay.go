@@ -176,11 +176,11 @@ func compareFile(source, destination string) (compareStatus, error) {
 }
 
 func hashFile(filename string) ([]byte, error) {
-	file, err := os.Open(filename)
+	file, err := os.Open(filename) //nolint:gosec // callers derive filename from validated seed/target roots
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	hash := sha256.New()
 	if _, err := io.Copy(hash, file); err != nil {
 		return nil, err

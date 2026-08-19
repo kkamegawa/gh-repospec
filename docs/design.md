@@ -11,6 +11,11 @@ The extension uses the authenticated GitHub CLI session. It never stores or
 prints a GitHub token. Repository changes are declarative and additive: fields,
 files, and rulesets omitted from configuration are not removed.
 
+The executable entry point in `cmd/gh-repobootstrapper` only wires standard
+streams into the command implementation in `internal/cli`. Product packages
+are covered by the root `go test ./...` and `go vet ./...` commands; the
+generated APM dependency tree is isolated by `apm_modules/go.mod`.
+
 ## Configuration contract
 
 The public document contract is `schemaVersion: 1`, described by

@@ -23,6 +23,8 @@ var (
 	ErrCommandTimeout = errors.New("command timed out")
 )
 
+const commandWaitDelay = 250 * time.Millisecond
+
 // Command is an argv-only external command definition. Program is executed
 // directly; no command shell or shell expression is supported.
 type Command struct {
@@ -101,12 +103,16 @@ func RunApprovedCommand(ctx context.Context, workspace *Workspace, definition Co
 		defer cancelTimeout()
 	}
 	buffer := newCappedBuffer(outputLimit, cancel)
-	command := exec.CommandContext(runContext, program, definition.Args...)
+	command := exec.CommandContext(runContext, program, definition.Args...) //nolint:gosec // program and argv require explicit approval and shell programs are rejected
 	command.Dir = workingDirectory
 	command.Env = environment
 	command.Stdin = nil
 	command.Stdout = buffer
 	command.Stderr = buffer
+	// A child process can retain stdout or stderr after CommandContext kills its
+	// direct parent. Bound the wait so cancellation and output limits cannot hang
+	// the bootstrap process while those inherited pipes remain open.
+	command.WaitDelay = commandWaitDelay
 	started := time.Now()
 	err = command.Run()
 	duration := time.Since(started)

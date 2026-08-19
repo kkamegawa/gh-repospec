@@ -2,15 +2,22 @@ package seed
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
 )
 
 func TestExtractZIP(t *testing.T) {
@@ -26,7 +33,7 @@ func TestExtractZIP(t *testing.T) {
 	if err := ExtractZIP(archive, destination, ZipLimits{}); err != nil {
 		t.Fatalf("ExtractZIP() error = %v", err)
 	}
-	content, err := os.ReadFile(filepath.Join(destination, ".github", "test.yml"))
+	content, err := os.ReadFile(filepath.Join(destination, ".github", "test.yml")) //nolint:gosec // destination is a t.TempDir path
 	if err != nil || string(content) != "name: test" {
 		t.Fatalf("unexpected extracted content %q, %v", content, err)
 	}
@@ -45,7 +52,7 @@ func TestExtractZIPRejectsUnsafeEntries(t *testing.T) {
 
 func TestExtractZIPRejectsSymbolicLink(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "seed.zip")
-	file, err := os.Create(archive)
+	file, err := os.Create(archive) //nolint:gosec // archive is a t.TempDir path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +78,58 @@ func TestExtractZIPRejectsSymbolicLink(t *testing.T) {
 	}
 	if err := ExtractZIP(archive, destination, ZipLimits{}); err == nil {
 		t.Fatal("ExtractZIP() unexpectedly accepted symbolic link")
+	}
+}
+
+func TestExtractZIPEnforcesResourceLimitsAndDestinationInvariant(t *testing.T) {
+	tests := []struct {
+		name        string
+		entries     []zipEntry
+		limits      ZipLimits
+		destination map[string]string
+		want        string
+	}{
+		{
+			name:    "entry limit",
+			entries: []zipEntry{{name: "one.txt", content: "one"}, {name: "two.txt", content: "two"}},
+			limits:  ZipLimits{MaxEntries: 1},
+			want:    "more than 1 entries",
+		},
+		{
+			name:    "expanded byte limit",
+			entries: []zipEntry{{name: "payload.txt", content: "ab"}},
+			limits:  ZipLimits{MaxUncompressedBytes: 1},
+			want:    "exceeds 1 uncompressed bytes",
+		},
+		{
+			name:    "duplicate file",
+			entries: []zipEntry{{name: "same.txt", content: "one"}, {name: "same.txt", content: "two"}},
+			want:    "duplicate file",
+		},
+		{
+			name:        "non-empty destination",
+			entries:     []zipEntry{{name: "README.md", content: "seed"}},
+			destination: map[string]string{"existing.txt": "keep"},
+			want:        "destination is not empty",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "seed.zip")
+			writeZIPEntries(t, archive, test.entries)
+			destination := filepath.Join(t.TempDir(), "destination")
+			if err := os.Mkdir(destination, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for path, content := range test.destination {
+				writeFile(t, filepath.Join(destination, path), content)
+			}
+			err := ExtractZIP(archive, destination, test.limits)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ExtractZIP() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 
@@ -105,7 +164,7 @@ func TestApplyOverlayRequiresExplicitOverwrite(t *testing.T) {
 	if strings.Join(result.Added, ",") != "new.txt" || strings.Join(result.Unchanged, ",") != "same.txt" || strings.Join(result.Overwritten, ",") != "different.txt" {
 		t.Fatalf("unexpected overlay result: %+v", result)
 	}
-	content, err := os.ReadFile(filepath.Join(target, "different.txt"))
+	content, err := os.ReadFile(filepath.Join(target, "different.txt")) //nolint:gosec // target is a t.TempDir path
 	if err != nil || string(content) != "new" {
 		t.Fatalf("overwrite content = %q, %v", content, err)
 	}
@@ -132,6 +191,50 @@ func TestStageSourceDirectorySkipsGitMetadata(t *testing.T) {
 	}
 }
 
+func TestStageSourceTemplateWithArchiveMaterializer(t *testing.T) {
+	archive := writeTemplateArchive(t, map[string]string{
+		"template-sha/":          "",
+		"template-sha/README.md": "hello from template",
+	})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/template/zipball/main"; got != want {
+			t.Errorf("request path = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/zip")
+		_, _ = w.Write(archive)
+	}))
+	defer server.Close()
+
+	client, err := githubapi.NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workspace, err := NewWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = workspace.Close() })
+
+	materializer := archiveMaterializer{
+		client: client,
+		repo:   githubapi.Repository{Owner: "octo", Name: "template"},
+		ref:    "main",
+	}
+	destination, err := StageSource(context.Background(), workspace, Source{
+		Kind: SourceTemplate, Template: "octo/template",
+	}, materializer, StageOptions{})
+	if err != nil {
+		t.Fatalf("StageSource() error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(destination, "README.md")) //nolint:gosec // destination is a t.TempDir path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(content), "hello from template"; got != want {
+		t.Fatalf("README content = %q, want %q", got, want)
+	}
+}
+
 func TestRunApprovedCommand(t *testing.T) {
 	if os.Getenv("GO_WANT_HELPER_PROCESS") == "1" {
 		commandHelperProcess()
@@ -147,11 +250,15 @@ func TestRunApprovedCommand(t *testing.T) {
 	}
 	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
 	t.Setenv("COMMAND_TEST_VALUE", "visible-only-to-command")
+	environment := []string{"GO_WANT_HELPER_PROCESS", "COMMAND_TEST_VALUE"}
+	if os.Getenv("GOCOVERDIR") != "" {
+		environment = append(environment, "GOCOVERDIR")
+	}
 	base := Command{
 		ID:          "test",
 		Program:     os.Args[0],
 		CWD:         "project",
-		Environment: []string{"GO_WANT_HELPER_PROCESS", "COMMAND_TEST_VALUE"},
+		Environment: environment,
 	}
 	options := CommandOptions{ApprovedCommandIDs: map[string]bool{"test": true}, Redactions: []string{"token-value"}}
 
@@ -195,6 +302,17 @@ func TestRunApprovedCommandSafetyLimits(t *testing.T) {
 	if !errors.Is(err, ErrCommandTimeout) {
 		t.Fatalf("timeout error = %v", err)
 	}
+	command.Timeout = 0
+	command.Args = []string{"-test.run=TestRunApprovedCommand", "--", "orphan"}
+	options.OutputLimit = 64 << 10
+	started := time.Now()
+	_, err = RunApprovedCommand(context.Background(), workspace, command, options)
+	if !errors.Is(err, exec.ErrWaitDelay) {
+		t.Fatalf("orphaned output pipe error = %v, want exec.ErrWaitDelay", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("command with an orphaned output pipe took %s, want less than %s", elapsed, time.Second)
+	}
 	command.Program = "sh"
 	if _, err := RunApprovedCommand(context.Background(), workspace, command, options); err == nil {
 		t.Fatal("shell program was accepted")
@@ -224,25 +342,69 @@ func commandHelperProcess() {
 	}
 	switch args[separator+1] {
 	case "echo":
-		fmt.Fprint(os.Stdout, args[separator+2])
+		_, _ = fmt.Fprint(os.Stdout, args[separator+2])
 	case "cwd":
 		current, _ := os.Getwd()
-		fmt.Fprint(os.Stdout, current)
+		_, _ = fmt.Fprint(os.Stdout, current)
 	case "env":
-		fmt.Fprint(os.Stdout, os.Getenv("COMMAND_TEST_VALUE"))
+		_, _ = fmt.Fprint(os.Stdout, os.Getenv("COMMAND_TEST_VALUE"))
 	case "large":
-		fmt.Fprint(os.Stdout, strings.Repeat("x", 1024))
+		_, _ = fmt.Fprint(os.Stdout, strings.Repeat("x", 1024))
 	case "sleep":
 		time.Sleep(time.Second)
+	case "orphan":
+		child := exec.Command(args[0], "-test.run=TestRunApprovedCommand", "--", "sleep") //nolint:gosec // the helper launches the current test binary only
+		child.Stdout = os.Stdout
+		child.Stderr = os.Stderr
+		if err := child.Start(); err != nil {
+			os.Exit(4)
+		}
 	default:
 		os.Exit(3)
 	}
 	os.Exit(0)
 }
 
+type archiveMaterializer struct {
+	client *githubapi.Client
+	repo   githubapi.Repository
+	ref    string
+}
+
+func (m archiveMaterializer) MaterializeTemplate(ctx context.Context, _ string, destination string) error {
+	return m.client.MaterializeTemplateArchive(ctx, m.repo, m.ref, destination)
+}
+
+func writeTemplateArchive(t *testing.T, entries map[string]string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	writer := zip.NewWriter(&buffer)
+	for name, content := range entries {
+		var entry io.Writer
+		var err error
+		if strings.HasSuffix(name, "/") {
+			header := &zip.FileHeader{Name: name}
+			header.SetMode(os.ModeDir | 0o755)
+			entry, err = writer.CreateHeader(header)
+		} else {
+			entry, err = writer.Create(name)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(entry, content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
 func writeZIP(t *testing.T, archive string, files map[string]string) {
 	t.Helper()
-	file, err := os.Create(archive)
+	file, err := os.Create(archive) //nolint:gosec // archive is a t.TempDir path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +415,35 @@ func writeZIP(t *testing.T, archive string, files map[string]string) {
 			_, err = entry.Write([]byte(content))
 		}
 		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type zipEntry struct {
+	name    string
+	content string
+}
+
+func writeZIPEntries(t *testing.T, archive string, entries []zipEntry) {
+	t.Helper()
+	file, err := os.Create(archive) //nolint:gosec // archive is a t.TempDir path
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer := zip.NewWriter(file)
+	for _, entry := range entries {
+		output, err := writer.Create(entry.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := output.Write([]byte(entry.content)); err != nil {
 			t.Fatal(err)
 		}
 	}

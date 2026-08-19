@@ -16,16 +16,18 @@ Install a published release:
 gh extension install kkamegawa/gh-repobootstrapper
 ```
 
-For local development, build the executable at the repository root, then install that directory as an extension.
+For local development, build the executable under `bin`, then install that directory as an extension.
 
 ```bash
-go build -o gh-repobootstrapper ./cmd/gh-repobootstrapper
-gh extension install .
+mkdir -p bin
+go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+gh extension install ./bin
 ```
 
 ```powershell
-go build -o gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
-gh extension install .
+New-Item -ItemType Directory -Path bin -Force
+go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+gh extension install ./bin
 ```
 
 Authenticate GitHub CLI against GitHub.com before using `plan` or `apply`.
@@ -87,16 +89,21 @@ Repository-level automation cannot configure Copilot MCP servers in repository s
 
 Use Go 1.26 or later.
 
+The APM dependency directory is a nested Go module so generated skill examples
+are excluded from the product module's `go test ./...` and `go vet ./...` scans.
+
 ```bash
-go test ./cmd/... ./internal/...
-go vet ./cmd/... ./internal/...
-go build ./cmd/gh-repobootstrapper
+go test ./...
+go vet ./...
+mkdir -p bin
+go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
 ```
 
 ```powershell
-go test ./cmd/... ./internal/...
-go vet ./cmd/... ./internal/...
-go build ./cmd/gh-repobootstrapper
+go test ./...
+go vet ./...
+New-Item -ItemType Directory -Path bin -Force
+go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design.

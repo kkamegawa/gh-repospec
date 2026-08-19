@@ -215,7 +215,7 @@ func (c *Client) GetActionsSecretPublicKey(ctx context.Context, repo Repository)
 // PutActionsSecret creates or updates an encrypted repository Actions secret.
 func (c *Client) PutActionsSecret(ctx context.Context, repo Repository, name string, secret EncryptedSecret) error {
 	if name == "" {
-		return errors.New("Actions secret name is required")
+		return errors.New("actions secret name is required")
 	}
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/secrets/"+escape(name), secret, nil)
 }
@@ -238,7 +238,7 @@ func (c *Client) ListActionVariables(ctx context.Context, repo Repository) (Acti
 // CreateActionVariable creates a repository Actions variable.
 func (c *Client) CreateActionVariable(ctx context.Context, repo Repository, variable ActionVariable) error {
 	if variable.Name == "" {
-		return errors.New("Actions variable name is required")
+		return errors.New("actions variable name is required")
 	}
 	return c.do(ctx, http.MethodPost, repoPath(repo)+"/actions/variables", variable, nil)
 }
@@ -246,7 +246,7 @@ func (c *Client) CreateActionVariable(ctx context.Context, repo Repository, vari
 // UpdateActionVariable updates a repository Actions variable by name.
 func (c *Client) UpdateActionVariable(ctx context.Context, repo Repository, variable ActionVariable) error {
 	if variable.Name == "" {
-		return errors.New("Actions variable name is required")
+		return errors.New("actions variable name is required")
 	}
 	return c.do(ctx, http.MethodPatch, repoPath(repo)+"/actions/variables/"+escape(variable.Name), variable, nil)
 }

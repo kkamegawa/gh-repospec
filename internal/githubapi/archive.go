@@ -61,14 +61,14 @@ func (c *Client) MaterializeTemplateArchive(ctx context.Context, template Reposi
 	}
 
 	parent := filepath.Dir(destination)
-	if err := os.MkdirAll(parent, 0o755); err != nil {
+	if err := os.MkdirAll(parent, 0o750); err != nil {
 		return fmt.Errorf("create template destination parent: %w", err)
 	}
 	stage, err := os.MkdirTemp(parent, ".repobootstrapper-template-")
 	if err != nil {
 		return fmt.Errorf("create template staging directory: %w", err)
 	}
-	defer os.RemoveAll(stage)
+	defer func() { _ = os.RemoveAll(stage) }()
 	if err := extractArchive(reader.File, stage); err != nil {
 		return err
 	}
@@ -96,7 +96,7 @@ func (c *Client) downloadArchive(ctx context.Context, template Repository, ref s
 	if apiErr := responseError(http.MethodGet, repoPath(template)+"/zipball/"+ref, resp); apiErr != nil {
 		return nil, apiErr
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	temporary, err := os.CreateTemp("", "repobootstrapper-template-*.zip")
 	if err != nil {
@@ -146,7 +146,7 @@ func validateArchive(files []*zip.File) error {
 		if file.UncompressedSize64 > uint64(maxArchiveExpandedBytes-expanded) {
 			return fmt.Errorf("template archive exceeds %d byte expanded limit", maxArchiveExpandedBytes)
 		}
-		expanded += int64(file.UncompressedSize64)
+		expanded += int64(file.UncompressedSize64) //nolint:gosec // the size is bounded above by maxArchiveExpandedBytes
 	}
 	return nil
 }
@@ -177,24 +177,24 @@ func extractArchive(files []*zip.File, destination string) error {
 			return err
 		}
 		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(target, 0o750); err != nil {
 				return fmt.Errorf("create template directory %q: %w", relative, err)
 			}
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return fmt.Errorf("create parent directory for %q: %w", relative, err)
 		}
 		source, err := file.Open()
 		if err != nil {
 			return fmt.Errorf("open archive entry %q: %w", file.Name, err)
 		}
-		targetFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode()&0o777)
+		targetFile, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode()&0o777) //nolint:gosec // target is validated to stay within destination
 		if err != nil {
 			_ = source.Close()
 			return fmt.Errorf("create template file %q: %w", relative, err)
 		}
-		_, copyErr := io.Copy(targetFile, source)
+		_, copyErr := io.Copy(targetFile, source) //nolint:gosec // archive size was validated before extraction
 		closeErr := targetFile.Close()
 		readCloseErr := source.Close()
 		if copyErr != nil {

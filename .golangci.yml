@@ -1,0 +1,32 @@
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - gocritic
+    - gosec
+    - misspell
+    - nilerr
+    - nolintlint
+    - unconvert
+    - unparam
+    - whitespace
+  exclusions:
+    generated: lax
+    paths:
+      - apm_modules/
+      - wiki-staging/
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  exclusions:
+    generated: lax
+    paths:
+      - apm_modules/
+      - wiki-staging/

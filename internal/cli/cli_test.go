@@ -1,4 +1,4 @@
-package main
+package cli
 
 import (
 	"bytes"
@@ -25,7 +25,7 @@ repository:
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	if err := run([]string{"validate", "--file", path}, &stdout, &stderr); err != nil {
+	if err := Run([]string{"validate", "--file", path}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := stdout.String(), "configuration is valid\n"; got != want {
