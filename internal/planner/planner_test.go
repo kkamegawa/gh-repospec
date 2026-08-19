@@ -151,7 +151,7 @@ func TestStagedFilesDetectsExecutableBit(t *testing.T) {
 		t.Skip("POSIX executable permission bits are not meaningful on Windows")
 	}
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // the executable bit is the behavior under test; root is a t.TempDir path
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
