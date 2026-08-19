@@ -1,0 +1,36 @@
+# Detect settings that were changed outside the bootstrap configuration.
+# `plan --ci` exits 2 when it finds a difference, 1 on failure, 0 when the
+# repository already matches the configuration.
+name: Bootstrap drift
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install gh-repobootstrapper
+        run: gh extension install kkamegawa/gh-repobootstrapper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The report is written to a file rather than piped, so the step result
+      # comes from the extension's exit code and not from the last command in
+      # a pipeline.
+      - name: Detect drift
+        run: gh repobootstrapper plan --file bootstrap.yaml --ci --format json > plan.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show the plan
+        if: always()
+        run: cat plan.json

@@ -8,6 +8,8 @@
 
 Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team の組織を対象にします。GitHub Enterprise Server は拒否し、Enterprise Cloud はサポート対象外です。
 
+以下の契約のうち一部は仕様として定義済みで、実装はこれからです。`import`、`plan --ci`、`apply --force-secrets`、`labels` と `milestones` セクション、追加した `repository` 設定、ruleset の bypass actor と `evaluate` enforcement、`actions.forkPullRequestApproval` が該当します。いずれも [gh-infra との機能比較](docs/gh-infra-parity_ja.md) に基づき、[docs/design_ja.md](docs/design_ja.md) で仕様化し、Issue で追跡します。それ以外は実装済みです。
+
 ## インストール
 
 公開済みリリースをインストールします。
@@ -34,12 +36,18 @@ gh extension install ./bin
 
 ## クイックスタート
 
-[`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml) をコピーして編集します。例にはプレースホルダーを使っているため、対象リポジトリと seed source を置き換えてください。
+[`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml) をコピーして編集します。例にはプレースホルダーを使っているため、対象リポジトリと seed source を置き換えてください。[`docs/examples/bootstrap-extended.yaml`](docs/examples/bootstrap-extended.yaml) は、仕様レビューで追加した label、milestone、bypass actor、repository 設定の例です。
 
 ```text
 gh repobootstrapper validate --file bootstrap.yaml
 gh repobootstrapper plan --file bootstrap.yaml
 gh repobootstrapper apply --file bootstrap.yaml
+```
+
+既存リポジトリから始める場合は、`import` が現在の設定を設定ファイルとして書き出します。手作業で書き写す必要はありません。
+
+```text
+gh repobootstrapper import OWNER/REPOSITORY > bootstrap.yaml
 ```
 
 `plan` は読み取り専用です。`apply` はプランを再計算・表示し、`--yes` がない限り確認を求めます。設定済み command は `--yes` の有無にかかわらず、個別の `--approve-command <id>` が必要です。
@@ -58,6 +66,8 @@ gh repobootstrapper apply --file bootstrap.yaml
 | `rulesets` | 名前で識別する repository ruleset。旧 branch protection API は使用しない。 |
 | `security` | dependency graph、Dependabot、secret scanning、push protection、CodeQL default setup、private vulnerability reporting。 |
 | `agents` | seed が提供する MCP、instructions、agents、skills の repository-relative path と agent variables / secrets。 |
+| `labels` | issue と pull request の label。追加的で、設定にない label は削除しません。 |
+| `milestones` | milestone。追加的で、廃止は削除ではなく `state: closed` で表します。 |
 | `commands` | `apm init` などの、明示承認された argv 形式のローカル初期化コマンド。 |
 
 secret に記載するのは値ではなく `sourceEnv` 名です。既定の更新方針は `createOnly` であり、意図的なローテーション時だけ `always` を指定します。
@@ -66,12 +76,23 @@ secret に記載するのは値ではなく `sourceEnv` 名です。既定の更
 
 ```text
 gh repobootstrapper validate --file <path>
-gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json]
-gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>]
+gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json] [--ci]
+gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
+gh repobootstrapper import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
 gh repobootstrapper version
 ```
 
 `-R` / `--repo` は設定ファイル内の対象リポジトリを上書きします。`--approve-command` は繰り返し指定でき、設定済み command ごとに必須です。`--version` / `-v` は `version` の別名として使用できます。
+
+`plan --ci` は、スケジュール実行の workflow 向けにプランをドリフト検査へ変えます。`apply --force-secrets` はその実行に限りすべての設定済み secret を再設定するため、ファイルを編集せずに資格情報をローテーションできます。`import` はリポジトリを読み取って設定を書き出し、`--into` を付けると既存ファイルをコメントとキー順を保ったまま更新します。secret の値は GitHub API から取得できないため、`import` は値を作らず secret 名を報告します。
+
+| 終了コード | 意味 |
+| --- | --- |
+| `0` | 成功。`plan --ci` では、リポジトリが既に設定と一致していることを表します。 |
+| `1` | コマンドが失敗しました。 |
+| `2` | `plan --ci` が 1 件以上の差分を検出しました。 |
+
+[`docs/examples/workflows`](docs/examples/workflows) に、マージ時に apply する workflow と、スケジュール実行でドリフトを検出する workflow があります。
 
 ## 安全性
 
@@ -106,7 +127,7 @@ New-Item -ItemType Directory -Path bin -Force
 go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
 ```
 
-貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design.md](docs/design.md) を参照してください。
+貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design_ja.md](docs/design_ja.md) を参照してください。`babarot/gh-infra` との機能比較と、本拡張が意図的に行わない範囲は [docs/gh-infra-parity_ja.md](docs/gh-infra-parity_ja.md) に記録しています。
 
 ## ライセンス
 

@@ -1,0 +1,101 @@
+# Specification preview. This file demonstrates the configuration fields added
+# by the gh-infra feature review (docs/gh-infra-parity.md) and is validated
+# against schema/repobootstrapper.schema.json. Fields marked below as pending
+# are accepted by the schema before the corresponding implementation issues
+# land; use docs/examples/bootstrap.yaml for a configuration that the current
+# release applies end to end.
+schemaVersion: 1
+
+repository:
+  owner: YOUR-OWNER
+  name: YOUR-REPOSITORY
+  create: true
+  description: Repository initialized by gh-repobootstrapper
+  homepage: https://example.com/YOUR-REPOSITORY
+  visibility: private
+  defaultBranch: main
+  archived: false
+  topics:
+    - bootstrap
+    - github-cli-extension
+  features:
+    issues: true
+    projects: false
+    wiki: false
+    discussions: false
+  allowMergeCommit: false
+  allowSquashMerge: true
+  allowRebaseMerge: false
+  allowAutoMerge: true
+  deleteBranchOnMerge: true
+  squashMergeCommitTitle: PR_TITLE
+  squashMergeCommitMessage: COMMIT_MESSAGES
+  releaseImmutability: true
+
+# Labels and milestones are additive. Entries that exist on the repository but
+# are absent here are left in place; retire a milestone with `state: closed`.
+labels:
+  - name: kind/bug
+    color: d73a4a
+    description: A defect in existing behavior
+  - name: kind/feature
+    color: 425df5
+    description: A request for new behavior
+
+milestones:
+  - title: v1.0
+    description: First stable release
+    state: open
+    dueOn: "2026-12-01"
+
+actions:
+  enabled: true
+  allowedActions: selected
+  selectedActions:
+    githubOwnedAllowed: true
+    verifiedAllowed: false
+    patternsAllowed:
+      - actions/*
+  requireSHAForGitHubActions: true
+  defaultWorkflowPermissions: read
+  canApprovePullRequestWorkflows: false
+  forkPullRequestApproval: all_external_contributors
+  variables:
+    - name: PROJECT_STAGE
+      value: development
+
+rulesets:
+  - name: protect-default-branch
+    # `evaluate` records violations without blocking, which is the safe way to
+    # introduce a ruleset to a repository that already has traffic.
+    enforcement: active
+    target: branch
+    include:
+      - ~DEFAULT_BRANCH
+    bypassActors:
+      - role: admin
+        bypassMode: pull_request
+      - app: dependabot
+        bypassMode: always
+    rules:
+      - type: deletion
+      - type: non_fast_forward
+      - type: pull_request
+        parameters:
+          required_approving_review_count: 1
+
+security:
+  dependencyGraph:
+    enabled: true
+  dependabotAlerts:
+    enabled: true
+  # Requires dependabotAlerts to be effectively enabled; plan reports the
+  # dependency instead of failing during apply.
+  dependabotSecurityUpdates:
+    enabled: true
+  secretScanning:
+    enabled: true
+    optional: true
+  pushProtection:
+    enabled: true
+    optional: true
