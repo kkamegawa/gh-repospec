@@ -8,6 +8,8 @@
 
 Version 1 targets personal repositories and GitHub Free, Pro, and Team organizations on GitHub.com. GitHub Enterprise Server is rejected. Enterprise Cloud is outside the supported scope.
 
+Part of the contract below is specified but not yet implemented: `import`, `plan --ci`, `apply --force-secrets`, the `labels` and `milestones` sections, the additional `repository` settings, ruleset bypass actors and `evaluate` enforcement, and `actions.forkPullRequestApproval`. They come from the [gh-infra feature review](docs/gh-infra-parity.md), are specified in [docs/design.md](docs/design.md), and are tracked as implementation issues. Everything else is implemented.
+
 ## Install
 
 Install a published release:
@@ -34,12 +36,19 @@ Authenticate GitHub CLI against GitHub.com before using `plan` or `apply`.
 
 ## Quick start
 
-Copy and edit [`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml). The example uses placeholders; replace them with the target repository and your chosen seed source.
+Copy and edit [`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml). The example uses placeholders; replace them with the target repository and your chosen seed source. [`docs/examples/bootstrap-extended.yaml`](docs/examples/bootstrap-extended.yaml) demonstrates the labels, milestones, bypass actors, and repository settings added by the specification review.
 
 ```text
 gh repobootstrapper validate --file bootstrap.yaml
 gh repobootstrapper plan --file bootstrap.yaml
 gh repobootstrapper apply --file bootstrap.yaml
+```
+
+To start from a repository that already exists, `import` writes its current
+settings as a configuration file instead of transcribing them by hand:
+
+```text
+gh repobootstrapper import OWNER/REPOSITORY > bootstrap.yaml
 ```
 
 `plan` is read-only. `apply` recalculates the plan, displays it, and asks for confirmation unless `--yes` is supplied. Each configured command still requires its own `--approve-command <id>` flag.
@@ -58,6 +67,8 @@ Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, an
 | `rulesets` | Repository rulesets, identified by name. Branch protection is not managed through the legacy API. |
 | `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, and private vulnerability reporting. |
 | `agents` | Agent variables/secrets and repository-relative locations of MCP, instruction, agent, and skill files supplied by the seed. |
+| `labels` | Issue and pull request labels. Additive: labels absent from configuration are never deleted. |
+| `milestones` | Milestones. Additive: retire one with `state: closed` rather than removing it. |
 | `commands` | Explicitly approved, argv-based local initialization commands such as `apm init`. |
 
 Secrets contain a `sourceEnv` name, never a secret value. Their default update policy is `createOnly`; use `always` only when intentional rotation is required.
@@ -66,12 +77,23 @@ Secrets contain a `sourceEnv` name, never a secret value. Their default update p
 
 ```text
 gh repobootstrapper validate --file <path>
-gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json]
-gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>]
+gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json] [--ci]
+gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
+gh repobootstrapper import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
 gh repobootstrapper version
 ```
 
 The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`. `--version`/`-v` are accepted as aliases for `version`.
+
+`plan --ci` turns the plan into a drift check for scheduled workflows. `apply --force-secrets` re-sets every configured secret in that run, which is how a credential rotation is applied without editing the file. `import` reads a repository and writes configuration; with `--into` it refreshes an existing file in place, preserving its comments and key order. Secret values are never returned by the GitHub API, so `import` reports secret names rather than inventing values.
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | Success. For `plan --ci`, the repository already matches the configuration. |
+| `1` | The command failed. |
+| `2` | `plan --ci` found at least one difference. |
+
+[`docs/examples/workflows`](docs/examples/workflows) contains an apply-on-merge workflow and a scheduled drift-detection workflow.
 
 ## Safety model
 
@@ -107,7 +129,7 @@ New-Item -ItemType Directory -Path bin -Force
 go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design. [docs/gh-infra-parity.md](docs/gh-infra-parity.md) records the feature comparison with `babarot/gh-infra`, including what this extension deliberately does not do.
 
 ## License
 

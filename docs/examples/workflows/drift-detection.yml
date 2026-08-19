@@ -1,0 +1,37 @@
+# Detect settings that were changed outside the bootstrap configuration.
+# The plan step writes plan.json; a non-empty diff section in that file
+# indicates drift. The step exits non-zero on failure (exit code 1) and
+# zero on success regardless of whether drift was detected.
+name: Bootstrap drift
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install gh-repobootstrapper
+        run: gh extension install kkamegawa/gh-repobootstrapper
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The report is written to a file rather than piped, so the step result
+      # comes from the extension's exit code and not from the last command in
+      # a pipeline.
+      - name: Detect drift
+        run: gh repobootstrapper plan --file bootstrap.yaml --format json > plan.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show the plan
+        if: always()
+        run: cat plan.json
