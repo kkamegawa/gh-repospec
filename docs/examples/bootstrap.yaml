@@ -1,0 +1,97 @@
+# Replace all placeholder values before applying this configuration.
+schemaVersion: 1
+
+repository:
+  owner: YOUR-OWNER
+  name: YOUR-REPOSITORY
+  create: true
+  description: Repository initialized by gh-repobootstrapper
+  visibility: private
+  defaultBranch: main
+  topics:
+    - bootstrap
+    - github-cli-extension
+  allowMergeCommit: false
+  allowSquashMerge: true
+  allowRebaseMerge: false
+  allowAutoMerge: true
+  deleteBranchOnMerge: true
+
+# Select exactly one source. This example uses a GitHub template repository.
+seed:
+  template:
+    repository: YOUR-OWNER/YOUR-TEMPLATE-REPOSITORY
+
+actions:
+  enabled: true
+  allowedActions: all
+  requireSHAForGitHubActions: true
+  defaultWorkflowPermissions: read
+  canApprovePullRequestWorkflows: false
+  variables:
+    - name: PROJECT_STAGE
+      value: development
+  secrets:
+    - name: EXAMPLE_TOKEN
+      sourceEnv: EXAMPLE_TOKEN
+      updatePolicy: createOnly
+  environments:
+    - name: development
+
+rulesets:
+  - name: protect-default-branch
+    enforcement: active
+    target: branch
+    include:
+      - ~DEFAULT_BRANCH
+    rules:
+      - type: deletion
+      - type: non_fast_forward
+      - type: pull_request
+        parameters:
+          required_approving_review_count: 1
+
+security:
+  dependencyGraph:
+    enabled: true
+  dependabotAlerts:
+    enabled: true
+  dependabotSecurityUpdates:
+    enabled: true
+  secretScanning:
+    enabled: true
+    optional: true
+  pushProtection:
+    enabled: true
+    optional: true
+  codeqlDefaultSetup:
+    enabled: true
+    optional: true
+  privateVulnerabilityReporting:
+    enabled: true
+    optional: true
+
+agents:
+  variables:
+    - name: COPILOT_MCP_EXAMPLE
+      value: enabled
+  secrets:
+    - name: EXAMPLE_AGENT_TOKEN
+      sourceEnv: EXAMPLE_AGENT_TOKEN
+      updatePolicy: createOnly
+  mcpConfigPath: .github/mcp.json
+  instructionsPath: .github/copilot-instructions.md
+  customAgentsPath: .github/agents
+  skillsPath: .github/skills
+
+# Every command needs a matching --approve-command flag during apply.
+commands:
+  - id: apm-init
+    program: apm
+    args:
+      - init
+      - --yes
+    cwd: .
+    timeout: 5m
+    environment:
+      - APM_NONINTERACTIVE

@@ -1,0 +1,28 @@
+
+# APM dependencies; keep the nested module boundary tracked.
+/apm_modules/*
+!/apm_modules/
+!/apm_modules/go.mod
+
+# Local GitHub wiki staging copy
+wiki-staging/
+
+# APM-deployed agent skill directories
+.agents/
+.claude/
+.idea/
+
+# Go build, test, and coverage artifacts
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+*.coverprofile
+/vendor/
+go.work.sum
+
+
+# APM dependencies
+apm_modules/
