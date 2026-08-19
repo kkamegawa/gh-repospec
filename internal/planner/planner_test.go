@@ -71,6 +71,35 @@ func TestBuildReportsSelectedActionsChange(t *testing.T) {
 	}
 }
 
+func TestApplyActionsConvergesVariablesAndEnvironmentsOnce(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Variables:    []config.VariableRef{{Name: "STAGE", Value: "prod"}},
+			Environments: []config.Environment{{Name: "production"}},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Apply() recalculates the plan (one read-only ListActionVariables call for
+	// the report) before converging it (one more call to apply changes); a
+	// third call would mean applyActions still double-converges internally.
+	if service.listActionVariablesCalls != 2 {
+		t.Fatalf("ListActionVariables calls = %d, want 2 (one plan read, one apply convergence)", service.listActionVariablesCalls)
+	}
+	if service.createOrUpdateEnvironmentCalls != 1 {
+		t.Fatalf("CreateOrUpdateEnvironment calls = %d, want 1 (environments must converge exactly once)", service.createOrUpdateEnvironmentCalls)
+	}
+}
+
 func TestBuildRequiresVisibilityApproval(t *testing.T) {
 	t.Parallel()
 	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
@@ -154,12 +183,14 @@ func hasChange(plan Plan, resource string, state ChangeState) bool {
 }
 
 type fakeService struct {
-	repository            githubapi.RepositoryInfo
-	actions               githubapi.ActionsPermissions
-	actionVariables       githubapi.ActionVariableList
-	agentVariables        githubapi.AgentVariableList
-	rulesets              []githubapi.Ruleset
-	updateRepositoryCalls int
+	repository                     githubapi.RepositoryInfo
+	actions                        githubapi.ActionsPermissions
+	actionVariables                githubapi.ActionVariableList
+	agentVariables                 githubapi.AgentVariableList
+	rulesets                       []githubapi.Ruleset
+	updateRepositoryCalls          int
+	listActionVariablesCalls       int
+	createOrUpdateEnvironmentCalls int
 }
 
 func (f *fakeService) GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error) {
@@ -201,6 +232,7 @@ func (*fakeService) UpdateSelectedActions(context.Context, githubapi.Repository,
 }
 
 func (f *fakeService) ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error) {
+	f.listActionVariablesCalls++
 	return f.actionVariables, nil
 }
 
@@ -212,7 +244,8 @@ func (*fakeService) UpdateActionVariable(context.Context, githubapi.Repository, 
 	return nil
 }
 
-func (*fakeService) CreateOrUpdateEnvironment(context.Context, githubapi.Repository, string, githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+func (f *fakeService) CreateOrUpdateEnvironment(context.Context, githubapi.Repository, string, githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+	f.createOrUpdateEnvironmentCalls++
 	return githubapi.Environment{}, nil
 }
 

@@ -608,34 +608,6 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("ensure Actions environment %q: %w", environment.Name, err)
 		}
 	}
-	if len(desired.Variables) > 0 {
-		current, err := e.service.ListActionVariables(ctx, repository)
-		if err != nil {
-			return fmt.Errorf("list Actions variables for %s: %w", repository, err)
-		}
-		existing := make(map[string]string, len(current.Variables))
-		for _, variable := range current.Variables {
-			existing[variable.Name] = variable.Value
-		}
-		for _, variable := range desired.Variables {
-			if value, ok := existing[variable.Name]; ok && value == variable.Value {
-				continue
-			}
-			request := githubapi.ActionVariable{Name: variable.Name, Value: variable.Value}
-			if _, ok := existing[variable.Name]; ok {
-				if err := e.service.UpdateActionVariable(ctx, repository, request); err != nil {
-					return fmt.Errorf("update Actions variable %q: %w", variable.Name, err)
-				}
-			} else if err := e.service.CreateActionVariable(ctx, repository, request); err != nil {
-				return fmt.Errorf("create Actions variable %q: %w", variable.Name, err)
-			}
-		}
-	}
-	for _, environment := range desired.Environments {
-		if _, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, githubapi.EnvironmentRequest{}); err != nil {
-			return fmt.Errorf("ensure Actions environment %q: %w", environment.Name, err)
-		}
-	}
 	if len(desired.Secrets) > 0 {
 		if err := e.applySecrets(ctx, repository, desired.Secrets, false); err != nil {
 			return err
@@ -751,29 +723,31 @@ func securityFeature(feature *config.FeatureSetting) *githubapi.SecurityFeature 
 }
 
 func (e *Engine) applyAgentVariables(ctx context.Context, repository githubapi.Repository, desired *config.AgentsConfig) error {
-	if desired == nil || len(desired.Variables) == 0 {
+	if desired == nil {
 		return nil
 	}
-	current, err := e.service.ListAgentVariables(ctx, repository)
-	if err != nil {
-		return fmt.Errorf("list agent variables for %s: %w", repository, err)
-	}
-	existing := make(map[string]string, len(current.Variables))
-	for _, variable := range current.Variables {
-		existing[variable.Name] = variable.Value
-	}
-	for _, variable := range desired.Variables {
-		if actual, ok := existing[variable.Name]; ok {
-			if actual == variable.Value {
+	if len(desired.Variables) > 0 {
+		current, err := e.service.ListAgentVariables(ctx, repository)
+		if err != nil {
+			return fmt.Errorf("list agent variables for %s: %w", repository, err)
+		}
+		existing := make(map[string]string, len(current.Variables))
+		for _, variable := range current.Variables {
+			existing[variable.Name] = variable.Value
+		}
+		for _, variable := range desired.Variables {
+			if actual, ok := existing[variable.Name]; ok {
+				if actual == variable.Value {
+					continue
+				}
+				if err := e.service.UpdateAgentVariable(ctx, repository, githubapi.AgentVariable{Name: variable.Name, Value: variable.Value}); err != nil {
+					return fmt.Errorf("update agent variable %q: %w", variable.Name, err)
+				}
 				continue
 			}
-			if err := e.service.UpdateAgentVariable(ctx, repository, githubapi.AgentVariable{Name: variable.Name, Value: variable.Value}); err != nil {
-				return fmt.Errorf("update agent variable %q: %w", variable.Name, err)
+			if err := e.service.CreateAgentVariable(ctx, repository, githubapi.AgentVariable{Name: variable.Name, Value: variable.Value}); err != nil {
+				return fmt.Errorf("create agent variable %q: %w", variable.Name, err)
 			}
-			continue
-		}
-		if err := e.service.CreateAgentVariable(ctx, repository, githubapi.AgentVariable{Name: variable.Name, Value: variable.Value}); err != nil {
-			return fmt.Errorf("create agent variable %q: %w", variable.Name, err)
 		}
 	}
 	if len(desired.Secrets) > 0 {
