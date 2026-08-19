@@ -152,8 +152,12 @@ func validateArchive(files []*zip.File) error {
 }
 
 func validateArchivePath(value string) error {
-	clean := path.Clean(value)
-	if value == "" || strings.HasPrefix(value, "/") || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+	if value == "" || strings.ContainsRune(value, '\x00') || strings.Contains(value, "\\") {
+		return fmt.Errorf("unsafe path in template archive: %q", value)
+	}
+	trimmed := strings.TrimSuffix(value, "/")
+	clean := path.Clean(trimmed)
+	if path.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || clean != trimmed {
 		return fmt.Errorf("unsafe path in template archive: %q", value)
 	}
 	for _, segment := range strings.Split(clean, "/") {

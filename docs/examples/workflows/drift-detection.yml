@@ -1,6 +1,7 @@
 # Detect settings that were changed outside the bootstrap configuration.
-# `plan --ci` exits 2 when it finds a difference, 1 on failure, 0 when the
-# repository already matches the configuration.
+# The plan step writes plan.json; a non-empty diff section in that file
+# indicates drift. The step exits non-zero on failure (exit code 1) and
+# zero on success regardless of whether drift was detected.
 name: Bootstrap drift
 
 on:
@@ -27,7 +28,7 @@ jobs:
       # comes from the extension's exit code and not from the last command in
       # a pipeline.
       - name: Detect drift
-        run: gh repobootstrapper plan --file bootstrap.yaml --ci --format json > plan.json
+        run: gh repobootstrapper plan --file bootstrap.yaml --format json > plan.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

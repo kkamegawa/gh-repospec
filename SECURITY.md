@@ -8,8 +8,9 @@ latest release are not supported.
 
 ## Reporting a Vulnerability
 
-Do not open a public issue for a suspected vulnerability. Send a report to
-`SECURITY_CONTACT_PLACEHOLDER` with a description, reproduction steps, and the
+Do not open a public issue for a suspected vulnerability. Use
+[GitHub Security Advisories](https://github.com/kkamegawa/gh-repobootstrapper/security/advisories/new)
+to submit a private report with a description, reproduction steps, and the
 potential impact. We will acknowledge reports within seven calendar days and
 provide a status update after triage.
 
