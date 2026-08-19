@@ -61,10 +61,8 @@ jobs:
             fi
             output="dist/gh-repobootstrapper-${goos}-${goarch}${extension}"
             CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-              output="dist/gh-repobootstrapper-${goos}-${goarch}${extension}"
-CGO_ENABLED=0 GOOS="${goos}" GOARCH="${goarch}" \
-  go build -trimpath -ldflags="-s -w -X github.com/kkamegawa/gh-repobootstrapper/internal/cli.Version=${GITHUB_REF_NAME}" \
-  -o "${output}" ./cmd/gh-repobootstrapper
+              go build -trimpath -ldflags="-s -w -X github.com/kkamegawa/gh-repobootstrapper/internal/cli.Version=${GITHUB_REF_NAME}" \
+              -o "${output}" ./cmd/gh-repobootstrapper
           done
 
       - name: Create the GitHub release
