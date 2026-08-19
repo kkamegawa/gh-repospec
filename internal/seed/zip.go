@@ -90,7 +90,7 @@ func ExtractZIP(archivePath, destination string, limits ZipLimits) error {
 		if err != nil {
 			return fmt.Errorf("open zip entry %q: %w", name, err)
 		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777) //nolint:gosec // target is checked by ensureWithin before opening
+		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777) //nolint:gosec // target is derived from safeZIPName, which rejects absolute, traversal, and .git paths above
 		if err != nil {
 			_ = input.Close()
 			return fmt.Errorf("create zip entry %q: %w", name, err)

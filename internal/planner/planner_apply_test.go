@@ -155,6 +155,34 @@ func TestApplyOrdersSecurityAroundContentAndAutomation(t *testing.T) {
 	}
 }
 
+// TestApplyReachesAgentSecretsWithoutAgentVariables guards against
+// applyAgentVariables returning early whenever agents.variables is empty,
+// which used to skip agents.secrets entirely for configs that only declare
+// secrets. The fake service does not implement secretService, so reaching
+// applySecrets surfaces its "unavailable" error; before the fix, Apply()
+// returned nil instead because the function returned before ever looking at
+// desired.Secrets.
+func TestApplyReachesAgentSecretsWithoutAgentVariables(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids parallel execution.
+	t.Setenv("AGENT_TOKEN_SOURCE", "value")
+	service := &fakeService{repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Agents: &config.AgentsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "AGENT_TOKEN_SOURCE"}},
+		},
+	}, Options{})
+	if err == nil || !strings.Contains(err.Error(), "secret operations are unavailable") {
+		t.Fatalf("Apply() error = %v, want the agents.secrets path to be reached", err)
+	}
+}
+
 func TestApplyRequiresCommandApprovalBeforeExecution(t *testing.T) {
 	t.Parallel()
 	service := &recordingService{fakeService: fakeService{

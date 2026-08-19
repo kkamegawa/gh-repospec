@@ -2,6 +2,9 @@ package planner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
@@ -68,6 +71,35 @@ func TestBuildReportsSelectedActionsChange(t *testing.T) {
 	}
 }
 
+func TestApplyActionsConvergesVariablesAndEnvironmentsOnce(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Variables:    []config.VariableRef{{Name: "STAGE", Value: "prod"}},
+			Environments: []config.Environment{{Name: "production"}},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Apply() recalculates the plan (one read-only ListActionVariables call for
+	// the report) before converging it (one more call to apply changes); a
+	// third call would mean applyActions still double-converges internally.
+	if service.listActionVariablesCalls != 2 {
+		t.Fatalf("ListActionVariables calls = %d, want 2 (one plan read, one apply convergence)", service.listActionVariablesCalls)
+	}
+	if service.createOrUpdateEnvironmentCalls != 1 {
+		t.Fatalf("CreateOrUpdateEnvironment calls = %d, want 1 (environments must converge exactly once)", service.createOrUpdateEnvironmentCalls)
+	}
+}
+
 func TestBuildRequiresVisibilityApproval(t *testing.T) {
 	t.Parallel()
 	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
@@ -107,6 +139,40 @@ func TestApplyConvergesSupportedSettings(t *testing.T) {
 	}
 }
 
+// TestStagedFilesDetectsExecutableBit guards against reading the executable
+// bit with fs.DirEntry.Type().Perm(), which always yields zero because
+// DirEntry.Type() carries only file-type bits, never permission bits. That
+// bug silently commits every seeded script as mode 100644, dropping its
+// executable bit. Not applicable on Windows, which does not have a POSIX
+// executable permission bit to preserve.
+func TestStagedFilesDetectsExecutableBit(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable permission bits are not meaningful on Windows")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil { //nolint:gosec // the executable bit is the behavior under test; root is a t.TempDir path
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := stagedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]string, len(files))
+	for _, file := range files {
+		byPath[file.Path] = file.Mode
+	}
+	if byPath["run.sh"] != "100755" {
+		t.Fatalf("run.sh mode = %q, want 100755", byPath["run.sh"])
+	}
+	if byPath["README.md"] != "100644" {
+		t.Fatalf("README.md mode = %q, want 100644", byPath["README.md"])
+	}
+}
+
 func hasChange(plan Plan, resource string, state ChangeState) bool {
 	for _, change := range plan.Changes {
 		if change.Resource == resource && change.State == state {
@@ -117,12 +183,14 @@ func hasChange(plan Plan, resource string, state ChangeState) bool {
 }
 
 type fakeService struct {
-	repository            githubapi.RepositoryInfo
-	actions               githubapi.ActionsPermissions
-	actionVariables       githubapi.ActionVariableList
-	agentVariables        githubapi.AgentVariableList
-	rulesets              []githubapi.Ruleset
-	updateRepositoryCalls int
+	repository                     githubapi.RepositoryInfo
+	actions                        githubapi.ActionsPermissions
+	actionVariables                githubapi.ActionVariableList
+	agentVariables                 githubapi.AgentVariableList
+	rulesets                       []githubapi.Ruleset
+	updateRepositoryCalls          int
+	listActionVariablesCalls       int
+	createOrUpdateEnvironmentCalls int
 }
 
 func (f *fakeService) GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error) {
@@ -164,6 +232,7 @@ func (*fakeService) UpdateSelectedActions(context.Context, githubapi.Repository,
 }
 
 func (f *fakeService) ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error) {
+	f.listActionVariablesCalls++
 	return f.actionVariables, nil
 }
 
@@ -175,7 +244,8 @@ func (*fakeService) UpdateActionVariable(context.Context, githubapi.Repository, 
 	return nil
 }
 
-func (*fakeService) CreateOrUpdateEnvironment(context.Context, githubapi.Repository, string, githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+func (f *fakeService) CreateOrUpdateEnvironment(context.Context, githubapi.Repository, string, githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+	f.createOrUpdateEnvironmentCalls++
 	return githubapi.Environment{}, nil
 }
 
