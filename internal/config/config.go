@@ -55,14 +55,24 @@ type ZIPSeed struct {
 }
 
 type ActionsConfig struct {
-	Enabled                        *bool         `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	AllowedActions                 string        `json:"allowedActions,omitempty" yaml:"allowedActions,omitempty"`
-	RequireSHAForGitHubActions     *bool         `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
-	DefaultWorkflowPermissions     string        `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
-	CanApprovePullRequestWorkflows *bool         `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
-	Variables                      []VariableRef `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Secrets                        []SecretRef   `json:"secrets,omitempty" yaml:"secrets,omitempty"`
-	Environments                   []Environment `json:"environments,omitempty" yaml:"environments,omitempty"`
+	Enabled                        *bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	AllowedActions                 string                 `json:"allowedActions,omitempty" yaml:"allowedActions,omitempty"`
+	SelectedActions                *SelectedActionsConfig `json:"selectedActions,omitempty" yaml:"selectedActions,omitempty"`
+	RequireSHAForGitHubActions     *bool                  `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
+	DefaultWorkflowPermissions     string                 `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
+	CanApprovePullRequestWorkflows *bool                  `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
+	Variables                      []VariableRef          `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Secrets                        []SecretRef            `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	Environments                   []Environment          `json:"environments,omitempty" yaml:"environments,omitempty"`
+}
+
+// SelectedActionsConfig is required when AllowedActions is "selected". Without it,
+// GitHub's selected-actions allowlist defaults to empty and every workflow run using
+// an Action is blocked.
+type SelectedActionsConfig struct {
+	GitHubOwnedAllowed bool     `json:"githubOwnedAllowed" yaml:"githubOwnedAllowed"`
+	VerifiedAllowed    bool     `json:"verifiedAllowed" yaml:"verifiedAllowed"`
+	PatternsAllowed    []string `json:"patternsAllowed,omitempty" yaml:"patternsAllowed,omitempty"`
 }
 
 type VariableRef struct {

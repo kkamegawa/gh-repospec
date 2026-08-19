@@ -82,6 +82,15 @@ func TestAgentSecretAndVariableEndpoints(t *testing.T) {
 	}
 }
 
+func TestNewAuthenticatedClientRejectsEnterpriseServerHost(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids parallel execution.
+	t.Setenv("GH_HOST", "github.example.com")
+	_, err := NewAuthenticatedClient()
+	if err == nil || !strings.Contains(err.Error(), "unsupported GitHub host") {
+		t.Fatalf("NewAuthenticatedClient() error = %v, want an unsupported host error", err)
+	}
+}
+
 func TestRetriesIdempotentRateLimitedRequest(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32

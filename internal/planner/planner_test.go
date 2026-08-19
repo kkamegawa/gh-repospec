@@ -45,6 +45,29 @@ func TestBuildReportsOnlyDeclaredDifferences(t *testing.T) {
 	}
 }
 
+func TestBuildReportsSelectedActionsChange(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			AllowedActions:  "selected",
+			SelectedActions: &config.SelectedActionsConfig{GitHubOwnedAllowed: true, VerifiedAllowed: true},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "actions.selectedActions", ChangeUpdate) {
+		t.Fatalf("plan did not report the selected Actions allowlist: %#v", plan.Changes)
+	}
+}
+
 func TestBuildRequiresVisibilityApproval(t *testing.T) {
 	t.Parallel()
 	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
@@ -133,6 +156,10 @@ func (f *fakeService) UpdateActionsPermissions(_ context.Context, _ githubapi.Re
 }
 
 func (*fakeService) UpdateDefaultWorkflowPermissions(context.Context, githubapi.Repository, githubapi.DefaultWorkflowPermissions) error {
+	return nil
+}
+
+func (*fakeService) UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error {
 	return nil
 }
 

@@ -22,3 +22,7 @@ coverage.*
 *.coverprofile
 /vendor/
 go.work.sum
+
+
+# APM dependencies
+apm_modules/

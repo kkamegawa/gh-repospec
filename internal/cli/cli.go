@@ -16,6 +16,11 @@ import (
 	"github.com/kkamegawa/gh-repobootstrapper/internal/planner"
 )
 
+// Version is the released version. It defaults to "dev" for local builds and is set
+// at build time with -ldflags "-X .../internal/cli.Version=vX.Y.Z" from the release
+// git tag, matching gh CLI extension conventions.
+var Version = "dev"
+
 // Run executes a gh-repobootstrapper command using the supplied standard streams.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -24,6 +29,9 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 
 	switch args[0] {
+	case "version", "--version", "-v":
+		_, err := fmt.Fprintf(stdout, "gh-repobootstrapper %s\n", Version)
+		return err
 	case "validate":
 		file, err := parseValidateFlags(args[1:], stderr)
 		if err != nil {
@@ -246,6 +254,7 @@ Commands:
   validate --file <path>                     Validate a schemaVersion 1 YAML or JSON configuration.
   plan --file <path> [-R owner/repository]   Preview changes without modifying GitHub.
   apply --file <path> [-R owner/repository]  Confirm and apply supported changes.
+  version, --version                         Print the gh-repobootstrapper version.
 
 Common flags:
   -f, --file <path>        Configuration path (required).

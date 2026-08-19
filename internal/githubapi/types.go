@@ -81,6 +81,15 @@ type DefaultWorkflowPermissions struct {
 	CanApprovePullRequest      bool   `json:"can_approve_pull_request_reviews"`
 }
 
+// SelectedActionsRequest configures the Actions and reusable workflows allowed to run
+// when ActionsPermissions.AllowedActions is "selected". GitHub blocks every Action
+// until this allowlist is set explicitly.
+type SelectedActionsRequest struct {
+	GitHubOwnedAllowed bool     `json:"github_owned_allowed"`
+	VerifiedAllowed    bool     `json:"verified_allowed"`
+	PatternsAllowed    []string `json:"patterns_allowed,omitempty"`
+}
+
 // Ruleset is an intentionally flexible representation of a repository ruleset.
 // Rules and conditions retain GitHub's API shape without losing new rule types.
 type Ruleset struct {

@@ -72,6 +72,42 @@ repository:
 	}
 }
 
+func TestValidateRequiresSelectedActionsOnlyWithSelectedAllowedActions(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	missing := base
+	missing.Actions = &ActionsConfig{AllowedActions: "selected"}
+	if err := Validate(&missing); err == nil {
+		t.Fatal("Validate() unexpectedly accepted allowedActions=selected without selectedActions")
+	}
+
+	misplaced := base
+	misplaced.Actions = &ActionsConfig{
+		AllowedActions:  "all",
+		SelectedActions: &SelectedActionsConfig{GitHubOwnedAllowed: true},
+	}
+	if err := Validate(&misplaced); err == nil {
+		t.Fatal("Validate() unexpectedly accepted selectedActions without allowedActions=selected")
+	}
+
+	valid := base
+	valid.Actions = &ActionsConfig{
+		AllowedActions: "selected",
+		SelectedActions: &SelectedActionsConfig{
+			GitHubOwnedAllowed: true,
+			VerifiedAllowed:    true,
+			PatternsAllowed:    []string{"actions/*"},
+		},
+	}
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want a valid configuration accepted", err)
+	}
+}
+
 func TestValidateRejectsShellCommands(t *testing.T) {
 	t.Parallel()
 	err := Validate(&Config{

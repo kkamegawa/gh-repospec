@@ -54,7 +54,7 @@ gh repobootstrapper apply --file bootstrap.yaml
 | --- | --- |
 | `repository` | 対象、作成、可視性、説明、トピック、既定 branch、merge 設定。 |
 | `seed` | `template`、`directory`、`zip` のいずれか 1 つ。異なる既存ファイルは `overwrite` への明示が必要。 |
-| `actions` | GitHub Actions の権限、variables、secrets、environments。 |
+| `actions` | GitHub Actions の権限、variables、secrets、environments。`allowedActions: selected` には `selectedActions` が必須(未設定だと全Actionがブロックされる)。 |
 | `rulesets` | 名前で識別する repository ruleset。旧 branch protection API は使用しない。 |
 | `security` | dependency graph、Dependabot、secret scanning、push protection、CodeQL default setup、private vulnerability reporting。 |
 | `agents` | seed が提供する MCP、instructions、agents、skills の repository-relative path と agent variables / secrets。 |
@@ -68,9 +68,10 @@ secret に記載するのは値ではなく `sourceEnv` 名です。既定の更
 gh repobootstrapper validate --file <path>
 gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json]
 gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>]
+gh repobootstrapper version
 ```
 
-`-R` / `--repo` は設定ファイル内の対象リポジトリを上書きします。`--approve-command` は繰り返し指定でき、設定済み command ごとに必須です。
+`-R` / `--repo` は設定ファイル内の対象リポジトリを上書きします。`--approve-command` は繰り返し指定でき、設定済み command ごとに必須です。`--version` / `-v` は `version` の別名として使用できます。
 
 ## 安全性
 

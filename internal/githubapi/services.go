@@ -21,6 +21,7 @@ type API interface {
 	ReplaceTopics(context.Context, Repository, []string) ([]string, error)
 	GetActionsPermissions(context.Context, Repository) (ActionsPermissions, error)
 	UpdateActionsPermissions(context.Context, Repository, ActionsPermissions) error
+	UpdateSelectedActions(context.Context, Repository, SelectedActionsRequest) error
 	UpdateDefaultWorkflowPermissions(context.Context, Repository, DefaultWorkflowPermissions) error
 	ListRulesets(context.Context, Repository) ([]Ruleset, error)
 	CreateRuleset(context.Context, Repository, Ruleset) (Ruleset, error)
@@ -108,6 +109,12 @@ func (c *Client) UpdateActionsPermissions(ctx context.Context, repo Repository, 
 
 func (c *Client) UpdateDefaultWorkflowPermissions(ctx context.Context, repo Repository, settings DefaultWorkflowPermissions) error {
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/workflow", settings, nil)
+}
+
+// UpdateSelectedActions sets the Actions and reusable workflows allowlist used when
+// Actions permissions are configured as "selected".
+func (c *Client) UpdateSelectedActions(ctx context.Context, repo Repository, request SelectedActionsRequest) error {
+	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/selected-actions", request, nil)
 }
 
 func (c *Client) ListRulesets(ctx context.Context, repo Repository) ([]Ruleset, error) {

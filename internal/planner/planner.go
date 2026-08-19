@@ -31,16 +31,21 @@ const (
 )
 
 // Stage fixes the application order. Rulesets remain last so they cannot
-// prevent repository initialization.
+// prevent repository initialization. Security settings are split in two:
+// StageSecurityPre (secret scanning, push protection) runs before files so the
+// initial commit is protected; StageSecurity (dependency graph, Dependabot,
+// CodeQL default setup, private vulnerability reporting) runs after settings
+// and automation, once there is repository content for those features to act on.
 type Stage string
 
 const (
-	StageRepository Stage = "repository"
-	StageSecurity   Stage = "security"
-	StageFiles      Stage = "files"
-	StageSettings   Stage = "settings"
-	StageAutomation Stage = "automation"
-	StageRulesets   Stage = "rulesets"
+	StageRepository  Stage = "repository"
+	StageSecurityPre Stage = "security-pre"
+	StageFiles       Stage = "files"
+	StageSettings    Stage = "settings"
+	StageAutomation  Stage = "automation"
+	StageSecurity    Stage = "security"
+	StageRulesets    Stage = "rulesets"
 )
 
 // Change is one visible capability or resource difference.
@@ -80,6 +85,7 @@ type Service interface {
 	ReplaceTopics(context.Context, githubapi.Repository, []string) ([]string, error)
 	GetActionsPermissions(context.Context, githubapi.Repository) (githubapi.ActionsPermissions, error)
 	UpdateActionsPermissions(context.Context, githubapi.Repository, githubapi.ActionsPermissions) error
+	UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error
 	UpdateDefaultWorkflowPermissions(context.Context, githubapi.Repository, githubapi.DefaultWorkflowPermissions) error
 	ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error)
 	CreateActionVariable(context.Context, githubapi.Repository, githubapi.ActionVariable) error
@@ -242,7 +248,7 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 	if err := e.applyRepository(ctx, repository, cfg.Repository, info); err != nil {
 		return plan, err
 	}
-	if err := e.applySecurity(ctx, repository, cfg.Security); err != nil {
+	if err := e.applyPreContentSecurity(ctx, repository, cfg.Security); err != nil {
 		return plan, err
 	}
 	if err := e.applySeed(ctx, repository, info, cfg, options, !created); err != nil {
@@ -252,6 +258,9 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 		return plan, err
 	}
 	if err := e.applyAgentVariables(ctx, repository, cfg.Agents); err != nil {
+		return plan, err
+	}
+	if err := e.applyRemainingSecurity(ctx, repository, cfg.Security); err != nil {
 		return plan, err
 	}
 	if err := e.applyRulesets(ctx, repository, cfg.Rulesets); err != nil {
@@ -566,6 +575,16 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("update Actions permissions for %s: %w", repository, err)
 		}
 	}
+	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
+		request := githubapi.SelectedActionsRequest{
+			GitHubOwnedAllowed: desired.SelectedActions.GitHubOwnedAllowed,
+			VerifiedAllowed:    desired.SelectedActions.VerifiedAllowed,
+			PatternsAllowed:    desired.SelectedActions.PatternsAllowed,
+		}
+		if err := e.service.UpdateSelectedActions(ctx, repository, request); err != nil {
+			return fmt.Errorf("update selected Actions and reusable workflows for %s: %w", repository, err)
+		}
+	}
 	if desired.DefaultWorkflowPermissions != "" || desired.CanApprovePullRequestWorkflows != nil {
 		workflow := githubapi.DefaultWorkflowPermissions{DefaultWorkflowPermissions: desired.DefaultWorkflowPermissions}
 		if desired.CanApprovePullRequestWorkflows != nil {
@@ -648,7 +667,30 @@ func (e *Engine) applyActionVariables(ctx context.Context, repository githubapi.
 	return nil
 }
 
-func (e *Engine) applySecurity(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig) error {
+// applyPreContentSecurity configures secret scanning and push protection before any
+// seed content is committed, so the initial commit is covered by push protection.
+func (e *Engine) applyPreContentSecurity(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig) error {
+	if desired == nil {
+		return nil
+	}
+	request := githubapi.SecurityAndAnalysisRequest{
+		SecretScanning:            securityFeature(desired.SecretScanning),
+		SecretScanningPushProtect: securityFeature(desired.PushProtection),
+	}
+	if request.SecretScanning != nil || request.SecretScanningPushProtect != nil {
+		if _, err := e.service.UpdateSecurityAndAnalysis(ctx, repository, request); err != nil {
+			if (desired.SecretScanning == nil || !desired.SecretScanning.Optional) && (desired.PushProtection == nil || !desired.PushProtection.Optional) {
+				return fmt.Errorf("update pre-content security settings for %s: %w", repository, err)
+			}
+		}
+	}
+	return nil
+}
+
+// applyRemainingSecurity configures Dependabot, CodeQL default setup, and private
+// vulnerability reporting after repository content, settings, and automation are in
+// place, since these features act on the repository's actual content and workflows.
+func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig) error {
 	if desired == nil {
 		return nil
 	}
@@ -669,17 +711,6 @@ func (e *Engine) applySecurity(ctx context.Context, repository githubapi.Reposit
 		}
 	} else if (desired.DependabotAlerts != nil && !desired.DependabotAlerts.Optional) || (desired.DependabotSecurityUpdates != nil && !desired.DependabotSecurityUpdates.Optional) {
 		return errors.New("dependabot operations are unavailable from the configured GitHub service")
-	}
-	request := githubapi.SecurityAndAnalysisRequest{
-		SecretScanning:            securityFeature(desired.SecretScanning),
-		SecretScanningPushProtect: securityFeature(desired.PushProtection),
-	}
-	if request.SecretScanning != nil || request.SecretScanningPushProtect != nil {
-		if _, err := e.service.UpdateSecurityAndAnalysis(ctx, repository, request); err != nil {
-			if (desired.SecretScanning == nil || !desired.SecretScanning.Optional) && (desired.PushProtection == nil || !desired.PushProtection.Optional) {
-				return fmt.Errorf("update security settings for %s: %w", repository, err)
-			}
-		}
 	}
 	if desired.CodeQLDefaultSetup != nil {
 		state := "not-configured"
@@ -868,7 +899,7 @@ func stageRank(stage Stage) int {
 	switch stage {
 	case StageRepository:
 		return 0
-	case StageSecurity:
+	case StageSecurityPre:
 		return 1
 	case StageFiles:
 		return 2
@@ -876,10 +907,12 @@ func stageRank(stage Stage) int {
 		return 3
 	case StageAutomation:
 		return 4
-	case StageRulesets:
+	case StageSecurity:
 		return 5
-	default:
+	case StageRulesets:
 		return 6
+	default:
+		return 7
 	}
 }
 
@@ -939,6 +972,9 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	if desired.DefaultWorkflowPermissions != "" || desired.CanApprovePullRequestWorkflows != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowPermissions", State: ChangeUpdate, Summary: "update GITHUB_TOKEN permissions"})
 	}
+	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: ChangeUpdate, Summary: "configure allowed Actions and reusable workflows"})
+	}
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
 		if len(desired.Variables) > 0 {
@@ -973,18 +1009,18 @@ func appendSecurityChanges(plan *Plan, desired *config.SecurityConfig) {
 	if desired == nil {
 		return
 	}
+	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, false)
+	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, false)
 	// GitHub enables the dependency graph as part of enabling Dependabot alerts.
 	dependencyGraphUnavailable := desired.DependabotAlerts == nil || !desired.DependabotAlerts.Enabled
-	appendFeatureChange(plan, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphUnavailable)
-	appendFeatureChange(plan, "security.dependabotAlerts", desired.DependabotAlerts, false)
-	appendFeatureChange(plan, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, false)
-	appendFeatureChange(plan, "security.secretScanning", desired.SecretScanning, false)
-	appendFeatureChange(plan, "security.pushProtection", desired.PushProtection, false)
-	appendFeatureChange(plan, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, false)
-	appendFeatureChange(plan, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, false)
+	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphUnavailable)
+	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, false)
+	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, false)
+	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, false)
+	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, false)
 }
 
-func appendFeatureChange(plan *Plan, resource string, feature *config.FeatureSetting, unavailable bool) {
+func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *config.FeatureSetting, unavailable bool) {
 	if feature == nil {
 		return
 	}
@@ -993,10 +1029,10 @@ func appendFeatureChange(plan *Plan, resource string, feature *config.FeatureSet
 		if feature.Optional {
 			state = ChangeManual
 		}
-		plan.Changes = append(plan.Changes, Change{Stage: StageSecurity, Resource: resource, State: state, Summary: "repository API support is unavailable"})
+		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: state, Summary: "repository API support is unavailable"})
 		return
 	}
-	plan.Changes = append(plan.Changes, Change{Stage: StageSecurity, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", feature.Enabled)})
+	plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", feature.Enabled)})
 }
 
 func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository) {

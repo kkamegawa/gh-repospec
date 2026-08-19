@@ -152,6 +152,17 @@ func validateActions(actions *ActionsConfig) error {
 	if actions.AllowedActions != "" && !oneOf(actions.AllowedActions, "all", "local_only", "selected") {
 		return errors.New("actions.allowedActions must be all, local_only, or selected")
 	}
+	if actions.AllowedActions == "selected" && actions.SelectedActions == nil {
+		return errors.New("actions.selectedActions is required when actions.allowedActions is selected")
+	}
+	if actions.AllowedActions != "selected" && actions.SelectedActions != nil {
+		return errors.New("actions.selectedActions is only valid when actions.allowedActions is selected")
+	}
+	if actions.SelectedActions != nil {
+		if err := validateUnique("actions.selectedActions.patternsAllowed", actions.SelectedActions.PatternsAllowed); err != nil {
+			return err
+		}
+	}
 	if actions.DefaultWorkflowPermissions != "" && !oneOf(actions.DefaultWorkflowPermissions, "read", "write") {
 		return errors.New("actions.defaultWorkflowPermissions must be read or write")
 	}

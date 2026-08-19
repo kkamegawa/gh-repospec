@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -99,6 +100,61 @@ func TestApplyUpdatesSettingsBeforeRulesets(t *testing.T) {
 	}
 }
 
+func TestApplyOrdersSecurityAroundContentAndAutomation(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(directory, "README.md"), []byte("seed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public", DefaultBranch: "main"},
+		actions:    githubapi.ActionsPermissions{Enabled: false},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Seed:          &config.SeedConfig{Directory: &config.DirectorySeed{Path: directory}},
+		Actions: &config.ActionsConfig{
+			AllowedActions:  "selected",
+			SelectedActions: &config.SelectedActionsConfig{GitHubOwnedAllowed: true, VerifiedAllowed: true},
+		},
+		Security: &config.SecurityConfig{
+			SecretScanning:     &config.FeatureSetting{Enabled: true},
+			CodeQLDefaultSetup: &config.FeatureSetting{Enabled: true},
+		},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules: []config.RulesetRule{{Type: "deletion"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	preContentSecurity := slices.Index(service.mutations, "security")
+	files := slices.Index(service.mutations, "files")
+	selectedActions := slices.Index(service.mutations, "selected-actions")
+	codeql := slices.Index(service.mutations, "codeql")
+	ruleset := slices.Index(service.mutations, "ruleset")
+	if preContentSecurity == -1 || files == -1 || preContentSecurity > files {
+		t.Fatalf("pre-content security must apply before files: %#v", service.mutations)
+	}
+	if selectedActions == -1 || codeql == -1 || ruleset == -1 {
+		t.Fatalf("expected selected-actions, codeql, and ruleset mutations: %#v", service.mutations)
+	}
+	if codeql < selectedActions {
+		t.Fatalf("remaining security must apply after Actions automation: %#v", service.mutations)
+	}
+	if codeql > ruleset {
+		t.Fatalf("remaining security must apply before rulesets: %#v", service.mutations)
+	}
+}
+
 func TestApplyRequiresCommandApprovalBeforeExecution(t *testing.T) {
 	t.Parallel()
 	service := &recordingService{fakeService: fakeService{
@@ -178,6 +234,16 @@ func (s *recordingService) UpdateActionsPermissions(ctx context.Context, reposit
 func (s *recordingService) UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error) {
 	s.mutations = append(s.mutations, "security")
 	return s.repository, nil
+}
+
+func (s *recordingService) ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error {
+	s.mutations = append(s.mutations, "codeql")
+	return nil
+}
+
+func (s *recordingService) UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error {
+	s.mutations = append(s.mutations, "selected-actions")
+	return nil
 }
 
 func (s *recordingService) CreateRuleset(_ context.Context, _ githubapi.Repository, ruleset githubapi.Ruleset) (githubapi.Ruleset, error) {

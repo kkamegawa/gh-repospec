@@ -5,7 +5,12 @@
 `gh-repobootstrapper` is a precompiled GitHub CLI extension that converges a
 GitHub.com repository on a declarative bootstrap file. Version 1 targets
 personal repositories and Free, Pro, and Team organizations. GitHub Enterprise
-Server is rejected; Enterprise Cloud is not a supported target.
+Server is rejected; Enterprise Cloud is not a supported target. The effective
+host is resolved with go-gh's `auth.DefaultHost`, which mirrors the GitHub CLI's
+own precedence (`GH_HOST`, then a single configured host, then github.com) and
+is rejected with `auth.IsEnterprise` before any request is made; a raw `GH_HOST`
+check alone misses a login against a single Enterprise Server host with
+`GH_HOST` unset.
 
 The extension uses the authenticated GitHub CLI session. It never stores or
 prints a GitHub token. Repository changes are declarative and additive: fields,
@@ -35,12 +40,21 @@ Secrets have a `sourceEnv`, not a value. The default `updatePolicy` is
 array. Shell programs are rejected, paths are repository-relative, and timeout
 uses Go duration syntax such as `5m`.
 
+`actions.allowedActions: selected` requires `actions.selectedActions`
+(`githubOwnedAllowed`, `verifiedAllowed`, and an optional `patternsAllowed`
+list). GitHub's selected-actions allowlist otherwise defaults to empty, which
+blocks every workflow run using an Action; validation rejects `selected`
+without it, and rejects `selectedActions` when `allowedActions` is not
+`selected`.
+
 ## Execution model
 
 `validate` only parses and validates. `plan` produces a no-write change report;
 `apply` recalculates that report, prompts unless `--yes` is present, then
 applies the ordered changes. A command needs a separate
-`--approve-command <id>` approval even with `--yes`.
+`--approve-command <id>` approval even with `--yes`. `version` (also
+`--version`/`-v`) prints the release version embedded at build time with
+`-ldflags`, following GitHub CLI extension convention.
 
 Before writes, preflight checks the GitHub.com host, authenticated permissions,
 repository state, feature availability, organization policy, seed source, and

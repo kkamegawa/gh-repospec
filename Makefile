@@ -1,6 +1,8 @@
 GO_PACKAGES := ./...
 COMMAND := ./cmd/gh-repobootstrapper
 BINARY := bin/gh-repobootstrapper
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/kkamegawa/gh-repobootstrapper/internal/cli.Version=$(VERSION)
 
 .PHONY: all test test-race vet build lint fmt clean
 
@@ -17,7 +19,7 @@ vet:
 
 build:
 	mkdir -p bin
-	go build -o $(BINARY) $(COMMAND)
+	go build -ldflags="$(LDFLAGS)" -o $(BINARY) $(COMMAND)
 
 lint:
 	golangci-lint run $(GO_PACKAGES)

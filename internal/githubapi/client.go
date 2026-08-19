@@ -9,13 +9,13 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	ghapi "github.com/cli/go-gh/v2/pkg/api"
+	ghauth "github.com/cli/go-gh/v2/pkg/auth"
 )
 
 const githubAPIURL = "https://api.github.com/"
@@ -43,11 +43,18 @@ type Client struct {
 // NewAuthenticatedClient creates a GitHub.com client using the existing gh login.
 // go-gh obtains authentication from the GitHub CLI environment and config; this package
 // never obtains, stores, or logs the access token.
+//
+// The effective host is resolved with auth.DefaultHost, which mirrors gh CLI's own
+// precedence (GH_HOST, then the single configured host, then github.com). A raw
+// GH_HOST environment check alone would miss the common case of a GitHub CLI login
+// against a single GitHub Enterprise Server host with GH_HOST unset, silently sending
+// requests to api.github.com without an attached token instead of failing clearly.
 func NewAuthenticatedClient() (*Client, error) {
-	if host := os.Getenv("GH_HOST"); host != "" && host != "github.com" {
+	host, _ := ghauth.DefaultHost()
+	if ghauth.IsEnterprise(host) {
 		return nil, fmt.Errorf("unsupported GitHub host %q: gh-repobootstrapper supports github.com only", host)
 	}
-	httpClient, err := ghapi.DefaultHTTPClient()
+	httpClient, err := ghapi.NewHTTPClient(ghapi.ClientOptions{Host: "github.com"})
 	if err != nil {
 		return nil, fmt.Errorf("initialize GitHub CLI authentication: %w", err)
 	}

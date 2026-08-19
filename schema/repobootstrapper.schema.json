@@ -53,12 +53,22 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "allowedActions": { "enum": ["all", "local_only", "selected"] },
+        "selectedActions": { "$ref": "#/$defs/selectedActions" },
         "requireSHAForGitHubActions": { "type": "boolean" },
         "defaultWorkflowPermissions": { "enum": ["read", "write"] },
         "canApprovePullRequestWorkflows": { "type": "boolean" },
         "variables": { "type": "array", "items": { "$ref": "#/$defs/variable" } },
         "secrets": { "type": "array", "items": { "$ref": "#/$defs/secret" } },
         "environments": { "type": "array", "items": { "$ref": "#/$defs/environment" } }
+      }
+    },
+    "selectedActions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["githubOwnedAllowed", "verifiedAllowed"],
+      "properties": {
+        "githubOwnedAllowed": { "type": "boolean" },
+        "verifiedAllowed": { "type": "boolean" },
+        "patternsAllowed": { "$ref": "#/$defs/stringList" }
       }
     },
     "variable": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } },

@@ -54,7 +54,7 @@ Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, an
 | --- | --- |
 | `repository` | Target repository, creation, visibility, description, topics, default branch, and merge settings. |
 | `seed` | Exactly one `template`, `directory`, or `zip` source. Differing existing files require a path in `overwrite`. |
-| `actions` | GitHub Actions permissions, variables, secrets, and environments. |
+| `actions` | GitHub Actions permissions, variables, secrets, and environments. `allowedActions: selected` requires `selectedActions`, or every Action is blocked. |
 | `rulesets` | Repository rulesets, identified by name. Branch protection is not managed through the legacy API. |
 | `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, and private vulnerability reporting. |
 | `agents` | Agent variables/secrets and repository-relative locations of MCP, instruction, agent, and skill files supplied by the seed. |
@@ -68,9 +68,10 @@ Secrets contain a `sourceEnv` name, never a secret value. Their default update p
 gh repobootstrapper validate --file <path>
 gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json]
 gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>]
+gh repobootstrapper version
 ```
 
-The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`.
+The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`. `--version`/`-v` are accepted as aliases for `version`.
 
 ## Safety model
 

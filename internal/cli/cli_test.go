@@ -12,6 +12,26 @@ import (
 	"github.com/kkamegawa/gh-repobootstrapper/internal/planner"
 )
 
+func TestRunVersionWritesVersionToStdout(t *testing.T) {
+	t.Parallel()
+	previous := Version
+	Version = "v1.2.3"
+	defer func() { Version = previous }()
+
+	for _, arg := range []string{"version", "--version", "-v"} {
+		var stdout, stderr bytes.Buffer
+		if err := Run([]string{arg}, strings.NewReader(""), &stdout, &stderr); err != nil {
+			t.Fatalf("Run(%q) error = %v", arg, err)
+		}
+		if got, want := stdout.String(), "gh-repobootstrapper v1.2.3\n"; got != want {
+			t.Fatalf("Run(%q) stdout = %q, want %q", arg, got, want)
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("Run(%q) stderr = %q, want empty", arg, stderr.String())
+		}
+	}
+}
+
 func TestRunValidateWritesSuccessToStdout(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join(t.TempDir(), "bootstrap.yaml")
