@@ -10,6 +10,7 @@ wiki-staging/
 # APM-deployed agent skill directories
 .agents/
 .claude/
+.idea/
 
 # Go build, test, and coverage artifacts
 /bin/
