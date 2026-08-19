@@ -163,7 +163,13 @@ func copyDirectory(source, destination string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 			return err
 		}
-		return copyFile(path, target, entry.Type().Perm())
+		// entry.Type() carries only file-type bits, never permission bits; the
+		// permission bits require the full FileInfo.
+		sourceInfo, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat seed file %q: %w", rel, err)
+		}
+		return copyFile(path, target, sourceInfo.Mode().Perm())
 	})
 }
 

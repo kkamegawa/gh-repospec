@@ -2,6 +2,9 @@ package planner
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
@@ -104,6 +107,40 @@ func TestApplyConvergesSupportedSettings(t *testing.T) {
 	}
 	if service.updateRepositoryCalls != 1 {
 		t.Fatalf("repository update calls = %d, want 1", service.updateRepositoryCalls)
+	}
+}
+
+// TestStagedFilesDetectsExecutableBit guards against reading the executable
+// bit with fs.DirEntry.Type().Perm(), which always yields zero because
+// DirEntry.Type() carries only file-type bits, never permission bits. That
+// bug silently commits every seeded script as mode 100644, dropping its
+// executable bit. Not applicable on Windows, which does not have a POSIX
+// executable permission bit to preserve.
+func TestStagedFilesDetectsExecutableBit(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable permission bits are not meaningful on Windows")
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	files, err := stagedFiles(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byPath := make(map[string]string, len(files))
+	for _, file := range files {
+		byPath[file.Path] = file.Mode
+	}
+	if byPath["run.sh"] != "100755" {
+		t.Fatalf("run.sh mode = %q, want 100755", byPath["run.sh"])
+	}
+	if byPath["README.md"] != "100644" {
+		t.Fatalf("README.md mode = %q, want 100644", byPath["README.md"])
 	}
 }
 

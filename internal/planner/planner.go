@@ -481,8 +481,14 @@ func stagedFiles(root string) ([]githubapi.File, error) {
 		if readErr != nil {
 			return readErr
 		}
+		// entry.Type() carries only file-type bits, never permission bits; the
+		// executable bit requires the full FileInfo.
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return infoErr
+		}
 		mode := "100644"
-		if entry.Type().Perm()&0o111 != 0 {
+		if info.Mode().Perm()&0o111 != 0 {
 			mode = "100755"
 		}
 		files = append(files, githubapi.File{Path: filepath.ToSlash(rel), Content: content, Mode: mode})

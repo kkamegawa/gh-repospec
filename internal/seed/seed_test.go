@@ -191,6 +191,33 @@ func TestStageSourceDirectorySkipsGitMetadata(t *testing.T) {
 	}
 }
 
+// TestStageSourceDirectoryPreservesReadableFilePermissions guards against
+// copying files with fs.DirEntry.Type().Perm(), which always yields zero
+// because DirEntry.Type() carries only file-type bits, never permission
+// bits. That bug creates every staged file with mode 000, which Windows
+// tolerates but Unix does not: the file becomes unreadable immediately
+// after being staged, breaking every directory seed on Linux and macOS.
+func TestStageSourceDirectoryPreservesReadableFilePermissions(t *testing.T) {
+	source := t.TempDir()
+	writeFile(t, filepath.Join(source, "README.md"), "hello")
+	workspace, err := NewWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = workspace.Close() })
+	destination, err := StageSource(context.Background(), workspace, Source{Kind: SourceDirectory, Path: source}, nil, StageOptions{})
+	if err != nil {
+		t.Fatalf("StageSource() error = %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(destination, "README.md")) //nolint:gosec // destination is the isolated staging workspace
+	if err != nil {
+		t.Fatalf("staged file is not readable: %v", err)
+	}
+	if string(content) != "hello" {
+		t.Fatalf("staged file content = %q, want %q", content, "hello")
+	}
+}
+
 func TestStageSourceTemplateWithArchiveMaterializer(t *testing.T) {
 	archive := writeTemplateArchive(t, map[string]string{
 		"template-sha/":          "",
