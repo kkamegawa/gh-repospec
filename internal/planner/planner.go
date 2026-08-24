@@ -30,12 +30,16 @@ const (
 	ChangeBlocked ChangeState = "blocked"
 )
 
-// Stage fixes the application order. Rulesets remain last so they cannot
-// prevent repository initialization. Security settings are split in two:
-// StageSecurityPre (secret scanning, push protection) runs before files so the
-// initial commit is protected; StageSecurity (dependency graph, Dependabot,
-// CodeQL default setup, private vulnerability reporting) runs after settings
-// and automation, once there is repository content for those features to act on.
+// Stage fixes the application order. Rulesets remain last among the mutable
+// settings so they cannot prevent repository initialization. Security settings
+// are split in two: StageSecurityPre (secret scanning, push protection) runs
+// before files so the initial commit is protected; StageSecurity (dependency
+// graph, Dependabot, CodeQL default setup, private vulnerability reporting)
+// runs after settings and automation, once there is repository content for
+// those features to act on. StageArchive is last of all: archiving a
+// repository makes it read-only, so every other stage must already be applied.
+// Unarchiving happens in StageRepository instead, before anything else, since
+// GitHub rejects writes to an archived repository.
 type Stage string
 
 const (
@@ -46,6 +50,7 @@ const (
 	StageAutomation  Stage = "automation"
 	StageSecurity    Stage = "security"
 	StageRulesets    Stage = "rulesets"
+	StageArchive     Stage = "archive"
 )
 
 // Change is one visible capability or resource difference.
@@ -97,6 +102,14 @@ type Service interface {
 	UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error)
 	ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error
 	SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error
+	ListLabels(context.Context, githubapi.Repository) ([]githubapi.Label, error)
+	CreateLabel(context.Context, githubapi.Repository, githubapi.Label) (githubapi.Label, error)
+	UpdateLabel(context.Context, githubapi.Repository, string, githubapi.Label) (githubapi.Label, error)
+	ListMilestones(context.Context, githubapi.Repository) ([]githubapi.Milestone, error)
+	CreateMilestone(context.Context, githubapi.Repository, githubapi.Milestone) (githubapi.Milestone, error)
+	UpdateMilestone(context.Context, githubapi.Repository, int, githubapi.Milestone) (githubapi.Milestone, error)
+	GetImmutableReleases(context.Context, githubapi.Repository) (githubapi.ImmutableReleases, error)
+	SetImmutableReleases(context.Context, githubapi.Repository, bool) error
 	ListAgentVariables(context.Context, githubapi.Repository) (githubapi.AgentVariableList, error)
 	CreateAgentVariable(context.Context, githubapi.Repository, githubapi.AgentVariable) error
 	UpdateAgentVariable(context.Context, githubapi.Repository, githubapi.AgentVariable) error
@@ -186,6 +199,9 @@ func (e *Engine) Build(ctx context.Context, cfg *config.Config, options Options)
 	}
 	plan.Exists = true
 	appendRepositoryChanges(&plan, cfg.Repository, info)
+	appendReleaseImmutabilityChanges(ctx, e.service, &plan, cfg.Repository, repository)
+	appendLabelChanges(ctx, e.service, &plan, cfg.Labels, repository)
+	appendMilestoneChanges(ctx, e.service, &plan, cfg.Milestones, repository)
 	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository)
 	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository)
 	appendSecurityChanges(&plan, cfg.Security)
@@ -226,6 +242,15 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 		}
 		created = true
 	}
+	// Unarchiving runs first, before any other write, because GitHub rejects
+	// writes to an archived repository.
+	if !created && cfg.Repository.Archived != nil && !*cfg.Repository.Archived && info.Archived {
+		unarchived := false
+		if _, err := e.service.UpdateRepository(ctx, repository, githubapi.UpdateRepositoryRequest{Archived: &unarchived}); err != nil {
+			return plan, fmt.Errorf("unarchive repository %s: %w", repository, err)
+		}
+		info.Archived = false
+	}
 	if cfg.Repository.DefaultBranch != "" && info.DefaultBranch != cfg.Repository.DefaultBranch {
 		if branches, ok := e.service.(branchService); ok {
 			if _, branchErr := branches.GetBranchHead(ctx, repository, cfg.Repository.DefaultBranch); githubapi.IsNotFound(branchErr) {
@@ -248,10 +273,19 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 	if err := e.applyRepository(ctx, repository, cfg.Repository, info); err != nil {
 		return plan, err
 	}
+	if err := e.applyReleaseImmutability(ctx, repository, cfg.Repository); err != nil {
+		return plan, err
+	}
 	if err := e.applyPreContentSecurity(ctx, repository, cfg.Security); err != nil {
 		return plan, err
 	}
 	if err := e.applySeed(ctx, repository, info, cfg, options, !created); err != nil {
+		return plan, err
+	}
+	if err := e.applyLabels(ctx, repository, cfg.Labels); err != nil {
+		return plan, err
+	}
+	if err := e.applyMilestones(ctx, repository, cfg.Milestones); err != nil {
 		return plan, err
 	}
 	if err := e.applyActions(ctx, repository, cfg.Actions); err != nil {
@@ -265,6 +299,14 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 	}
 	if err := e.applyRulesets(ctx, repository, cfg.Rulesets); err != nil {
 		return plan, err
+	}
+	// Archiving runs last of all, after every other change, because it makes
+	// the repository read-only.
+	if cfg.Repository.Archived != nil && *cfg.Repository.Archived && !info.Archived {
+		archived := true
+		if _, err := e.service.UpdateRepository(ctx, repository, githubapi.UpdateRepositoryRequest{Archived: &archived}); err != nil {
+			return plan, fmt.Errorf("archive repository %s: %w", repository, err)
+		}
 	}
 	return plan, nil
 }
@@ -314,8 +356,46 @@ func (e *Engine) applyRepository(ctx context.Context, repository githubapi.Repos
 		request.Description = &description
 		changed = true
 	}
+	if desired.Homepage != nil && *desired.Homepage != actual.Homepage {
+		request.Homepage = desired.Homepage
+		changed = true
+	}
 	if desired.DefaultBranch != "" && desired.DefaultBranch != actual.DefaultBranch {
 		request.DefaultBranch = desired.DefaultBranch
+		changed = true
+	}
+	if desired.Features != nil {
+		if desired.Features.Issues != nil && *desired.Features.Issues != actual.HasIssues {
+			request.HasIssues = desired.Features.Issues
+			changed = true
+		}
+		if desired.Features.Projects != nil && *desired.Features.Projects != actual.HasProjects {
+			request.HasProjects = desired.Features.Projects
+			changed = true
+		}
+		if desired.Features.Wiki != nil && *desired.Features.Wiki != actual.HasWiki {
+			request.HasWiki = desired.Features.Wiki
+			changed = true
+		}
+		if desired.Features.Discussions != nil && *desired.Features.Discussions != actual.HasDiscussions {
+			request.HasDiscussions = desired.Features.Discussions
+			changed = true
+		}
+	}
+	if desired.MergeCommitTitle != "" && desired.MergeCommitTitle != actual.MergeCommitTitle {
+		request.MergeCommitTitle = desired.MergeCommitTitle
+		changed = true
+	}
+	if desired.MergeCommitMessage != "" && desired.MergeCommitMessage != actual.MergeCommitMessage {
+		request.MergeCommitMessage = desired.MergeCommitMessage
+		changed = true
+	}
+	if desired.SquashMergeCommitTitle != "" && desired.SquashMergeCommitTitle != actual.SquashMergeCommitTitle {
+		request.SquashMergeCommitTitle = desired.SquashMergeCommitTitle
+		changed = true
+	}
+	if desired.SquashMergeCommitMessage != "" && desired.SquashMergeCommitMessage != actual.SquashMergeCommitMessage {
+		request.SquashMergeCommitMessage = desired.SquashMergeCommitMessage
 		changed = true
 	}
 	if desired.Visibility != actual.Visibility && (desired.Visibility != "private" || !actual.Private) {
@@ -335,6 +415,100 @@ func (e *Engine) applyRepository(ctx context.Context, repository githubapi.Repos
 	if desired.Topics != nil && !sameStrings(desired.Topics, actual.Topics) {
 		if _, err := e.service.ReplaceTopics(ctx, repository, desired.Topics); err != nil {
 			return fmt.Errorf("replace topics for %s: %w", repository, err)
+		}
+	}
+	return nil
+}
+
+// applyReleaseImmutability converges the repository's immutable release
+// setting through its dedicated endpoint; the repository update call does not
+// accept it.
+func (e *Engine) applyReleaseImmutability(ctx context.Context, repository githubapi.Repository, desired config.RepositoryConfig) error {
+	if desired.ReleaseImmutability == nil {
+		return nil
+	}
+	actual, err := e.service.GetImmutableReleases(ctx, repository)
+	if err != nil {
+		return fmt.Errorf("get immutable releases for %s: %w", repository, err)
+	}
+	if actual.Enabled == *desired.ReleaseImmutability {
+		return nil
+	}
+	if err := e.service.SetImmutableReleases(ctx, repository, *desired.ReleaseImmutability); err != nil {
+		return fmt.Errorf("set immutable releases for %s: %w", repository, err)
+	}
+	return nil
+}
+
+// applyLabels creates or updates every declared label. Labels present on the
+// repository but absent from configuration are left untouched.
+func (e *Engine) applyLabels(ctx context.Context, repository githubapi.Repository, desired []config.LabelConfig) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	actual, err := e.service.ListLabels(ctx, repository)
+	if err != nil {
+		return fmt.Errorf("list labels for %s: %w", repository, err)
+	}
+	byName := make(map[string]githubapi.Label, len(actual))
+	for _, label := range actual {
+		byName[strings.ToLower(label.Name)] = label
+	}
+	for _, label := range desired {
+		request := githubapi.Label{Name: label.Name, Color: strings.ToLower(label.Color), Description: label.Description}
+		if current, ok := byName[strings.ToLower(label.Name)]; ok {
+			if strings.EqualFold(current.Color, label.Color) && current.Description == label.Description {
+				continue
+			}
+			if _, err := e.service.UpdateLabel(ctx, repository, current.Name, request); err != nil {
+				return fmt.Errorf("update label %q for %s: %w", label.Name, repository, err)
+			}
+			continue
+		}
+		if _, err := e.service.CreateLabel(ctx, repository, request); err != nil {
+			return fmt.Errorf("create label %q for %s: %w", label.Name, repository, err)
+		}
+	}
+	return nil
+}
+
+// applyMilestones creates or updates every declared milestone, matched by
+// title. Milestones present on the repository but absent from configuration
+// are left untouched; a milestone is retired with state: closed.
+func (e *Engine) applyMilestones(ctx context.Context, repository githubapi.Repository, desired []config.MilestoneConfig) error {
+	if len(desired) == 0 {
+		return nil
+	}
+	actual, err := e.service.ListMilestones(ctx, repository)
+	if err != nil {
+		return fmt.Errorf("list milestones for %s: %w", repository, err)
+	}
+	byTitle := make(map[string]githubapi.Milestone, len(actual))
+	for _, milestone := range actual {
+		byTitle[milestone.Title] = milestone
+	}
+	for _, milestone := range desired {
+		state := milestone.State
+		if state == "" {
+			state = "open"
+		}
+		request := githubapi.Milestone{
+			Title:       milestone.Title,
+			Description: milestone.Description,
+			State:       state,
+			DueOn:       milestoneDueOnWire(milestone.DueOn),
+		}
+		if current, ok := byTitle[milestone.Title]; ok {
+			if milestoneConverged(state, milestone, current) {
+				continue
+			}
+			if _, err := e.service.UpdateMilestone(ctx, repository, current.Number, request); err != nil {
+				return fmt.Errorf("update milestone %q for %s: %w", milestone.Title, repository, err)
+			}
+			continue
+		}
+		if _, err := e.service.CreateMilestone(ctx, repository, request); err != nil {
+			return fmt.Errorf("create milestone %q for %s: %w", milestone.Title, repository, err)
 		}
 	}
 	return nil
@@ -891,8 +1065,10 @@ func stageRank(stage Stage) int {
 		return 5
 	case StageRulesets:
 		return 6
-	default:
+	case StageArchive:
 		return 7
+	default:
+		return 8
 	}
 }
 
@@ -918,22 +1094,127 @@ func appendRepositoryChanges(plan *Plan, desired config.RepositoryConfig, actual
 	if desired.Description != actual.Description {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.description", State: ChangeUpdate, Summary: "update description"})
 	}
+	if desired.Homepage != nil && *desired.Homepage != actual.Homepage {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.homepage", State: ChangeUpdate, Summary: "update homepage"})
+	}
 	if desired.DefaultBranch != "" && desired.DefaultBranch != actual.DefaultBranch {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.defaultBranch", State: ChangeUpdate, Summary: desired.DefaultBranch})
+	}
+	if desired.Features != nil {
+		appendBoolChange(plan, "repository.features.issues", desired.Features.Issues, actual.HasIssues)
+		appendBoolChange(plan, "repository.features.projects", desired.Features.Projects, actual.HasProjects)
+		appendBoolChange(plan, "repository.features.wiki", desired.Features.Wiki, actual.HasWiki)
+		appendBoolChange(plan, "repository.features.discussions", desired.Features.Discussions, actual.HasDiscussions)
 	}
 	appendBoolChange(plan, "repository.allowMergeCommit", desired.AllowMergeCommit, actual.AllowMergeCommit)
 	appendBoolChange(plan, "repository.allowSquashMerge", desired.AllowSquashMerge, actual.AllowSquashMerge)
 	appendBoolChange(plan, "repository.allowRebaseMerge", desired.AllowRebaseMerge, actual.AllowRebaseMerge)
 	appendBoolChange(plan, "repository.allowAutoMerge", desired.AllowAutoMerge, actual.AllowAutoMerge)
 	appendBoolChange(plan, "repository.deleteBranchOnMerge", desired.DeleteBranchOnMerge, actual.DeleteBranchOnMerge)
+	if desired.MergeCommitTitle != "" && desired.MergeCommitTitle != actual.MergeCommitTitle {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.mergeCommitTitle", State: ChangeUpdate, Summary: desired.MergeCommitTitle})
+	}
+	if desired.MergeCommitMessage != "" && desired.MergeCommitMessage != actual.MergeCommitMessage {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.mergeCommitMessage", State: ChangeUpdate, Summary: desired.MergeCommitMessage})
+	}
+	if desired.SquashMergeCommitTitle != "" && desired.SquashMergeCommitTitle != actual.SquashMergeCommitTitle {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.squashMergeCommitTitle", State: ChangeUpdate, Summary: desired.SquashMergeCommitTitle})
+	}
+	if desired.SquashMergeCommitMessage != "" && desired.SquashMergeCommitMessage != actual.SquashMergeCommitMessage {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.squashMergeCommitMessage", State: ChangeUpdate, Summary: desired.SquashMergeCommitMessage})
+	}
 	if desired.Topics != nil && !sameStrings(desired.Topics, actual.Topics) {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.topics", State: ChangeUpdate, Summary: "replace declared topics"})
+	}
+	if desired.Archived != nil && *desired.Archived != actual.Archived {
+		if *desired.Archived {
+			plan.Changes = append(plan.Changes, Change{Stage: StageArchive, Resource: "repository.archived", State: ChangeUpdate, Summary: "archive repository after every other change"})
+		} else {
+			plan.Changes = append(plan.Changes, Change{Stage: StageRepository, Resource: "repository.archived", State: ChangeUpdate, Summary: "unarchive repository"})
+		}
 	}
 }
 
 func appendBoolChange(plan *Plan, resource string, desired *bool, actual bool) {
 	if desired != nil && *desired != actual {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", *desired)})
+	}
+}
+
+func appendReleaseImmutabilityChanges(ctx context.Context, service Service, plan *Plan, desired config.RepositoryConfig, repository githubapi.Repository) {
+	if desired.ReleaseImmutability == nil {
+		return
+	}
+	actual, err := service.GetImmutableReleases(ctx, repository)
+	if err != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.releaseImmutability", State: ChangeBlocked, Summary: capabilityError(err)})
+		return
+	}
+	if actual.Enabled == *desired.ReleaseImmutability {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.releaseImmutability", State: ChangeNoop, Summary: fmt.Sprintf("already set to %t", *desired.ReleaseImmutability)})
+		return
+	}
+	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.releaseImmutability", State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", *desired.ReleaseImmutability)})
+}
+
+// appendLabelChanges diffs declared labels against the repository. Labels are
+// additive: a label present on GitHub but absent from configuration never
+// produces a change.
+func appendLabelChanges(ctx context.Context, service Service, plan *Plan, desired []config.LabelConfig, repository githubapi.Repository) {
+	if len(desired) == 0 {
+		return
+	}
+	actual, err := service.ListLabels(ctx, repository)
+	if err != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "labels", State: ChangeBlocked, Summary: capabilityError(err)})
+		return
+	}
+	byName := make(map[string]githubapi.Label, len(actual))
+	for _, label := range actual {
+		byName[strings.ToLower(label.Name)] = label
+	}
+	for _, label := range desired {
+		state := ChangeCreate
+		if current, ok := byName[strings.ToLower(label.Name)]; ok {
+			if strings.EqualFold(current.Color, label.Color) && current.Description == label.Description {
+				state = ChangeNoop
+			} else {
+				state = ChangeUpdate
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "label." + label.Name, State: state, Summary: "converge label"})
+	}
+}
+
+// appendMilestoneChanges diffs declared milestones against the repository,
+// matched by title. Milestones are additive; retire one with state: closed.
+func appendMilestoneChanges(ctx context.Context, service Service, plan *Plan, desired []config.MilestoneConfig, repository githubapi.Repository) {
+	if len(desired) == 0 {
+		return
+	}
+	actual, err := service.ListMilestones(ctx, repository)
+	if err != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "milestones", State: ChangeBlocked, Summary: capabilityError(err)})
+		return
+	}
+	byTitle := make(map[string]githubapi.Milestone, len(actual))
+	for _, milestone := range actual {
+		byTitle[milestone.Title] = milestone
+	}
+	for _, milestone := range desired {
+		desiredState := milestone.State
+		if desiredState == "" {
+			desiredState = "open"
+		}
+		state := ChangeCreate
+		if current, ok := byTitle[milestone.Title]; ok {
+			if milestoneConverged(desiredState, milestone, current) {
+				state = ChangeNoop
+			} else {
+				state = ChangeUpdate
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "milestone." + milestone.Title, State: state, Summary: "converge milestone"})
 	}
 }
 
@@ -954,6 +1235,9 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	}
 	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: ChangeUpdate, Summary: "configure allowed Actions and reusable workflows"})
+	}
+	if desired.ForkPullRequestApproval != "" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeManual, Summary: "accepted but not yet applied"})
 	}
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
@@ -1034,6 +1318,9 @@ func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desi
 			state = ChangeUpdate
 		}
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: state, Summary: "converge ruleset"})
+		if len(ruleset.BypassActors) > 0 {
+			plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name + ".bypassActors", State: ChangeManual, Summary: "accepted but not yet applied"})
+		}
 	}
 }
 
@@ -1094,12 +1381,30 @@ func appendDeferredChanges(plan *Plan, cfg *config.Config) {
 	if cfg.Seed != nil || len(cfg.Commands) > 0 {
 		appendSeedChanges(plan, cfg)
 	}
+	if cfg.Repository.ReleaseImmutability != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.releaseImmutability", State: ChangeUpdate, Summary: "configure after repository creation"})
+	}
+	if cfg.Repository.Archived != nil && *cfg.Repository.Archived {
+		plan.Changes = append(plan.Changes, Change{Stage: StageArchive, Resource: "repository.archived", State: ChangeUpdate, Summary: "archive repository after every other change"})
+	}
+	for _, label := range cfg.Labels {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "label." + label.Name, State: ChangeCreate, Summary: "create after repository creation"})
+	}
+	for _, milestone := range cfg.Milestones {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "milestone." + milestone.Title, State: ChangeCreate, Summary: "create after repository creation"})
+	}
 	if cfg.Actions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
+		if cfg.Actions.ForkPullRequestApproval != "" {
+			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeManual, Summary: "accepted but not yet applied"})
+		}
 	}
 	appendSecurityChanges(plan, cfg.Security)
 	for _, ruleset := range cfg.Rulesets {
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: ChangeCreate, Summary: "create after repository initialization"})
+		if len(ruleset.BypassActors) > 0 {
+			plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name + ".bypassActors", State: ChangeManual, Summary: "accepted but not yet applied"})
+		}
 	}
 	if cfg.Agents != nil {
 		for _, variable := range cfg.Agents.Variables {
@@ -1117,6 +1422,33 @@ func capabilityError(err error) string {
 		return fmt.Sprintf("GitHub capability unavailable (HTTP %d)", apiError.StatusCode)
 	}
 	return "GitHub capability check failed"
+}
+
+// milestoneDueOnWire converts a YYYY-MM-DD date into the RFC 3339 timestamp
+// GitHub's milestone API expects. An empty input clears the due date.
+func milestoneDueOnWire(dueOn string) string {
+	if dueOn == "" {
+		return ""
+	}
+	return dueOn + "T00:00:00Z"
+}
+
+// milestoneConverged reports whether a live milestone already matches the
+// declared one. GitHub returns due_on as a full timestamp even though only
+// its date part is meaningful, so dates are compared by their first 10
+// characters instead of byte-for-byte.
+func milestoneConverged(desiredState string, desired config.MilestoneConfig, actual githubapi.Milestone) bool {
+	if desired.Description != actual.Description || desiredState != actual.State {
+		return false
+	}
+	return milestoneDatePart(desired.DueOn) == milestoneDatePart(actual.DueOn)
+}
+
+func milestoneDatePart(value string) string {
+	if len(value) < 10 {
+		return value
+	}
+	return value[:10]
 }
 
 func sameStrings(left, right []string) bool {

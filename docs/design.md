@@ -122,6 +122,12 @@ midway through `apply`. Rulesets are last so they do not block the initial
 commit. The process is not transactional. A partial failure is reported and a
 later apply converges the requested state.
 
+`repository.archived` sits outside that ordering because GitHub rejects writes
+to an archived repository. `archived: false` is applied first, before any
+other change, so the rest of `apply` can run against a writable repository.
+`archived: true` is applied last of all, after rulesets, so archiving never
+blocks a change this run was also supposed to make.
+
 ## import
 
 `import <owner/repository>` fetches the live state of an existing repository

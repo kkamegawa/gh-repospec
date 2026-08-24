@@ -7,30 +7,72 @@ const CurrentSchemaVersion = 1
 
 // Config is the complete schemaVersion 1 bootstrap document.
 type Config struct {
-	SchemaVersion int              `json:"schemaVersion" yaml:"schemaVersion"`
-	Repository    RepositoryConfig `json:"repository" yaml:"repository"`
-	Seed          *SeedConfig      `json:"seed,omitempty" yaml:"seed,omitempty"`
-	Actions       *ActionsConfig   `json:"actions,omitempty" yaml:"actions,omitempty"`
-	Rulesets      []RulesetConfig  `json:"rulesets,omitempty" yaml:"rulesets,omitempty"`
-	Security      *SecurityConfig  `json:"security,omitempty" yaml:"security,omitempty"`
-	Agents        *AgentsConfig    `json:"agents,omitempty" yaml:"agents,omitempty"`
-	Commands      []CommandConfig  `json:"commands,omitempty" yaml:"commands,omitempty"`
+	SchemaVersion int               `json:"schemaVersion" yaml:"schemaVersion"`
+	Repository    RepositoryConfig  `json:"repository" yaml:"repository"`
+	Seed          *SeedConfig       `json:"seed,omitempty" yaml:"seed,omitempty"`
+	Actions       *ActionsConfig    `json:"actions,omitempty" yaml:"actions,omitempty"`
+	Rulesets      []RulesetConfig   `json:"rulesets,omitempty" yaml:"rulesets,omitempty"`
+	Security      *SecurityConfig   `json:"security,omitempty" yaml:"security,omitempty"`
+	Agents        *AgentsConfig     `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Labels        []LabelConfig     `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Milestones    []MilestoneConfig `json:"milestones,omitempty" yaml:"milestones,omitempty"`
+	Commands      []CommandConfig   `json:"commands,omitempty" yaml:"commands,omitempty"`
 }
 
 type RepositoryConfig struct {
-	Owner                 string   `json:"owner" yaml:"owner"`
-	Name                  string   `json:"name" yaml:"name"`
-	Create                bool     `json:"create" yaml:"create"`
-	Description           string   `json:"description,omitempty" yaml:"description,omitempty"`
-	Visibility            string   `json:"visibility" yaml:"visibility"`
-	AllowVisibilityChange bool     `json:"allowVisibilityChange,omitempty" yaml:"allowVisibilityChange,omitempty"`
-	DefaultBranch         string   `json:"defaultBranch,omitempty" yaml:"defaultBranch,omitempty"`
-	Topics                []string `json:"topics,omitempty" yaml:"topics,omitempty"`
-	AllowMergeCommit      *bool    `json:"allowMergeCommit,omitempty" yaml:"allowMergeCommit,omitempty"`
-	AllowSquashMerge      *bool    `json:"allowSquashMerge,omitempty" yaml:"allowSquashMerge,omitempty"`
-	AllowRebaseMerge      *bool    `json:"allowRebaseMerge,omitempty" yaml:"allowRebaseMerge,omitempty"`
-	AllowAutoMerge        *bool    `json:"allowAutoMerge,omitempty" yaml:"allowAutoMerge,omitempty"`
-	DeleteBranchOnMerge   *bool    `json:"deleteBranchOnMerge,omitempty" yaml:"deleteBranchOnMerge,omitempty"`
+	Owner       string `json:"owner" yaml:"owner"`
+	Name        string `json:"name" yaml:"name"`
+	Create      bool   `json:"create" yaml:"create"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	// Homepage is nil when unmanaged. Unlike Description, an undeclared value must
+	// never be treated as "clear the homepage" for a field this extension is only
+	// now beginning to manage on repositories that may already have one set.
+	Homepage              *string `json:"homepage,omitempty" yaml:"homepage,omitempty"`
+	Visibility            string  `json:"visibility" yaml:"visibility"`
+	AllowVisibilityChange bool    `json:"allowVisibilityChange,omitempty" yaml:"allowVisibilityChange,omitempty"`
+	DefaultBranch         string  `json:"defaultBranch,omitempty" yaml:"defaultBranch,omitempty"`
+	// Archived is reversible: false unarchives a previously archived repository.
+	Archived                 *bool               `json:"archived,omitempty" yaml:"archived,omitempty"`
+	Topics                   []string            `json:"topics,omitempty" yaml:"topics,omitempty"`
+	Features                 *RepositoryFeatures `json:"features,omitempty" yaml:"features,omitempty"`
+	AllowMergeCommit         *bool               `json:"allowMergeCommit,omitempty" yaml:"allowMergeCommit,omitempty"`
+	AllowSquashMerge         *bool               `json:"allowSquashMerge,omitempty" yaml:"allowSquashMerge,omitempty"`
+	AllowRebaseMerge         *bool               `json:"allowRebaseMerge,omitempty" yaml:"allowRebaseMerge,omitempty"`
+	AllowAutoMerge           *bool               `json:"allowAutoMerge,omitempty" yaml:"allowAutoMerge,omitempty"`
+	DeleteBranchOnMerge      *bool               `json:"deleteBranchOnMerge,omitempty" yaml:"deleteBranchOnMerge,omitempty"`
+	MergeCommitTitle         string              `json:"mergeCommitTitle,omitempty" yaml:"mergeCommitTitle,omitempty"`
+	MergeCommitMessage       string              `json:"mergeCommitMessage,omitempty" yaml:"mergeCommitMessage,omitempty"`
+	SquashMergeCommitTitle   string              `json:"squashMergeCommitTitle,omitempty" yaml:"squashMergeCommitTitle,omitempty"`
+	SquashMergeCommitMessage string              `json:"squashMergeCommitMessage,omitempty" yaml:"squashMergeCommitMessage,omitempty"`
+	// ReleaseImmutability is applied through a dedicated endpoint, not the
+	// repository update call, because GitHub does not accept it there.
+	ReleaseImmutability *bool `json:"releaseImmutability,omitempty" yaml:"releaseImmutability,omitempty"`
+}
+
+// RepositoryFeatures toggles the repository tabs. A nil field is unmanaged.
+type RepositoryFeatures struct {
+	Issues      *bool `json:"issues,omitempty" yaml:"issues,omitempty"`
+	Projects    *bool `json:"projects,omitempty" yaml:"projects,omitempty"`
+	Wiki        *bool `json:"wiki,omitempty" yaml:"wiki,omitempty"`
+	Discussions *bool `json:"discussions,omitempty" yaml:"discussions,omitempty"`
+}
+
+// LabelConfig is one declared label. Labels are additive: a label present on
+// the repository but absent here is never modified or deleted.
+type LabelConfig struct {
+	Name        string `json:"name" yaml:"name"`
+	Color       string `json:"color" yaml:"color"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+}
+
+// MilestoneConfig is one declared milestone. The title identifies it on
+// GitHub. An empty State means open; retire a milestone with state: closed
+// rather than removing it from configuration.
+type MilestoneConfig struct {
+	Title       string `json:"title" yaml:"title"`
+	Description string `json:"description,omitempty" yaml:"description,omitempty"`
+	State       string `json:"state,omitempty" yaml:"state,omitempty"`
+	DueOn       string `json:"dueOn,omitempty" yaml:"dueOn,omitempty"`
 }
 
 // SeedConfig has exactly one source. Files explicitly listed in Overwrite may
@@ -61,9 +103,11 @@ type ActionsConfig struct {
 	RequireSHAForGitHubActions     *bool                  `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
 	DefaultWorkflowPermissions     string                 `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
 	CanApprovePullRequestWorkflows *bool                  `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
-	Variables                      []VariableRef          `json:"variables,omitempty" yaml:"variables,omitempty"`
-	Secrets                        []SecretRef            `json:"secrets,omitempty" yaml:"secrets,omitempty"`
-	Environments                   []Environment          `json:"environments,omitempty" yaml:"environments,omitempty"`
+	// ForkPullRequestApproval is validated but not yet applied; see docs/design.md.
+	ForkPullRequestApproval string        `json:"forkPullRequestApproval,omitempty" yaml:"forkPullRequestApproval,omitempty"`
+	Variables               []VariableRef `json:"variables,omitempty" yaml:"variables,omitempty"`
+	Secrets                 []SecretRef   `json:"secrets,omitempty" yaml:"secrets,omitempty"`
+	Environments            []Environment `json:"environments,omitempty" yaml:"environments,omitempty"`
 }
 
 // SelectedActionsConfig is required when AllowedActions is "selected". Without it,
@@ -92,12 +136,25 @@ type Environment struct {
 }
 
 type RulesetConfig struct {
-	Name        string        `json:"name" yaml:"name"`
-	Enforcement string        `json:"enforcement" yaml:"enforcement"`
-	Target      string        `json:"target" yaml:"target"`
-	Include     []string      `json:"include" yaml:"include"`
-	Exclude     []string      `json:"exclude,omitempty" yaml:"exclude,omitempty"`
-	Rules       []RulesetRule `json:"rules" yaml:"rules"`
+	Name        string   `json:"name" yaml:"name"`
+	Enforcement string   `json:"enforcement" yaml:"enforcement"`
+	Target      string   `json:"target" yaml:"target"`
+	Include     []string `json:"include" yaml:"include"`
+	Exclude     []string `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	// BypassActors is validated but not yet applied; see docs/design.md.
+	BypassActors []BypassActorConfig `json:"bypassActors,omitempty" yaml:"bypassActors,omitempty"`
+	Rules        []RulesetRule       `json:"rules" yaml:"rules"`
+}
+
+// BypassActorConfig identifies one actor allowed to bypass a ruleset. Exactly
+// one of Role, Team, App, OrgAdmin, or CustomRole must be set.
+type BypassActorConfig struct {
+	Role       string `json:"role,omitempty" yaml:"role,omitempty"`
+	Team       string `json:"team,omitempty" yaml:"team,omitempty"`
+	App        string `json:"app,omitempty" yaml:"app,omitempty"`
+	OrgAdmin   bool   `json:"orgAdmin,omitempty" yaml:"orgAdmin,omitempty"`
+	CustomRole string `json:"customRole,omitempty" yaml:"customRole,omitempty"`
+	BypassMode string `json:"bypassMode,omitempty" yaml:"bypassMode,omitempty"`
 }
 
 // RulesetRule retains endpoint-specific parameters while keeping the

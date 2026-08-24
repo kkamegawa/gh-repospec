@@ -29,6 +29,14 @@ type API interface {
 	UpdateSecurityAndAnalysis(context.Context, Repository, SecurityAndAnalysisRequest) (RepositoryInfo, error)
 	ConfigureCodeQLDefaultSetup(context.Context, Repository, CodeQLDefaultSetupRequest) error
 	SetPrivateVulnerabilityReporting(context.Context, Repository, bool) error
+	ListLabels(context.Context, Repository) ([]Label, error)
+	CreateLabel(context.Context, Repository, Label) (Label, error)
+	UpdateLabel(context.Context, Repository, string, Label) (Label, error)
+	ListMilestones(context.Context, Repository) ([]Milestone, error)
+	CreateMilestone(context.Context, Repository, Milestone) (Milestone, error)
+	UpdateMilestone(context.Context, Repository, int, Milestone) (Milestone, error)
+	GetImmutableReleases(context.Context, Repository) (ImmutableReleases, error)
+	SetImmutableReleases(context.Context, Repository, bool) error
 	GetAgentSecretPublicKey(context.Context, Repository) (PublicKey, error)
 	PutAgentSecret(context.Context, Repository, string, EncryptedSecret) error
 	ListAgentVariables(context.Context, Repository) (AgentVariableList, error)
@@ -157,6 +165,96 @@ func (c *Client) SetPrivateVulnerabilityReporting(ctx context.Context, repo Repo
 		method = http.MethodPut
 	}
 	return c.do(ctx, method, repoPath(repo)+"/private-vulnerability-reporting", nil, nil)
+}
+
+// maxListPages bounds listAll so a misbehaving or unexpectedly large endpoint
+// fails loudly instead of looping indefinitely.
+const maxListPages = 20
+
+// listAll walks every page of a GitHub list endpoint at 100 items per page,
+// stopping at the first short page. The client does not expose response
+// headers, so this cannot follow the Link header; it relies on GitHub's
+// page-number pagination instead.
+func listAll[T any](ctx context.Context, c *Client, basePath string) ([]T, error) {
+	separator := "?"
+	if strings.Contains(basePath, "?") {
+		separator = "&"
+	}
+	var all []T
+	for page := 1; page <= maxListPages; page++ {
+		var pageResult []T
+		apiPath := fmt.Sprintf("%s%sper_page=100&page=%d", basePath, separator, page)
+		if err := c.do(ctx, http.MethodGet, apiPath, nil, &pageResult); err != nil {
+			return nil, err
+		}
+		all = append(all, pageResult...)
+		if len(pageResult) < 100 {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list %s exceeded %d pages", basePath, maxListPages)
+}
+
+// ListLabels lists every label declared on the repository.
+func (c *Client) ListLabels(ctx context.Context, repo Repository) ([]Label, error) {
+	return listAll[Label](ctx, c, repoPath(repo)+"/labels")
+}
+
+// CreateLabel creates a repository label.
+func (c *Client) CreateLabel(ctx context.Context, repo Repository, label Label) (Label, error) {
+	var result Label
+	err := c.do(ctx, http.MethodPost, repoPath(repo)+"/labels", label, &result)
+	return result, err
+}
+
+// UpdateLabel updates an existing repository label identified by its current name.
+func (c *Client) UpdateLabel(ctx context.Context, repo Repository, name string, label Label) (Label, error) {
+	if name == "" {
+		return Label{}, errors.New("label name is required")
+	}
+	var result Label
+	err := c.do(ctx, http.MethodPatch, repoPath(repo)+"/labels/"+escape(name), label, &result)
+	return result, err
+}
+
+// ListMilestones lists every milestone on the repository regardless of state,
+// so open and previously closed milestones can both be matched by title.
+func (c *Client) ListMilestones(ctx context.Context, repo Repository) ([]Milestone, error) {
+	return listAll[Milestone](ctx, c, repoPath(repo)+"/milestones?state=all")
+}
+
+// CreateMilestone creates a repository milestone.
+func (c *Client) CreateMilestone(ctx context.Context, repo Repository, milestone Milestone) (Milestone, error) {
+	var result Milestone
+	err := c.do(ctx, http.MethodPost, repoPath(repo)+"/milestones", milestone, &result)
+	return result, err
+}
+
+// UpdateMilestone updates an existing repository milestone identified by its number.
+func (c *Client) UpdateMilestone(ctx context.Context, repo Repository, number int, milestone Milestone) (Milestone, error) {
+	if number <= 0 {
+		return Milestone{}, errors.New("milestone number must be positive")
+	}
+	var result Milestone
+	err := c.do(ctx, http.MethodPatch, repoPath(repo)+"/milestones/"+strconv.Itoa(number), milestone, &result)
+	return result, err
+}
+
+// GetImmutableReleases retrieves the repository's immutable release setting.
+// This is a dedicated endpoint: the repository update call does not accept it.
+func (c *Client) GetImmutableReleases(ctx context.Context, repo Repository) (ImmutableReleases, error) {
+	var result ImmutableReleases
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/immutable-releases", nil, &result)
+	return result, err
+}
+
+// SetImmutableReleases enables or disables immutable releases for the repository.
+func (c *Client) SetImmutableReleases(ctx context.Context, repo Repository, enabled bool) error {
+	method := http.MethodDelete
+	if enabled {
+		method = http.MethodPut
+	}
+	return c.do(ctx, method, repoPath(repo)+"/immutable-releases", nil, nil)
 }
 
 // SetVulnerabilityAlerts enables or disables Dependabot alerts. Enabling alerts

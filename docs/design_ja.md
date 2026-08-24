@@ -106,6 +106,12 @@ default branch、labelとmilestoneを含むrepositoryとActions設定、secret�
 rulesetは最後に適用します。全体はトランザクションでは
 ありません。部分失敗はレポートし、後続のapplyで要求状態へ収束させます。
 
+`repository.archived`はこの適用順の外側にあります。GitHubはアーカイブ済み
+リポジトリへの書き込みを拒否するためです。`archived: false`（解除）は他の
+すべての変更より前に最初に適用し、残りの`apply`が書き込み可能なリポジトリに
+対して実行できるようにします。`archived: true`（アーカイブ）はrulesetより
+後、全体の最後に適用し、アーカイブが同じ実行内の他の変更を妨げないようにします。
+
 ## import
 
 `import <owner/repository>`は既存リポジトリのライブ状態を取得し、`schemaVersion: 1`の
