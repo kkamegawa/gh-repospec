@@ -58,11 +58,11 @@ milestone is retired with `state: closed`.
 
 `rulesets[].bypassActors` lists the actors allowed to bypass a ruleset. Each
 entry sets exactly one of `role` (`admin`, `write`, `maintain`), `team` (slug),
-`app` (slug), `orgAdmin` (`true`), or `customRole` (name), plus a `bypassMode`
-of `always` or `pull_request`. Slugs and names are resolved to the numeric
-actor IDs the rulesets API requires before any write; an unresolvable actor
-blocks the plan rather than silently dropping the bypass. A resolved
-`id:<number>` form is also accepted so that `import` output can be applied
+`app` (slug), `orgAdmin` (`true`), or `customRole` (name), and every entry
+requires a `bypassMode` of `always` or `pull_request`. Slugs and names are
+resolved to the numeric actor IDs the rulesets API requires before any write;
+an unresolvable actor blocks the plan rather than silently dropping the
+bypass. A resolved `id:<number>` form is also accepted so that `import` output can be applied
 again unchanged, which matters for private GitHub Apps whose slug the
 authenticated user cannot resolve.
 

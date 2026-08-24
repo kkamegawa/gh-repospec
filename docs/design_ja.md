@@ -53,8 +53,8 @@ duration構文を使用します。
 
 `rulesets[].bypassActors`はrulesetを迂回できるactorを列挙します。各エントリは
 `role`(`admin`、`write`、`maintain`)、`team`(slug)、`app`(slug)、`orgAdmin`(`true`)、
-`customRole`(名前)のいずれか1つと、`always`または`pull_request`の`bypassMode`を
-指定します。slugと名前は、書き込み前にruleset APIが要求する数値actor IDへ解決します。
+`customRole`(名前)のいずれか1つを指定し、さらにすべてのエントリで`always`または
+`pull_request`の`bypassMode`が必須です。slugと名前は、書き込み前にruleset APIが要求する数値actor IDへ解決します。
 解決できないactorはbypassを黙って落とさず、planをブロックします。解決済みの
 `id:<number>`形式も受け付けます。これは`import`の出力をそのまま適用し直せるようにする
 ためで、認証ユーザーがslugを解決できないprivate GitHub Appで必要になります。

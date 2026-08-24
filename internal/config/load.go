@@ -111,7 +111,9 @@ func validateRepository(r RepositoryConfig) error {
 }
 
 func validateLabels(labels []LabelConfig) error {
-	names := make([]string, 0, len(labels))
+	// GitHub treats label names case-insensitively, so "Bug" and "bug" would
+	// collide at apply time even though they are distinct strings here.
+	seen := make(map[string]struct{}, len(labels))
 	for _, label := range labels {
 		if label.Name == "" {
 			return errors.New("labels contains a label without name")
@@ -119,9 +121,13 @@ func validateLabels(labels []LabelConfig) error {
 		if !isHexColor(label.Color) {
 			return fmt.Errorf("label %q color must be six hexadecimal digits without a leading #", label.Name)
 		}
-		names = append(names, label.Name)
+		key := strings.ToLower(label.Name)
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("labels contains duplicate name %q (label names are case-insensitive)", label.Name)
+		}
+		seen[key] = struct{}{}
 	}
-	return validateUnique("labels", names)
+	return nil
 }
 
 func isHexColor(value string) bool {
@@ -269,12 +275,12 @@ func validateRulesets(rulesets []RulesetConfig) error {
 }
 
 func validateBypassActors(rulesetName string, actors []BypassActorConfig) error {
-	for _, actor := range actors {
+	for index, actor := range actors {
 		set := 0
 		if actor.Role != "" {
 			set++
 			if !oneOf(actor.Role, "admin", "write", "maintain") {
-				return fmt.Errorf("ruleset %q bypass actor role must be admin, write, or maintain", rulesetName)
+				return fmt.Errorf("ruleset %q bypassActors[%d] role must be admin, write, or maintain", rulesetName, index)
 			}
 		}
 		if actor.Team != "" {
@@ -290,10 +296,12 @@ func validateBypassActors(rulesetName string, actors []BypassActorConfig) error 
 			set++
 		}
 		if set != 1 {
-			return fmt.Errorf("ruleset %q bypass actor must set exactly one of role, team, app, orgAdmin, or customRole", rulesetName)
+			return fmt.Errorf("ruleset %q bypassActors[%d] must set exactly one of role, team, app, orgAdmin, or customRole", rulesetName, index)
 		}
-		if actor.BypassMode != "" && !oneOf(actor.BypassMode, "always", "pull_request") {
-			return fmt.Errorf("ruleset %q bypass actor bypassMode must be always or pull_request", rulesetName)
+		// docs/design.md requires every entry to carry a bypassMode alongside
+		// its actor selector.
+		if !oneOf(actor.BypassMode, "always", "pull_request") {
+			return fmt.Errorf("ruleset %q bypassActors[%d] bypassMode must be always or pull_request", rulesetName, index)
 		}
 	}
 	return nil

@@ -166,6 +166,14 @@ func TestValidateLabelColor(t *testing.T) {
 	if err := Validate(&duplicate); err == nil {
 		t.Fatal("Validate() unexpectedly accepted duplicate label names")
 	}
+
+	// GitHub label names are case-insensitive, so "Bug" and "bug" would
+	// collide at apply time even though they are distinct Go strings.
+	caseInsensitiveDuplicate := base
+	caseInsensitiveDuplicate.Labels = []LabelConfig{{Name: "Bug", Color: "d73a4a"}, {Name: "bug", Color: "425df5"}}
+	if err := Validate(&caseInsensitiveDuplicate); err == nil {
+		t.Fatal("Validate() unexpectedly accepted label names that differ only by case")
+	}
 }
 
 func TestValidateMilestones(t *testing.T) {
@@ -257,11 +265,28 @@ func TestValidateRulesetEnforcementAndBypassActors(t *testing.T) {
 	ambiguousActor := base
 	ambiguousActor.Rulesets = []RulesetConfig{{
 		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
-		Rules:        []RulesetRule{{Type: "deletion"}},
-		BypassActors: []BypassActorConfig{{Role: "admin", Team: "platform"}},
+		Rules: []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{
+			{Role: "admin", BypassMode: "pull_request"},
+			{Role: "admin", Team: "platform", BypassMode: "always"},
+		},
 	}}
-	if err := Validate(&ambiguousActor); err == nil {
+	err := Validate(&ambiguousActor)
+	if err == nil {
 		t.Fatal("Validate() unexpectedly accepted a bypass actor with two selectors set")
+	}
+	if !strings.Contains(err.Error(), "bypassActors[1]") {
+		t.Fatalf("Validate() error = %v, want it to name the offending entry index", err)
+	}
+
+	missingBypassMode := base
+	missingBypassMode.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules:        []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{{Role: "admin"}},
+	}}
+	if err := Validate(&missingBypassMode); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a bypass actor without bypassMode")
 	}
 
 	validActor := base
