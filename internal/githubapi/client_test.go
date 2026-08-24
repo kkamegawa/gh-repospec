@@ -306,6 +306,145 @@ func TestMaterializeTemplateArchiveRejectsProhibitedGitMetadata(t *testing.T) {
 	}
 }
 
+// TestListLabelsWalksEveryPage guards listAll: the client exposes no response
+// headers, so it must stop paging on the first short page rather than relying
+// on a Link header, and it must request pages in order.
+func TestListLabelsWalksEveryPage(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.URL.RawQuery)
+		if got, want := r.URL.Path, "/repos/octo/demo/labels"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		page := r.URL.Query().Get("page")
+		if got, want := r.URL.Query().Get("per_page"), "100"; got != want {
+			assertions.Errorf("per_page = %q, want %q", got, want)
+		}
+		var labels []Label
+		switch page {
+		case "1":
+			for i := 0; i < 100; i++ {
+				labels = append(labels, Label{Name: fmt.Sprintf("label-%d", i), Color: "d73a4a"})
+			}
+		case "2":
+			labels = []Label{{Name: "extra-1", Color: "d73a4a"}, {Name: "extra-2", Color: "d73a4a"}, {Name: "extra-3", Color: "d73a4a"}}
+		default:
+			assertions.Errorf("unexpected page %q", page)
+		}
+		_ = json.NewEncoder(w).Encode(labels)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels, err := client.ListLabels(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(labels) != 103 {
+		t.Fatalf("len(labels) = %d, want 103", len(labels))
+	}
+	want := []string{"per_page=100&page=1", "per_page=100&page=2"}
+	if !slices.Equal(requests, want) {
+		t.Fatalf("requests = %#v, want %#v", requests, want)
+	}
+}
+
+func TestLabelAndMilestoneEndpoints(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "POST /repos/octo/demo/labels":
+			var label Label
+			if err := json.NewDecoder(r.Body).Decode(&label); err != nil {
+				assertions.Errorf("decode label request: %v", err)
+			}
+			if label.Name != "kind/bug" || label.Color != "d73a4a" {
+				assertions.Errorf("label request = %+v", label)
+			}
+			_ = json.NewEncoder(w).Encode(label)
+		case "PATCH /repos/octo/demo/labels/kind/bug":
+			_ = json.NewEncoder(w).Encode(Label{Name: "kind/bug", Color: "425df5"})
+		case "POST /repos/octo/demo/milestones":
+			var milestone Milestone
+			if err := json.NewDecoder(r.Body).Decode(&milestone); err != nil {
+				assertions.Errorf("decode milestone request: %v", err)
+			}
+			if milestone.Title != "v1.0" || milestone.DueOn != "2026-12-01T00:00:00Z" {
+				assertions.Errorf("milestone request = %+v", milestone)
+			}
+			_ = json.NewEncoder(w).Encode(Milestone{Number: 1, Title: milestone.Title})
+		case "PATCH /repos/octo/demo/milestones/1":
+			var milestone Milestone
+			if err := json.NewDecoder(r.Body).Decode(&milestone); err != nil {
+				assertions.Errorf("decode milestone update request: %v", err)
+			}
+			if milestone.State != "closed" {
+				assertions.Errorf("milestone update request = %+v", milestone)
+			}
+			_ = json.NewEncoder(w).Encode(Milestone{Number: 1, Title: "v1.0", State: "closed"})
+		default:
+			assertions.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+	if _, err := client.CreateLabel(context.Background(), repo, Label{Name: "kind/bug", Color: "d73a4a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.UpdateLabel(context.Background(), repo, "kind/bug", Label{Name: "kind/bug", Color: "425df5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CreateMilestone(context.Background(), repo, Milestone{Title: "v1.0", DueOn: "2026-12-01T00:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.UpdateMilestone(context.Background(), repo, 1, Milestone{Title: "v1.0", State: "closed"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestImmutableReleasesTogglesWithPutAndDelete mirrors the PUT/DELETE toggle
+// idiom used for the other repository security feature switches.
+func TestImmutableReleasesTogglesWithPutAndDelete(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/immutable-releases"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		methods = append(methods, r.Method)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+	if err := client.SetImmutableReleases(context.Background(), repo, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.SetImmutableReleases(context.Background(), repo, false); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{http.MethodPut, http.MethodDelete}
+	if !slices.Equal(methods, want) {
+		t.Fatalf("methods = %#v, want %#v", methods, want)
+	}
+}
+
 func templateArchive(t *testing.T, entries map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

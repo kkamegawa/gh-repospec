@@ -35,3 +35,14 @@ func TestExampleConfigurationValidatesAgainstConfigContract(t *testing.T) {
 		t.Fatalf("Load(%q) error = %v", path, err)
 	}
 }
+
+// TestExtendedExampleConfigurationValidatesAgainstConfigContract keeps
+// docs/examples/bootstrap-extended.yaml, which demonstrates the gh-infra
+// feature review fields, in sync with the typed contract.
+func TestExtendedExampleConfigurationValidatesAgainstConfigContract(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join("..", "..", "docs", "examples", "bootstrap-extended.yaml")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load(%q) error = %v", path, err)
+	}
+}

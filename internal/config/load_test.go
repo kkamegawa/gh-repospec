@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -119,5 +120,202 @@ func TestValidateRejectsShellCommands(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Validate() unexpectedly accepted a shell command")
+	}
+}
+
+func TestValidateLabelColor(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	invalid := map[string]string{
+		"leading hash": "#d73a4a",
+		"too short":    "d73a4",
+		"not hex":      "gggggg",
+	}
+	for name, color := range invalid {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			cfg.Labels = []LabelConfig{{Name: "kind/bug", Color: color}}
+			err := Validate(&cfg)
+			if err == nil {
+				t.Fatalf("Validate() unexpectedly accepted color %q", color)
+			}
+			if !strings.Contains(err.Error(), "kind/bug") {
+				t.Fatalf("Validate() error = %v, want it to name the offending label", err)
+			}
+		})
+	}
+
+	upper := base
+	upper.Labels = []LabelConfig{{Name: "kind/bug", Color: "D73A4A"}}
+	if err := Validate(&upper); err != nil {
+		t.Fatalf("Validate() error = %v, want uppercase hex accepted", err)
+	}
+
+	empty := base
+	empty.Labels = []LabelConfig{{Color: "d73a4a"}}
+	if err := Validate(&empty); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a label without name")
+	}
+
+	duplicate := base
+	duplicate.Labels = []LabelConfig{{Name: "kind/bug", Color: "d73a4a"}, {Name: "kind/bug", Color: "425df5"}}
+	if err := Validate(&duplicate); err == nil {
+		t.Fatal("Validate() unexpectedly accepted duplicate label names")
+	}
+
+	// GitHub label names are case-insensitive, so "Bug" and "bug" would
+	// collide at apply time even though they are distinct Go strings.
+	caseInsensitiveDuplicate := base
+	caseInsensitiveDuplicate.Labels = []LabelConfig{{Name: "Bug", Color: "d73a4a"}, {Name: "bug", Color: "425df5"}}
+	if err := Validate(&caseInsensitiveDuplicate); err == nil {
+		t.Fatal("Validate() unexpectedly accepted label names that differ only by case")
+	}
+}
+
+func TestValidateMilestones(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	badState := base
+	badState.Milestones = []MilestoneConfig{{Title: "v1.0", State: "archived"}}
+	if err := Validate(&badState); err == nil {
+		t.Fatal("Validate() unexpectedly accepted an invalid milestone state")
+	} else if !strings.Contains(err.Error(), "v1.0") {
+		t.Fatalf("Validate() error = %v, want it to name the offending milestone", err)
+	}
+
+	for name, dueOn := range map[string]string{
+		"invalid month": "2026-13-01",
+		"invalid day":   "2026-02-30",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cfg := base
+			cfg.Milestones = []MilestoneConfig{{Title: "v1.0", DueOn: dueOn}}
+			if err := Validate(&cfg); err == nil {
+				t.Fatalf("Validate() unexpectedly accepted dueOn %q", dueOn)
+			}
+		})
+	}
+
+	valid := base
+	valid.Milestones = []MilestoneConfig{{Title: "v1.0", State: "closed", DueOn: "2026-12-01"}}
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want a valid milestone accepted", err)
+	}
+
+	noTitle := base
+	noTitle.Milestones = []MilestoneConfig{{State: "open"}}
+	if err := Validate(&noTitle); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a milestone without title")
+	}
+
+	duplicate := base
+	duplicate.Milestones = []MilestoneConfig{{Title: "v1.0"}, {Title: "v1.0"}}
+	if err := Validate(&duplicate); err == nil {
+		t.Fatal("Validate() unexpectedly accepted duplicate milestone titles")
+	}
+}
+
+func TestValidateRepositoryMergeCommitEnums(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	invalid := base
+	invalid.Repository.MergeCommitTitle = "NOT_A_VALUE"
+	if err := Validate(&invalid); err == nil {
+		t.Fatal("Validate() unexpectedly accepted an invalid mergeCommitTitle")
+	}
+
+	valid := base
+	valid.Repository.MergeCommitTitle = "PR_TITLE"
+	valid.Repository.MergeCommitMessage = "PR_BODY"
+	valid.Repository.SquashMergeCommitTitle = "COMMIT_OR_PR_TITLE"
+	valid.Repository.SquashMergeCommitMessage = "COMMIT_MESSAGES"
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want valid merge commit enums accepted", err)
+	}
+}
+
+func TestValidateRulesetEnforcementAndBypassActors(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	evaluate := base
+	evaluate.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "evaluate", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules: []RulesetRule{{Type: "deletion"}},
+	}}
+	if err := Validate(&evaluate); err != nil {
+		t.Fatalf("Validate() error = %v, want evaluate enforcement accepted", err)
+	}
+
+	ambiguousActor := base
+	ambiguousActor.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules: []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{
+			{Role: "admin", BypassMode: "pull_request"},
+			{Role: "admin", Team: "platform", BypassMode: "always"},
+		},
+	}}
+	err := Validate(&ambiguousActor)
+	if err == nil {
+		t.Fatal("Validate() unexpectedly accepted a bypass actor with two selectors set")
+	}
+	if !strings.Contains(err.Error(), "bypassActors[1]") {
+		t.Fatalf("Validate() error = %v, want it to name the offending entry index", err)
+	}
+
+	missingBypassMode := base
+	missingBypassMode.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules:        []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{{Role: "admin"}},
+	}}
+	if err := Validate(&missingBypassMode); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a bypass actor without bypassMode")
+	}
+
+	validActor := base
+	validActor.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules:        []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{{Role: "admin", BypassMode: "pull_request"}, {App: "dependabot", BypassMode: "always"}},
+	}}
+	if err := Validate(&validActor); err != nil {
+		t.Fatalf("Validate() error = %v, want valid bypass actors accepted", err)
+	}
+}
+
+func TestValidateActionsForkPullRequestApproval(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	invalid := base
+	invalid.Actions = &ActionsConfig{ForkPullRequestApproval: "everyone"}
+	if err := Validate(&invalid); err == nil {
+		t.Fatal("Validate() unexpectedly accepted an invalid forkPullRequestApproval")
+	}
+
+	valid := base
+	valid.Actions = &ActionsConfig{ForkPullRequestApproval: "all_external_contributors"}
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want a valid forkPullRequestApproval accepted", err)
 	}
 }

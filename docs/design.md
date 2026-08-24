@@ -58,11 +58,11 @@ milestone is retired with `state: closed`.
 
 `rulesets[].bypassActors` lists the actors allowed to bypass a ruleset. Each
 entry sets exactly one of `role` (`admin`, `write`, `maintain`), `team` (slug),
-`app` (slug), `orgAdmin` (`true`), or `customRole` (name), plus a `bypassMode`
-of `always` or `pull_request`. Slugs and names are resolved to the numeric
-actor IDs the rulesets API requires before any write; an unresolvable actor
-blocks the plan rather than silently dropping the bypass. A resolved
-`id:<number>` form is also accepted so that `import` output can be applied
+`app` (slug), `orgAdmin` (`true`), or `customRole` (name), and every entry
+requires a `bypassMode` of `always` or `pull_request`. Slugs and names are
+resolved to the numeric actor IDs the rulesets API requires before any write;
+an unresolvable actor blocks the plan rather than silently dropping the
+bypass. A resolved `id:<number>` form is also accepted so that `import` output can be applied
 again unchanged, which matters for private GitHub Apps whose slug the
 authenticated user cannot resolve.
 
@@ -121,6 +121,12 @@ so a name that cannot be resolved is reported by `plan` instead of failing
 midway through `apply`. Rulesets are last so they do not block the initial
 commit. The process is not transactional. A partial failure is reported and a
 later apply converges the requested state.
+
+`repository.archived` sits outside that ordering because GitHub rejects writes
+to an archived repository. `archived: false` is applied first, before any
+other change, so the rest of `apply` can run against a writable repository.
+`archived: true` is applied last of all, after rulesets, so archiving never
+blocks a change this run was also supposed to make.
 
 ## import
 

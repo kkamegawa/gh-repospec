@@ -53,8 +53,8 @@ duration構文を使用します。
 
 `rulesets[].bypassActors`はrulesetを迂回できるactorを列挙します。各エントリは
 `role`(`admin`、`write`、`maintain`)、`team`(slug)、`app`(slug)、`orgAdmin`(`true`)、
-`customRole`(名前)のいずれか1つと、`always`または`pull_request`の`bypassMode`を
-指定します。slugと名前は、書き込み前にruleset APIが要求する数値actor IDへ解決します。
+`customRole`(名前)のいずれか1つを指定し、さらにすべてのエントリで`always`または
+`pull_request`の`bypassMode`が必須です。slugと名前は、書き込み前にruleset APIが要求する数値actor IDへ解決します。
 解決できないactorはbypassを黙って落とさず、planをブロックします。解決済みの
 `id:<number>`形式も受け付けます。これは`import`の出力をそのまま適用し直せるようにする
 ためで、認証ユーザーがslugを解決できないprivate GitHub Appで必要になります。
@@ -105,6 +105,12 @@ default branch、labelとmilestoneを含むrepositoryとActions設定、secret�
 解決できない名前は`apply`の途中で失敗せず`plan`が報告します。初期コミットを妨げないよう
 rulesetは最後に適用します。全体はトランザクションでは
 ありません。部分失敗はレポートし、後続のapplyで要求状態へ収束させます。
+
+`repository.archived`はこの適用順の外側にあります。GitHubはアーカイブ済み
+リポジトリへの書き込みを拒否するためです。`archived: false`（解除）は他の
+すべての変更より前に最初に適用し、残りの`apply`が書き込み可能なリポジトリに
+対して実行できるようにします。`archived: true`（アーカイブ）はrulesetより
+後、全体の最後に適用し、アーカイブが同じ実行内の他の変更を妨げないようにします。
 
 ## import
 

@@ -28,10 +28,11 @@ func TestBuildIsReadOnlyOrdersChangesAndReportsBlockedState(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	archived := true
 	plan, err := engine.Build(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
 		Repository: config.RepositoryConfig{
-			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured",
+			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured", Archived: &archived,
 		},
 		Actions: &config.ActionsConfig{Enabled: &enabled},
 		Security: &config.SecurityConfig{
@@ -53,6 +54,9 @@ func TestBuildIsReadOnlyOrdersChangesAndReportsBlockedState(t *testing.T) {
 	if !hasChange(plan, "command.initialize", ChangeManual) {
 		t.Fatalf("plan did not report the command approval requirement: %#v", plan.Changes)
 	}
+	if !hasChange(plan, "repository.archived", ChangeUpdate) {
+		t.Fatalf("plan did not report the archive request: %#v", plan.Changes)
+	}
 	if len(service.mutations) != 0 {
 		t.Fatalf("Build() mutated GitHub state: %#v", service.mutations)
 	}
@@ -60,6 +64,9 @@ func TestBuildIsReadOnlyOrdersChangesAndReportsBlockedState(t *testing.T) {
 		if stageRank(plan.Changes[index-1].Stage) > stageRank(plan.Changes[index].Stage) {
 			t.Fatalf("plan stages are not ordered: %#v", plan.Changes)
 		}
+	}
+	if last := plan.Changes[len(plan.Changes)-1]; last.Stage != StageArchive {
+		t.Fatalf("last change stage = %q, want %q: %#v", last.Stage, StageArchive, plan.Changes)
 	}
 }
 
@@ -155,6 +162,75 @@ func TestApplyOrdersSecurityAroundContentAndAutomation(t *testing.T) {
 	}
 }
 
+// TestApplyUnarchivesBeforeEveryOtherChange guards the apply order required
+// because GitHub rejects writes to an archived repository: unarchiving must
+// happen before any other mutation, including the repository settings PATCH
+// that would otherwise race it.
+func TestApplyUnarchivesBeforeEveryOtherChange(t *testing.T) {
+	t.Parallel()
+	archived := false
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public", Archived: true},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository: config.RepositoryConfig{
+			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured", Archived: &archived,
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.mutations) == 0 || service.mutations[0] != "unarchive" {
+		t.Fatalf("apply order = %#v, want unarchive first", service.mutations)
+	}
+	if service.repository.Archived {
+		t.Fatalf("repository archived = %t, want false after apply", service.repository.Archived)
+	}
+}
+
+// TestApplyArchivesAfterEveryOtherChange guards the opposite order: archiving
+// makes the repository read-only, so it must run last, after settings,
+// labels, and rulesets.
+func TestApplyArchivesAfterEveryOtherChange(t *testing.T) {
+	t.Parallel()
+	archived := true
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Archived: &archived},
+		Labels:        []config.LabelConfig{{Name: "kind/bug", Color: "d73a4a"}},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules: []config.RulesetRule{{Type: "deletion"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.mutations) == 0 || service.mutations[len(service.mutations)-1] != "archive" {
+		t.Fatalf("apply order = %#v, want archive last", service.mutations)
+	}
+	label := slices.Index(service.mutations, "label")
+	ruleset := slices.Index(service.mutations, "ruleset")
+	archiveIndex := slices.Index(service.mutations, "archive")
+	if label == -1 || ruleset == -1 || archiveIndex < label || archiveIndex < ruleset {
+		t.Fatalf("archive did not run after labels and rulesets: %#v", service.mutations)
+	}
+}
+
 // TestApplyReachesAgentSecretsWithoutAgentVariables guards against
 // applyAgentVariables returning early whenever agents.variables is empty,
 // which used to skip agents.secrets entirely for configs that only declare
@@ -245,7 +321,14 @@ type recordingService struct {
 }
 
 func (s *recordingService) UpdateRepository(ctx context.Context, repository githubapi.Repository, request githubapi.UpdateRepositoryRequest) (githubapi.RepositoryInfo, error) {
-	s.mutations = append(s.mutations, "repository")
+	switch {
+	case request.Archived != nil && *request.Archived:
+		s.mutations = append(s.mutations, "archive")
+	case request.Archived != nil && !*request.Archived:
+		s.mutations = append(s.mutations, "unarchive")
+	default:
+		s.mutations = append(s.mutations, "repository")
+	}
 	return s.fakeService.UpdateRepository(ctx, repository, request)
 }
 
@@ -310,4 +393,29 @@ func (s *recordingService) GetTree(context.Context, githubapi.Repository, string
 
 func (s *recordingService) GetBlob(context.Context, githubapi.Repository, string) (githubapi.GitBlob, error) {
 	return s.blob, nil
+}
+
+func (s *recordingService) CreateLabel(ctx context.Context, repository githubapi.Repository, label githubapi.Label) (githubapi.Label, error) {
+	s.mutations = append(s.mutations, "label")
+	return s.fakeService.CreateLabel(ctx, repository, label)
+}
+
+func (s *recordingService) UpdateLabel(ctx context.Context, repository githubapi.Repository, name string, label githubapi.Label) (githubapi.Label, error) {
+	s.mutations = append(s.mutations, "label")
+	return s.fakeService.UpdateLabel(ctx, repository, name, label)
+}
+
+func (s *recordingService) CreateMilestone(ctx context.Context, repository githubapi.Repository, milestone githubapi.Milestone) (githubapi.Milestone, error) {
+	s.mutations = append(s.mutations, "milestone")
+	return s.fakeService.CreateMilestone(ctx, repository, milestone)
+}
+
+func (s *recordingService) UpdateMilestone(ctx context.Context, repository githubapi.Repository, number int, milestone githubapi.Milestone) (githubapi.Milestone, error) {
+	s.mutations = append(s.mutations, "milestone")
+	return s.fakeService.UpdateMilestone(ctx, repository, number, milestone)
+}
+
+func (s *recordingService) SetImmutableReleases(ctx context.Context, repository githubapi.Repository, enabled bool) error {
+	s.mutations = append(s.mutations, "releaseImmutability")
+	return s.fakeService.SetImmutableReleases(ctx, repository, enabled)
 }

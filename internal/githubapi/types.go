@@ -17,20 +17,30 @@ func (r Repository) String() string { return r.Owner + "/" + r.Name }
 
 // RepositoryInfo is the subset of repository state needed by the planner.
 type RepositoryInfo struct {
-	ID                  int64    `json:"id"`
-	Owner               Owner    `json:"owner"`
-	Name                string   `json:"name"`
-	FullName            string   `json:"full_name"`
-	Description         string   `json:"description"`
-	Private             bool     `json:"private"`
-	Visibility          string   `json:"visibility"`
-	DefaultBranch       string   `json:"default_branch"`
-	Topics              []string `json:"topics"`
-	AllowSquashMerge    bool     `json:"allow_squash_merge"`
-	AllowMergeCommit    bool     `json:"allow_merge_commit"`
-	AllowRebaseMerge    bool     `json:"allow_rebase_merge"`
-	AllowAutoMerge      bool     `json:"allow_auto_merge"`
-	DeleteBranchOnMerge bool     `json:"delete_branch_on_merge"`
+	ID                       int64    `json:"id"`
+	Owner                    Owner    `json:"owner"`
+	Name                     string   `json:"name"`
+	FullName                 string   `json:"full_name"`
+	Description              string   `json:"description"`
+	Homepage                 string   `json:"homepage"`
+	Private                  bool     `json:"private"`
+	Visibility               string   `json:"visibility"`
+	DefaultBranch            string   `json:"default_branch"`
+	Archived                 bool     `json:"archived"`
+	Topics                   []string `json:"topics"`
+	HasIssues                bool     `json:"has_issues"`
+	HasProjects              bool     `json:"has_projects"`
+	HasWiki                  bool     `json:"has_wiki"`
+	HasDiscussions           bool     `json:"has_discussions"`
+	AllowSquashMerge         bool     `json:"allow_squash_merge"`
+	AllowMergeCommit         bool     `json:"allow_merge_commit"`
+	AllowRebaseMerge         bool     `json:"allow_rebase_merge"`
+	AllowAutoMerge           bool     `json:"allow_auto_merge"`
+	DeleteBranchOnMerge      bool     `json:"delete_branch_on_merge"`
+	MergeCommitTitle         string   `json:"merge_commit_title"`
+	MergeCommitMessage       string   `json:"merge_commit_message"`
+	SquashMergeCommitTitle   string   `json:"squash_merge_commit_title"`
+	SquashMergeCommitMessage string   `json:"squash_merge_commit_message"`
 }
 
 // Owner identifies the account that owns a repository.
@@ -56,16 +66,28 @@ type CreateRepositoryRequest struct {
 }
 
 // UpdateRepositoryRequest contains only fields that GitHub's update repository API supports.
+// Pointer and pointer-like fields are sent only when set; false and empty-string
+// values on those fields are meaningful (they clear or disable) rather than absent.
 type UpdateRepositoryRequest struct {
-	Description         *string `json:"description,omitempty"`
-	Private             *bool   `json:"private,omitempty"`
-	Visibility          string  `json:"visibility,omitempty"`
-	DefaultBranch       string  `json:"default_branch,omitempty"`
-	AllowSquashMerge    *bool   `json:"allow_squash_merge,omitempty"`
-	AllowMergeCommit    *bool   `json:"allow_merge_commit,omitempty"`
-	AllowRebaseMerge    *bool   `json:"allow_rebase_merge,omitempty"`
-	AllowAutoMerge      *bool   `json:"allow_auto_merge,omitempty"`
-	DeleteBranchOnMerge *bool   `json:"delete_branch_on_merge,omitempty"`
+	Description              *string `json:"description,omitempty"`
+	Homepage                 *string `json:"homepage,omitempty"`
+	Private                  *bool   `json:"private,omitempty"`
+	Visibility               string  `json:"visibility,omitempty"`
+	DefaultBranch            string  `json:"default_branch,omitempty"`
+	Archived                 *bool   `json:"archived,omitempty"`
+	HasIssues                *bool   `json:"has_issues,omitempty"`
+	HasProjects              *bool   `json:"has_projects,omitempty"`
+	HasWiki                  *bool   `json:"has_wiki,omitempty"`
+	HasDiscussions           *bool   `json:"has_discussions,omitempty"`
+	AllowSquashMerge         *bool   `json:"allow_squash_merge,omitempty"`
+	AllowMergeCommit         *bool   `json:"allow_merge_commit,omitempty"`
+	AllowRebaseMerge         *bool   `json:"allow_rebase_merge,omitempty"`
+	AllowAutoMerge           *bool   `json:"allow_auto_merge,omitempty"`
+	DeleteBranchOnMerge      *bool   `json:"delete_branch_on_merge,omitempty"`
+	MergeCommitTitle         string  `json:"merge_commit_title,omitempty"`
+	MergeCommitMessage       string  `json:"merge_commit_message,omitempty"`
+	SquashMergeCommitTitle   string  `json:"squash_merge_commit_title,omitempty"`
+	SquashMergeCommitMessage string  `json:"squash_merge_commit_message,omitempty"`
 }
 
 // ActionsPermissions is the repository Actions policy.
@@ -248,6 +270,33 @@ type CommitResult struct {
 	CommitSHA   string
 	TreeSHA     string
 	PreviousSHA string
+}
+
+// Label is a repository issue label. Color is six hexadecimal digits without
+// a leading '#'.
+type Label struct {
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description,omitempty"`
+}
+
+// Milestone is a repository milestone. Number is server-assigned; this
+// extension matches milestones by Title, which GitHub does not deduplicate
+// on its own but this contract requires to be unique.
+type Milestone struct {
+	Number      int    `json:"number,omitempty"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	State       string `json:"state,omitempty"`
+	// DueOn is an RFC 3339 timestamp on the wire even though GitHub stores and
+	// displays only the date part.
+	DueOn string `json:"due_on,omitempty"`
+}
+
+// ImmutableReleases is the repository immutable release setting.
+type ImmutableReleases struct {
+	Enabled         bool `json:"enabled"`
+	EnforcedByOwner bool `json:"enforced_by_owner"`
 }
 
 // AgentVariable represents a repository Copilot coding agent variable.

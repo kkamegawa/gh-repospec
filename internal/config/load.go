@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -78,6 +79,12 @@ func Validate(cfg *Config) error {
 	if err := validateAgents(cfg.Agents); err != nil {
 		return err
 	}
+	if err := validateLabels(cfg.Labels); err != nil {
+		return err
+	}
+	if err := validateMilestones(cfg.Milestones); err != nil {
+		return err
+	}
 	return validateCommands(cfg.Commands)
 }
 
@@ -88,7 +95,74 @@ func validateRepository(r RepositoryConfig) error {
 	if !oneOf(r.Visibility, "public", "private") {
 		return errors.New("repository.visibility must be public or private")
 	}
+	if r.MergeCommitTitle != "" && !oneOf(r.MergeCommitTitle, "MERGE_MESSAGE", "PR_TITLE") {
+		return errors.New("repository.mergeCommitTitle must be MERGE_MESSAGE or PR_TITLE")
+	}
+	if r.MergeCommitMessage != "" && !oneOf(r.MergeCommitMessage, "PR_TITLE", "PR_BODY", "BLANK") {
+		return errors.New("repository.mergeCommitMessage must be PR_TITLE, PR_BODY, or BLANK")
+	}
+	if r.SquashMergeCommitTitle != "" && !oneOf(r.SquashMergeCommitTitle, "PR_TITLE", "COMMIT_OR_PR_TITLE") {
+		return errors.New("repository.squashMergeCommitTitle must be PR_TITLE or COMMIT_OR_PR_TITLE")
+	}
+	if r.SquashMergeCommitMessage != "" && !oneOf(r.SquashMergeCommitMessage, "COMMIT_MESSAGES", "PR_BODY", "BLANK") {
+		return errors.New("repository.squashMergeCommitMessage must be COMMIT_MESSAGES, PR_BODY, or BLANK")
+	}
 	return validateUnique("repository.topics", r.Topics)
+}
+
+func validateLabels(labels []LabelConfig) error {
+	// GitHub treats label names case-insensitively, so "Bug" and "bug" would
+	// collide at apply time even though they are distinct strings here.
+	seen := make(map[string]struct{}, len(labels))
+	for _, label := range labels {
+		if label.Name == "" {
+			return errors.New("labels contains a label without name")
+		}
+		if !isHexColor(label.Color) {
+			return fmt.Errorf("label %q color must be six hexadecimal digits without a leading #", label.Name)
+		}
+		key := strings.ToLower(label.Name)
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("labels contains duplicate name %q (label names are case-insensitive)", label.Name)
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
+}
+
+func isHexColor(value string) bool {
+	if len(value) != 6 {
+		return false
+	}
+	for _, r := range value {
+		switch {
+		case r >= '0' && r <= '9':
+		case r >= 'a' && r <= 'f':
+		case r >= 'A' && r <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func validateMilestones(milestones []MilestoneConfig) error {
+	titles := make([]string, 0, len(milestones))
+	for _, milestone := range milestones {
+		if milestone.Title == "" {
+			return errors.New("milestones contains a milestone without title")
+		}
+		if milestone.State != "" && !oneOf(milestone.State, "open", "closed") {
+			return fmt.Errorf("milestone %q state must be open or closed", milestone.Title)
+		}
+		if milestone.DueOn != "" {
+			if _, err := time.Parse("2006-01-02", milestone.DueOn); err != nil {
+				return fmt.Errorf("milestone %q dueOn must be a YYYY-MM-DD date", milestone.Title)
+			}
+		}
+		titles = append(titles, milestone.Title)
+	}
+	return validateUnique("milestones", titles)
 }
 
 func validateSeed(seed *SeedConfig) error {
@@ -166,6 +240,9 @@ func validateActions(actions *ActionsConfig) error {
 	if actions.DefaultWorkflowPermissions != "" && !oneOf(actions.DefaultWorkflowPermissions, "read", "write") {
 		return errors.New("actions.defaultWorkflowPermissions must be read or write")
 	}
+	if actions.ForkPullRequestApproval != "" && !oneOf(actions.ForkPullRequestApproval, "first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors") {
+		return errors.New("actions.forkPullRequestApproval must be first_time_contributors_new_to_github, first_time_contributors, or all_external_contributors")
+	}
 	if err := validateVariables("actions.variables", actions.Variables); err != nil {
 		return err
 	}
@@ -181,17 +258,53 @@ func validateRulesets(rulesets []RulesetConfig) error {
 		if ruleset.Name == "" || ruleset.Target == "" || len(ruleset.Include) == 0 {
 			return errors.New("rulesets require name, target, and at least one include pattern")
 		}
-		if !oneOf(ruleset.Enforcement, "active", "disabled") {
-			return fmt.Errorf("ruleset %q enforcement must be active or disabled for the supported GitHub.com plans", ruleset.Name)
+		if !oneOf(ruleset.Enforcement, "active", "evaluate", "disabled") {
+			return fmt.Errorf("ruleset %q enforcement must be active, evaluate, or disabled", ruleset.Name)
 		}
 		for _, rule := range ruleset.Rules {
 			if rule.Type == "" {
 				return fmt.Errorf("ruleset %q has a rule without type", ruleset.Name)
 			}
 		}
+		if err := validateBypassActors(ruleset.Name, ruleset.BypassActors); err != nil {
+			return err
+		}
 		names = append(names, ruleset.Name)
 	}
 	return validateUnique("rulesets", names)
+}
+
+func validateBypassActors(rulesetName string, actors []BypassActorConfig) error {
+	for index, actor := range actors {
+		set := 0
+		if actor.Role != "" {
+			set++
+			if !oneOf(actor.Role, "admin", "write", "maintain") {
+				return fmt.Errorf("ruleset %q bypassActors[%d] role must be admin, write, or maintain", rulesetName, index)
+			}
+		}
+		if actor.Team != "" {
+			set++
+		}
+		if actor.App != "" {
+			set++
+		}
+		if actor.OrgAdmin {
+			set++
+		}
+		if actor.CustomRole != "" {
+			set++
+		}
+		if set != 1 {
+			return fmt.Errorf("ruleset %q bypassActors[%d] must set exactly one of role, team, app, orgAdmin, or customRole", rulesetName, index)
+		}
+		// docs/design.md requires every entry to carry a bypassMode alongside
+		// its actor selector.
+		if !oneOf(actor.BypassMode, "always", "pull_request") {
+			return fmt.Errorf("ruleset %q bypassActors[%d] bypassMode must be always or pull_request", rulesetName, index)
+		}
+	}
+	return nil
 }
 
 func validateAgents(agents *AgentsConfig) error {
