@@ -1,6 +1,6 @@
-name: gh-repobootstrapper
+name: gh-repospec
 version: 1.0.0
-description: APM project for gh-repobootstrapper
+description: APM project for gh-repospec
 author: Kazushi Kamegawa
 # Which agent platforms to deploy to.
 # Resolution order: --target flag > this field > auto-detect from filesystem.

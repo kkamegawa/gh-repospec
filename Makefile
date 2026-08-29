@@ -1,8 +1,8 @@
 GO_PACKAGES := ./...
-COMMAND := ./cmd/gh-repobootstrapper
-BINARY := bin/gh-repobootstrapper
+COMMAND := ./cmd/gh-repospec
+BINARY := bin/gh-repospec
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -X github.com/kkamegawa/gh-repobootstrapper/internal/cli.Version=$(VERSION)
+LDFLAGS := -X github.com/kkamegawa/gh-repospec/internal/cli.Version=$(VERSION)
 
 .PHONY: all test test-race vet build lint fmt clean
 

@@ -6,7 +6,7 @@ packages=(./...)
 go test -shuffle=on "${packages[@]}"
 go vet "${packages[@]}"
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 
 if [[ "${RACE:-false}" == "true" ]]; then
   go test -race -shuffle=on -count=1 "${packages[@]}"

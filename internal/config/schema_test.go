@@ -7,14 +7,14 @@ import (
 	"testing"
 )
 
-// TestSchemaDocumentIsValidJSON guards schema/repobootstrapper.schema.json
+// TestSchemaDocumentIsValidJSON guards schema/repospec.schema.json
 // against syntax regressions. Nothing else in the build parses this file, so
 // a malformed document (an unbalanced brace, an unsupported regex flag) would
 // otherwise reach users only when an editor or an external validator loads
 // it.
 func TestSchemaDocumentIsValidJSON(t *testing.T) {
 	t.Parallel()
-	path := filepath.Join("..", "..", "schema", "repobootstrapper.schema.json")
+	path := filepath.Join("..", "..", "schema", "repospec.schema.json")
 	data, err := os.ReadFile(path) //nolint:gosec // the test path comes from t.TempDir
 	if err != nil {
 		t.Fatalf("read schema document: %v", err)

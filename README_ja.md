@@ -1,6 +1,6 @@
-# gh-repobootstrapper
+# gh-repospec
 
-`gh-repobootstrapper` は、YAML または JSON の宣言ファイルに基づいて GitHub.com リポジトリを収束させる、プリコンパイル済み GitHub CLI 拡張機能です。現在の GitHub CLI ログインを利用し、トークンを保存・表示しません。
+`gh-repospec` は、YAML または JSON の宣言ファイルに基づいて GitHub.com リポジトリを収束させる、プリコンパイル済み GitHub CLI 拡張機能です。現在の GitHub CLI ログインを利用し、トークンを保存・表示しません。
 
 [English](README.md)
 
@@ -15,20 +15,20 @@ Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team
 公開済みリリースをインストールします。
 
 ```text
-gh extension install kkamegawa/gh-repobootstrapper
+gh extension install kkamegawa/gh-repospec
 ```
 
 ローカル開発では、`bin` 配下へ実行ファイルをビルドしてから、そのディレクトリを拡張機能としてインストールします。
 
 ```bash
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 gh extension install ./bin
 ```
 
 ```powershell
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 gh extension install ./bin
 ```
 
@@ -39,22 +39,22 @@ gh extension install ./bin
 [`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml) をコピーして編集します。例にはプレースホルダーを使っているため、対象リポジトリと seed source を置き換えてください。[`docs/examples/bootstrap-extended.yaml`](docs/examples/bootstrap-extended.yaml) は、仕様レビューで追加した label、milestone、bypass actor、repository 設定の例です。
 
 ```text
-gh repobootstrapper validate --file bootstrap.yaml
-gh repobootstrapper plan --file bootstrap.yaml
-gh repobootstrapper apply --file bootstrap.yaml
+gh repospec validate --file bootstrap.yaml
+gh repospec plan --file bootstrap.yaml
+gh repospec apply --file bootstrap.yaml
 ```
 
 既存リポジトリから始める場合は、`import` が現在の設定を設定ファイルとして書き出します。手作業で書き写す必要はありません。
 
 ```text
-gh repobootstrapper import OWNER/REPOSITORY > bootstrap.yaml
+gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 ```
 
 `plan` は読み取り専用です。`apply` はプランを再計算・表示し、`--yes` がない限り確認を求めます。設定済み command は `--yes` の有無にかかわらず、個別の `--approve-command <id>` が必要です。
 
 ## 設定
 
-公開設定契約は `schemaVersion: 1` です。YAML と JSON を受け付け、JSON Schema は [`schema/repobootstrapper.schema.json`](schema/repobootstrapper.schema.json) にあります。
+公開設定契約は `schemaVersion: 1` です。YAML と JSON を受け付け、JSON Schema は [`schema/repospec.schema.json`](schema/repospec.schema.json) にあります。
 
 未知フィールド、YAML の重複キー、不正な enum 値、複数ドキュメント、暗黙的な環境変数展開は拒否します。相対的な directory / ZIP seed のパスは、設定ファイルからの相対パスです。
 
@@ -75,11 +75,11 @@ secret に記載するのは値ではなく `sourceEnv` 名です。既定の更
 ## コマンド
 
 ```text
-gh repobootstrapper validate --file <path>
-gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json] [--ci]
-gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
-gh repobootstrapper import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
-gh repobootstrapper version
+gh repospec validate --file <path>
+gh repospec plan --file <path> [-R owner/repository] [--format text|json] [--ci]
+gh repospec apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
+gh repospec import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
+gh repospec version
 ```
 
 `-R` / `--repo` は設定ファイル内の対象リポジトリを上書きします。`--approve-command` は繰り返し指定でき、設定済み command ごとに必須です。`--version` / `-v` は `version` の別名として使用できます。
@@ -93,6 +93,17 @@ gh repobootstrapper version
 | `2` | `plan --ci` が 1 件以上の差分を検出しました。 |
 
 [`docs/examples/workflows`](docs/examples/workflows) に、マージ時に apply する workflow と、スケジュール実行でドリフトを検出する workflow があります。
+
+### 短縮呼び出し
+
+`gh alias set` で個人用の短縮名を作成できます。
+
+```text
+gh alias set rb repospec
+gh rb plan --file bootstrap.yaml
+```
+
+Windows の Command Prompt ではシングルクォートではなくダブルクォートで expansion を囲んでください。
 
 ## 安全性
 
@@ -117,14 +128,14 @@ APM依存ディレクトリはネストしたGo moduleとして分離してい�
 go test ./...
 go vet ./...
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 ```
 
 ```powershell
 go test ./...
 go vet ./...
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
 貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design_ja.md](docs/design_ja.md) を参照してください。`babarot/gh-infra` との機能比較と、本拡張が意図的に行わない範囲は [docs/gh-infra-parity_ja.md](docs/gh-infra-parity_ja.md) に記録しています。

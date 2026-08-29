@@ -11,9 +11,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/seed"
+	"github.com/kkamegawa/gh-repospec/internal/config"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/seed"
 )
 
 func TestBuildIsReadOnlyOrdersChangesAndReportsBlockedState(t *testing.T) {

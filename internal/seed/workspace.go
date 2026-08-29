@@ -20,7 +20,7 @@ type Workspace struct {
 
 // NewWorkspace creates an empty, private temporary workspace.
 func NewWorkspace() (*Workspace, error) {
-	root, err := os.MkdirTemp("", "gh-repobootstrapper-")
+	root, err := os.MkdirTemp("", "gh-repospec-")
 	if err != nil {
 		return nil, fmt.Errorf("create temporary workspace: %w", err)
 	}

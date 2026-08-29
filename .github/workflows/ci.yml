@@ -40,7 +40,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p bin
-          go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+          go build -o bin/gh-repospec ./cmd/gh-repospec
 
       - name: Run race detector
         if: runner.os == 'Linux'

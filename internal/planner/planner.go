@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/seed"
+	"github.com/kkamegawa/gh-repospec/internal/config"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/seed"
 )
 
 // ChangeState describes the action a plan can take for one resource.

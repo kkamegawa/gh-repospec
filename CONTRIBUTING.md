@@ -1,4 +1,4 @@
-# Contributing to gh-repobootstrapper
+# Contributing to gh-repospec
 
 Thank you for improving the extension. By contributing, you agree that your contributions are licensed under the repository's MIT License.
 
@@ -18,14 +18,14 @@ Fork or clone the repository, create a focused branch, and run the following che
 go test ./...
 go vet ./...
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 ```
 
 ```powershell
 go test ./...
 go vet ./...
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
 Use an imperative English commit subject, for example `Add ruleset validation`.

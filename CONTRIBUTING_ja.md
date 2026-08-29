@@ -1,4 +1,4 @@
-# gh-repobootstrapper への貢献
+# gh-repospec への貢献
 
 拡張機能の改善にご協力いただきありがとうございます。貢献内容は、このリポジトリの MIT License の下で提供されることに同意したものとします。
 
@@ -18,14 +18,14 @@ fork または clone 後に目的を絞った branch を作成し、pull request
 go test ./...
 go vet ./...
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 ```
 
 ```powershell
 go test ./...
 go vet ./...
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
 コミット件名は、`Add ruleset validation` のように英語の命令形で記述してください。

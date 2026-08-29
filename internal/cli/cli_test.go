@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/planner"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/planner"
 )
 
 func TestRunVersionWritesVersionToStdout(t *testing.T) {
@@ -23,7 +23,7 @@ func TestRunVersionWritesVersionToStdout(t *testing.T) {
 		if err := Run([]string{arg}, strings.NewReader(""), &stdout, &stderr); err != nil {
 			t.Fatalf("Run(%q) error = %v", arg, err)
 		}
-		if got, want := stdout.String(), "gh-repobootstrapper v1.2.3\n"; got != want {
+		if got, want := stdout.String(), "gh-repospec v1.2.3\n"; got != want {
 			t.Fatalf("Run(%q) stdout = %q, want %q", arg, got, want)
 		}
 		if stderr.Len() != 0 {

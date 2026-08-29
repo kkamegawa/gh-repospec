@@ -5,11 +5,11 @@
 [`babarot/gh-infra`](https://github.com/babarot/gh-infra) solves an adjacent
 problem: declarative management of GitHub repository settings through YAML,
 without a state file. It is more mature in some areas than
-`gh-repobootstrapper`, so its feature set is a useful checklist for finding
+`gh-repospec`, so its feature set is a useful checklist for finding
 gaps in this extension's contract.
 
 This document records the comparison, the features adopted into the
-`gh-repobootstrapper` specification, and — just as importantly — the features
+`gh-repospec` specification, and — just as importantly — the features
 deliberately not adopted, with the reason for each. It is a design record, not
 a roadmap: adopted items are specified in [`design.md`](design.md) and tracked
 as implementation issues.

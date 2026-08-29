@@ -64,7 +64,7 @@ func (c *Client) MaterializeTemplateArchive(ctx context.Context, template Reposi
 	if err := os.MkdirAll(parent, 0o750); err != nil {
 		return fmt.Errorf("create template destination parent: %w", err)
 	}
-	stage, err := os.MkdirTemp(parent, ".repobootstrapper-template-")
+	stage, err := os.MkdirTemp(parent, ".repospec-template-")
 	if err != nil {
 		return fmt.Errorf("create template staging directory: %w", err)
 	}
@@ -98,7 +98,7 @@ func (c *Client) downloadArchive(ctx context.Context, template Repository, ref s
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	temporary, err := os.CreateTemp("", "repobootstrapper-template-*.zip")
+	temporary, err := os.CreateTemp("", "repospec-template-*.zip")
 	if err != nil {
 		return nil, fmt.Errorf("create template archive file: %w", err)
 	}

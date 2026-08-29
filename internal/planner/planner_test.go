@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/config"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
 )
 
 func TestBuildReportsOnlyDeclaredDifferences(t *testing.T) {

@@ -1,6 +1,6 @@
 # This file demonstrates the configuration fields added by the gh-infra
 # feature review (docs/gh-infra-parity.md) on top of docs/examples/bootstrap.yaml.
-# It is validated against schema/repobootstrapper.schema.json and loads
+# It is validated against schema/repospec.schema.json and loads
 # through config.Load. Two fields are still pending their implementation
 # issue and are accepted but not yet applied by apply: `actions.forkPullRequestApproval`
 # and `rulesets[].bypassActors` (see docs/design.md and issue #10).
@@ -10,7 +10,7 @@ repository:
   owner: YOUR-OWNER
   name: YOUR-REPOSITORY
   create: true
-  description: Repository initialized by gh-repobootstrapper
+  description: Repository initialized by gh-repospec
   homepage: https://example.com/YOUR-REPOSITORY
   visibility: private
   defaultBranch: main

@@ -13,7 +13,7 @@ on:
 # The extension keeps no state file and therefore takes no lock. Serialize
 # applies so two runs cannot interleave writes to the same repository.
 concurrency:
-  group: repobootstrapper-apply
+  group: repospec-apply
   cancel-in-progress: false
 
 permissions:
@@ -26,13 +26,13 @@ jobs:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install gh-repobootstrapper
-        run: gh extension install kkamegawa/gh-repobootstrapper
+      - name: Install gh-repospec
+        run: gh extension install kkamegawa/gh-repospec
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Apply
-        run: gh repobootstrapper apply --file bootstrap.yaml --yes
+        run: gh repospec apply --file bootstrap.yaml --yes
         env:
           # GITHUB_TOKEN can administer the repository this workflow runs in.
           # Targeting a different repository requires a fine-grained personal
