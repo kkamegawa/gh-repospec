@@ -4,10 +4,10 @@
 
 [`babarot/gh-infra`](https://github.com/babarot/gh-infra) は、state ファイルを
 持たずに GitHub リポジトリ設定を YAML で宣言的に管理する、隣接領域のツールです。
-一部の領域では `gh-repobootstrapper` より成熟しており、本拡張の契約に不足がないかを
+一部の領域では `gh-repospec` より成熟しており、本拡張の契約に不足がないかを
 確認するチェックリストとして有用です。
 
-本文書はその比較結果と、`gh-repobootstrapper` の仕様に取り込んだ機能、そして同じく
+本文書はその比較結果と、`gh-repospec` の仕様に取り込んだ機能、そして同じく
 重要な「意図的に取り込まなかった機能とその理由」を記録します。ロードマップではなく
 設計記録です。取り込む機能は [`design_ja.md`](design_ja.md) で仕様化し、実装は
 Issue で追跡します。

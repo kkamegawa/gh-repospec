@@ -19,8 +19,8 @@ jobs:
       - name: Check out source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-      - name: Install gh-repobootstrapper
-        run: gh extension install kkamegawa/gh-repobootstrapper
+      - name: Install gh-repospec
+        run: gh extension install kkamegawa/gh-repospec
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -28,7 +28,7 @@ jobs:
       # comes from the extension's exit code and not from the last command in
       # a pipeline.
       - name: Detect drift
-        run: gh repobootstrapper plan --file bootstrap.yaml --format json > plan.json
+        run: gh repospec plan --file bootstrap.yaml --format json > plan.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

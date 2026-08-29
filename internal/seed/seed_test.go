@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
 )
 
 func TestExtractZIP(t *testing.T) {

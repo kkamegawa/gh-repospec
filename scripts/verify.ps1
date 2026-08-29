@@ -23,7 +23,7 @@ $vetArguments = @('vet') + $packages
 Invoke-Go $vetArguments
 
 New-Item -ItemType Directory -Path bin -Force | Out-Null
-$buildArguments = @('build', '-o', 'bin/gh-repobootstrapper.exe', './cmd/gh-repobootstrapper')
+$buildArguments = @('build', '-o', 'bin/gh-repospec.exe', './cmd/gh-repospec')
 Invoke-Go $buildArguments
 
 if ($Race) {

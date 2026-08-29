@@ -52,7 +52,7 @@ type Client struct {
 func NewAuthenticatedClient() (*Client, error) {
 	host, _ := ghauth.DefaultHost()
 	if ghauth.IsEnterprise(host) {
-		return nil, fmt.Errorf("unsupported GitHub host %q: gh-repobootstrapper supports github.com only", host)
+		return nil, fmt.Errorf("unsupported GitHub host %q: gh-repospec supports github.com only", host)
 	}
 	httpClient, err := ghapi.NewHTTPClient(ghapi.ClientOptions{Host: "github.com"})
 	if err != nil {

@@ -5,7 +5,7 @@ repository:
   owner: YOUR-OWNER
   name: YOUR-REPOSITORY
   create: true
-  description: Repository initialized by gh-repobootstrapper
+  description: Repository initialized by gh-repospec
   visibility: private
   defaultBranch: main
   topics:

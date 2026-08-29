@@ -1,6 +1,6 @@
-# gh-repobootstrapper
+# gh-repospec
 
-`gh-repobootstrapper` is a precompiled GitHub CLI extension that converges a GitHub.com repository on a declarative YAML or JSON bootstrap file. It uses the current GitHub CLI login and never stores or prints its token.
+`gh-repospec` is a precompiled GitHub CLI extension that converges a GitHub.com repository on a declarative YAML or JSON bootstrap file. It uses the current GitHub CLI login and never stores or prints its token.
 
 [日本語](README_ja.md)
 
@@ -15,20 +15,20 @@ Part of the contract below is specified but not yet implemented: `import`, `plan
 Install a published release:
 
 ```text
-gh extension install kkamegawa/gh-repobootstrapper
+gh extension install kkamegawa/gh-repospec
 ```
 
 For local development, build the executable under `bin`, then install that directory as an extension.
 
 ```bash
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 gh extension install ./bin
 ```
 
 ```powershell
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 gh extension install ./bin
 ```
 
@@ -39,23 +39,23 @@ Authenticate GitHub CLI against GitHub.com before using `plan` or `apply`.
 Copy and edit [`docs/examples/bootstrap.yaml`](docs/examples/bootstrap.yaml). The example uses placeholders; replace them with the target repository and your chosen seed source. [`docs/examples/bootstrap-extended.yaml`](docs/examples/bootstrap-extended.yaml) demonstrates the labels, milestones, bypass actors, and repository settings added by the specification review.
 
 ```text
-gh repobootstrapper validate --file bootstrap.yaml
-gh repobootstrapper plan --file bootstrap.yaml
-gh repobootstrapper apply --file bootstrap.yaml
+gh repospec validate --file bootstrap.yaml
+gh repospec plan --file bootstrap.yaml
+gh repospec apply --file bootstrap.yaml
 ```
 
 To start from a repository that already exists, `import` writes its current
 settings as a configuration file instead of transcribing them by hand:
 
 ```text
-gh repobootstrapper import OWNER/REPOSITORY > bootstrap.yaml
+gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 ```
 
 `plan` is read-only. `apply` recalculates the plan, displays it, and asks for confirmation unless `--yes` is supplied. Each configured command still requires its own `--approve-command <id>` flag.
 
 ## Configuration
 
-The public contract is `schemaVersion: 1`. YAML and JSON are accepted; the bundled JSON Schema is [`schema/repobootstrapper.schema.json`](schema/repobootstrapper.schema.json).
+The public contract is `schemaVersion: 1`. YAML and JSON are accepted; the bundled JSON Schema is [`schema/repospec.schema.json`](schema/repospec.schema.json).
 
 Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, and implicit environment-variable expansion are rejected. Relative directory and ZIP seed paths are resolved relative to the configuration file.
 
@@ -76,11 +76,11 @@ Secrets contain a `sourceEnv` name, never a secret value. Their default update p
 ## Commands
 
 ```text
-gh repobootstrapper validate --file <path>
-gh repobootstrapper plan --file <path> [-R owner/repository] [--format text|json] [--ci]
-gh repobootstrapper apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
-gh repobootstrapper import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
-gh repobootstrapper version
+gh repospec validate --file <path>
+gh repospec plan --file <path> [-R owner/repository] [--format text|json] [--ci]
+gh repospec apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
+gh repospec import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
+gh repospec version
 ```
 
 The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`. `--version`/`-v` are accepted as aliases for `version`.
@@ -94,6 +94,17 @@ The `-R`/`--repo` flag overrides the repository declared in the configuration. `
 | `2` | `plan --ci` found at least one difference. |
 
 [`docs/examples/workflows`](docs/examples/workflows) contains an apply-on-merge workflow and a scheduled drift-detection workflow.
+
+### Shorter invocation
+
+`gh alias set` creates a personal shortcut for the extension name:
+
+```text
+gh alias set rb repospec
+gh rb plan --file bootstrap.yaml
+```
+
+Neither example above needs quoting. Quote the expansion when it contains spaces or arguments, and on Windows Command Prompt use double quotes rather than single quotes for that.
 
 ## Safety model
 
@@ -119,14 +130,14 @@ are excluded from the product module's `go test ./...` and `go vet ./...` scans.
 go test ./...
 go vet ./...
 mkdir -p bin
-go build -o bin/gh-repobootstrapper ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec ./cmd/gh-repospec
 ```
 
 ```powershell
 go test ./...
 go vet ./...
 New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repobootstrapper.exe ./cmd/gh-repobootstrapper
+go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design. [docs/gh-infra-parity.md](docs/gh-infra-parity.md) records the feature comparison with `babarot/gh-infra`, including what this extension deliberately does not do.

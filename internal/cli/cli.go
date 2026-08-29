@@ -1,4 +1,4 @@
-// Package cli implements the command-line interface for gh-repobootstrapper.
+// Package cli implements the command-line interface for gh-repospec.
 package cli
 
 import (
@@ -11,9 +11,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/config"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/githubapi"
-	"github.com/kkamegawa/gh-repobootstrapper/internal/planner"
+	"github.com/kkamegawa/gh-repospec/internal/config"
+	"github.com/kkamegawa/gh-repospec/internal/githubapi"
+	"github.com/kkamegawa/gh-repospec/internal/planner"
 )
 
 // Version is the released version. It defaults to "dev" for local builds and is set
@@ -21,7 +21,7 @@ import (
 // git tag, matching gh CLI extension conventions.
 var Version = "dev"
 
-// Run executes a gh-repobootstrapper command using the supplied standard streams.
+// Run executes a gh-repospec command using the supplied standard streams.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
 		printUsage(stderr)
@@ -30,7 +30,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	switch args[0] {
 	case "version", "--version", "-v":
-		_, err := fmt.Fprintf(stdout, "gh-repobootstrapper %s\n", Version)
+		_, err := fmt.Fprintf(stdout, "gh-repospec %s\n", Version)
 		return err
 	case "validate":
 		file, err := parseValidateFlags(args[1:], stderr)
@@ -248,13 +248,13 @@ func (values *stringSet) Set(value string) error {
 }
 
 func printUsage(w io.Writer) {
-	_, _ = fmt.Fprint(w, `Usage: gh repobootstrapper <command> [flags]
+	_, _ = fmt.Fprint(w, `Usage: gh repospec <command> [flags]
 
 Commands:
   validate --file <path>                     Validate a schemaVersion 1 YAML or JSON configuration.
   plan --file <path> [-R owner/repository]   Preview changes without modifying GitHub.
   apply --file <path> [-R owner/repository]  Confirm and apply supported changes.
-  version, --version                         Print the gh-repobootstrapper version.
+  version, --version, -v                     Print the gh-repospec version.
 
 Common flags:
   -f, --file <path>        Configuration path (required).

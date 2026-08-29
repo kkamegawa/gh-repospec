@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/kkamegawa/gh-repobootstrapper/blob/main/schema/repobootstrapper.schema.json",
-  "title": "gh-repobootstrapper configuration",
+  "$id": "https://github.com/kkamegawa/gh-repospec/blob/main/schema/repospec.schema.json",
+  "title": "gh-repospec configuration",
   "description": "SchemaVersion 1 declarative GitHub repository bootstrap configuration.",
   "type": "object",
   "additionalProperties": false,

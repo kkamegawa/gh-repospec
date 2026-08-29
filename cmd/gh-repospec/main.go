@@ -1,11 +1,11 @@
-// gh-repobootstrapper is a GitHub CLI extension for declarative repository setup.
+// gh-repospec is a GitHub CLI extension for declarative repository setup.
 package main
 
 import (
 	"fmt"
 	"os"
 
-	"github.com/kkamegawa/gh-repobootstrapper/internal/cli"
+	"github.com/kkamegawa/gh-repospec/internal/cli"
 )
 
 func main() {

@@ -1,8 +1,8 @@
-# 設計: gh-repobootstrapper
+# 設計: gh-repospec
 
 ## 目的
 
-`gh-repobootstrapper` は、宣言的なbootstrapファイルに基づきGitHub.comの
+`gh-repospec` は、宣言的なbootstrapファイルに基づきGitHub.comの
 リポジトリを収束させる、プリコンパイル版GitHub CLI拡張です。バージョン1は
 個人リポジトリおよびFree、Pro、Team組織を対象とします。GitHub Enterprise
 Serverは拒否し、Enterprise Cloudはサポート対象外です。有効なhostはgo-ghの
@@ -16,14 +16,14 @@ Serverは拒否し、Enterprise Cloudはサポート対象外です。有効なh
 リポジトリへの変更は宣言的かつ追加的です。設定に含まれないフィールド、ファイル、
 rulesetは削除しません。
 
-`cmd/gh-repobootstrapper`の実行入口は標準入出力を`internal/cli`へ渡すだけにし、
+`cmd/gh-repospec`の実行入口は標準入出力を`internal/cli`へ渡すだけにし、
 コマンド実装を分離します。製品パッケージはルートの`go test ./...`と`go vet ./...`で
 検証し、生成されたAPM依存ツリーは`apm_modules/go.mod`で分離します。
 
 ## 設定契約
 
 公開設定形式は`schemaVersion: 1`であり、
-[`schema/repobootstrapper.schema.json`](../schema/repobootstrapper.schema.json)
+[`schema/repospec.schema.json`](../schema/repospec.schema.json)
 で定義します。YAMLとJSONを受け付けます。解析は厳密で、未知フィールド、重複した
 mapping key、未対応のenum値、複数ドキュメントを拒否します。環境変数は展開しません。
 
