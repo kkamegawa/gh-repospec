@@ -104,7 +104,7 @@ gh alias set rb repospec
 gh rb plan --file bootstrap.yaml
 ```
 
-On Windows Command Prompt, quote the expansion with double quotes instead of single quotes.
+Neither example above needs quoting. Quote the expansion when it contains spaces or arguments, and on Windows Command Prompt use double quotes rather than single quotes for that.
 
 ## Safety model
 

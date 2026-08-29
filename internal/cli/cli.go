@@ -254,7 +254,7 @@ Commands:
   validate --file <path>                     Validate a schemaVersion 1 YAML or JSON configuration.
   plan --file <path> [-R owner/repository]   Preview changes without modifying GitHub.
   apply --file <path> [-R owner/repository]  Confirm and apply supported changes.
-  version, --version                         Print the gh-repospec version.
+  version, --version, -v                     Print the gh-repospec version.
 
 Common flags:
   -f, --file <path>        Configuration path (required).

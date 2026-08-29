@@ -103,7 +103,7 @@ gh alias set rb repospec
 gh rb plan --file bootstrap.yaml
 ```
 
-Windows の Command Prompt ではシングルクォートではなくダブルクォートで expansion を囲んでください。
+上記の例はどちらも引用符が不要です。expansion にスペースや引数が含まれる場合は引用符が必要で、その際 Windows の Command Prompt ではシングルクォートではなくダブルクォートを使ってください。
 
 ## 安全性
 
