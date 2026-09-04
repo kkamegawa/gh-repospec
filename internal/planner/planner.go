@@ -1277,7 +1277,7 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: ChangeUpdate, Summary: "configure allowed Actions and reusable workflows"})
 	}
-	appendForkPullRequestApprovalChange(ctx, service, plan, desired, desiredRepository, repository, true)
+	appendForkPullRequestApprovalChange(plan, desired, desiredRepository, true)
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
 		if len(desired.Variables) > 0 {
@@ -1380,10 +1380,14 @@ func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *conf
 // appendForkPullRequestApprovalChange evaluates actions.forkPullRequestApproval.
 // GitHub rejects the fork PR contributor approval endpoint outright on a
 // private repository (HTTP 422), so that combination is blocked before any
-// network call, on both the live and deferred (repository-not-yet-created)
-// paths. live is false only from the deferred path, where there is no
-// repository yet to read current state from.
-func appendForkPullRequestApprovalChange(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, desiredRepository config.RepositoryConfig, repository githubapi.Repository, live bool) {
+// network call. This is planned unconditionally, like the sibling
+// actions.workflowPermissions above it, rather than diffed against a live
+// GET: a repository that is currently private but whose visibility this same
+// run is changing to public would otherwise 422 on the read at plan time,
+// even though the write would succeed once applyRepository's visibility
+// change runs ahead of it during apply. live distinguishes only the
+// deferred (repository-not-yet-created) path's summary wording.
+func appendForkPullRequestApprovalChange(plan *Plan, desired *config.ActionsConfig, desiredRepository config.RepositoryConfig, live bool) {
 	if desired.ForkPullRequestApproval == "" {
 		return
 	}
@@ -1391,22 +1395,11 @@ func appendForkPullRequestApprovalChange(ctx context.Context, service Service, p
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeBlocked, Summary: "GitHub rejects fork pull request approval on private repositories"})
 		return
 	}
-	if !live {
-		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeUpdate, Summary: "configure after repository creation"})
-		return
-	}
-	actual, err := service.GetForkPullRequestApproval(ctx, repository)
-	if err != nil {
-		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeBlocked, Summary: capabilityError(err)})
-		return
-	}
-	state := ChangeUpdate
 	summary := "set to " + desired.ForkPullRequestApproval
-	if actual.ApprovalPolicy == desired.ForkPullRequestApproval {
-		state = ChangeNoop
-		summary = "already set to " + desired.ForkPullRequestApproval
+	if !live {
+		summary = "configure after repository creation"
 	}
-	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: state, Summary: summary})
+	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeUpdate, Summary: summary})
 }
 
 func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository, resolver *bypassResolver) {
@@ -1527,7 +1520,7 @@ func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg
 	}
 	if cfg.Actions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
-		appendForkPullRequestApprovalChange(ctx, service, plan, cfg.Actions, cfg.Repository, repository, false)
+		appendForkPullRequestApprovalChange(plan, cfg.Actions, cfg.Repository, false)
 	}
 	appendSecurityChanges(ctx, service, plan, cfg.Security, repository, false)
 	for _, ruleset := range cfg.Rulesets {

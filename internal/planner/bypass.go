@@ -71,10 +71,23 @@ func newBypassResolver(service Service, owner string, personal bool) *bypassReso
 // determined by the caller; when the repository does not exist yet, personal
 // is inferred from the authenticated user instead of Owner.Type.
 func newRulesetBypassResolver(ctx context.Context, service Service, repository githubapi.Repository, info githubapi.RepositoryInfo, exists bool, rulesets []config.RulesetConfig) *bypassResolver {
-	if len(rulesets) == 0 {
+	if !anyBypassActors(rulesets) {
 		return nil
 	}
 	return newBypassResolver(service, repository.Owner, ownerIsPersonal(ctx, service, repository, info, exists))
+}
+
+// anyBypassActors reports whether at least one ruleset declares a bypass
+// actor, so newRulesetBypassResolver can skip the personal-repository check
+// (and, on the create path, the GetAuthenticatedUser call it can trigger)
+// for a configuration that declares rulesets but no bypass actors.
+func anyBypassActors(rulesets []config.RulesetConfig) bool {
+	for _, ruleset := range rulesets {
+		if len(ruleset.BypassActors) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // ownerIsPersonal reports whether the ruleset's repository is (or will be)

@@ -521,38 +521,80 @@ func TestBuildCachesBypassActorLookupsAcrossRulesets(t *testing.T) {
 	}
 }
 
+// TestBuildSkipsPersonalRepositoryCheckWithoutBypassActors guards
+// newRulesetBypassResolver: a configuration that declares rulesets but no
+// ruleset declares a bypass actor must never resolve the owner, since
+// resolution is never used. This matters on the create path, where the
+// check would otherwise cost a GetAuthenticatedUser call for every
+// configuration with rulesets, regardless of whether any of them declare a
+// bypass actor.
+func TestBuildSkipsPersonalRepositoryCheckWithoutBypassActors(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{getRepositoryErr: &githubapi.APIError{StatusCode: 404}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Create: true},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules: []config.RulesetRule{{Type: "deletion"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.getAuthenticatedUserCalls != 0 {
+		t.Fatalf("getAuthenticatedUserCalls = %d, want 0: a ruleset without bypass actors must not trigger the personal-repository check", service.getAuthenticatedUserCalls)
+	}
+}
+
 // TestBuildBlocksForkPullRequestApprovalOnPrivateRepository guards a GitHub
 // constraint not stated in docs/design.md until this issue: the fork PR
 // contributor approval endpoint rejects private repositories outright
-// (HTTP 422), so that combination must never reach apply.
+// (HTTP 422), so that combination must never reach apply. It also guards
+// against reading current visibility to decide this: a repository that is
+// currently private but whose configuration is changing it to public must
+// plan an update, not a live GET that would still 422 against the
+// not-yet-changed repository.
 func TestBuildBlocksForkPullRequestApprovalOnPrivateRepository(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name       string
-		visibility string
-		wantState  ChangeState
+		name              string
+		liveVisibility    string
+		desiredVisibility string
+		wantState         ChangeState
 	}{
-		{name: "private is blocked", visibility: "private", wantState: ChangeBlocked},
-		{name: "public is planned", visibility: "public", wantState: ChangeUpdate},
+		{name: "private is blocked", liveVisibility: "private", desiredVisibility: "private", wantState: ChangeBlocked},
+		{name: "public is planned", liveVisibility: "public", desiredVisibility: "public", wantState: ChangeUpdate},
+		{name: "becoming public is planned, not read from the still-private repository", liveVisibility: "private", desiredVisibility: "public", wantState: ChangeUpdate},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: tc.visibility}}
+			service := &fakeService{
+				repository: githubapi.RepositoryInfo{Visibility: tc.liveVisibility},
+				// Simulates the 422 GitHub still returns for a repository
+				// that has not been made public yet. If Build ever reads
+				// this, the test below fails instead of merely blocking.
+				forkPullRequestApprovalErr: &githubapi.APIError{StatusCode: 422},
+			}
 			engine, err := New(service)
 			if err != nil {
 				t.Fatal(err)
 			}
 			plan, err := engine.Build(context.Background(), &config.Config{
 				SchemaVersion: config.CurrentSchemaVersion,
-				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: tc.visibility},
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: tc.desiredVisibility, AllowVisibilityChange: true},
 				Actions:       &config.ActionsConfig{ForkPullRequestApproval: "all_external_contributors"},
 			}, Options{})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !hasChange(plan, "actions.forkPullRequestApproval", tc.wantState) {
-				t.Fatalf("visibility %q: plan.Changes = %#v, want actions.forkPullRequestApproval as %s", tc.visibility, plan.Changes, tc.wantState)
+				t.Fatalf("live=%q desired=%q: plan.Changes = %#v, want actions.forkPullRequestApproval as %s", tc.liveVisibility, tc.desiredVisibility, plan.Changes, tc.wantState)
 			}
 		})
 	}
@@ -695,6 +737,7 @@ type fakeService struct {
 	getTeamCalls                   int
 	getAppCalls                    int
 	listCustomRepositoryRolesCalls int
+	getAuthenticatedUserCalls      int
 }
 
 func (f *fakeService) GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error) {
@@ -796,6 +839,11 @@ func (f *fakeService) ListCustomRepositoryRoles(context.Context, string) ([]gith
 
 func (f *fakeService) GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error) {
 	return f.vulnerabilityAlertsEnabled, f.vulnerabilityAlertsErr
+}
+
+func (f *fakeService) GetAuthenticatedUser(context.Context) (githubapi.Owner, error) {
+	f.getAuthenticatedUserCalls++
+	return githubapi.Owner{}, nil
 }
 
 func (*fakeService) SetVulnerabilityAlerts(context.Context, githubapi.Repository, bool) error {
