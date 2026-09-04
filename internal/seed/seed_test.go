@@ -337,8 +337,12 @@ func TestRunApprovedCommandSafetyLimits(t *testing.T) {
 	if !errors.Is(err, exec.ErrWaitDelay) {
 		t.Fatalf("orphaned output pipe error = %v, want exec.ErrWaitDelay", err)
 	}
-	if elapsed := time.Since(started); elapsed > time.Second {
-		t.Fatalf("command with an orphaned output pipe took %s, want less than %s", elapsed, time.Second)
+	// The bound is generous relative to commandWaitDelay (250ms): it exists to
+	// catch a regression to an indefinite hang, not to pin exact timing, since
+	// process spawn and pipe teardown overhead grows under -race and on a
+	// loaded CI runner.
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("command with an orphaned output pipe took %s, want less than %s", elapsed, 5*time.Second)
 	}
 	command.Program = "sh"
 	if _, err := RunApprovedCommand(context.Background(), workspace, command, options); err == nil {

@@ -1,9 +1,7 @@
 # This file demonstrates the configuration fields added by the gh-infra
 # feature review (docs/gh-infra-parity.md) on top of docs/examples/bootstrap.yaml.
 # It is validated against schema/repospec.schema.json and loads
-# through config.Load. Two fields are still pending their implementation
-# issue and are accepted but not yet applied by apply: `actions.forkPullRequestApproval`
-# and `rulesets[].bypassActors` (see docs/design.md and issue #10).
+# through config.Load.
 schemaVersion: 1
 
 repository:
@@ -59,7 +57,9 @@ actions:
   requireSHAForGitHubActions: true
   defaultWorkflowPermissions: read
   canApprovePullRequestWorkflows: false
-  # Validated but not yet applied by apply; see issue #10.
+  # GitHub rejects this endpoint on a private repository (HTTP 422), so plan
+  # reports it as blocked while repository.visibility above stays private;
+  # switch visibility to public to actually apply this field.
   forkPullRequestApproval: all_external_contributors
   variables:
     - name: PROJECT_STAGE
@@ -73,11 +73,15 @@ rulesets:
     target: branch
     include:
       - ~DEFAULT_BRANCH
-    # bypassActors is validated but not yet applied by apply; see issue #10.
     bypassActors:
       - role: admin
         bypassMode: pull_request
       - app: dependabot
+        bypassMode: always
+      # The resolved "id:<number>" form is also accepted, so import output
+      # (issue #11) applies again unchanged for a private GitHub App whose
+      # slug the authenticated user cannot resolve.
+      - app: "id:123456"
         bypassMode: always
     rules:
       - type: deletion

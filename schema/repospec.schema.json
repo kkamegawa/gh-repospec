@@ -111,6 +111,7 @@
     },
     "bypassActor": {
       "type": "object", "additionalProperties": false,
+      "required": ["bypassMode"],
       "oneOf": [
         { "required": ["role"] }, { "required": ["team"] }, { "required": ["app"] }, { "required": ["orgAdmin"] }, { "required": ["customRole"] }
       ],

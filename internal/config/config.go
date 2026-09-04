@@ -1,7 +1,12 @@
 // Package config defines and validates versioned repository bootstrap files.
 package config
 
-import "time"
+import (
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+)
 
 const CurrentSchemaVersion = 1
 
@@ -103,7 +108,8 @@ type ActionsConfig struct {
 	RequireSHAForGitHubActions     *bool                  `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
 	DefaultWorkflowPermissions     string                 `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
 	CanApprovePullRequestWorkflows *bool                  `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
-	// ForkPullRequestApproval is validated but not yet applied; see docs/design.md.
+	// ForkPullRequestApproval selects when a fork pull request workflow run
+	// requires manual approval. GitHub rejects this on private repositories.
 	ForkPullRequestApproval string        `json:"forkPullRequestApproval,omitempty" yaml:"forkPullRequestApproval,omitempty"`
 	Variables               []VariableRef `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Secrets                 []SecretRef   `json:"secrets,omitempty" yaml:"secrets,omitempty"`
@@ -141,13 +147,18 @@ type RulesetConfig struct {
 	Target      string   `json:"target" yaml:"target"`
 	Include     []string `json:"include" yaml:"include"`
 	Exclude     []string `json:"exclude,omitempty" yaml:"exclude,omitempty"`
-	// BypassActors is validated but not yet applied; see docs/design.md.
+	// BypassActors lists the actors allowed to bypass this ruleset. Actor
+	// identities are resolved to the numeric IDs the rulesets API requires
+	// before any write; see internal/planner's bypass actor resolver.
 	BypassActors []BypassActorConfig `json:"bypassActors,omitempty" yaml:"bypassActors,omitempty"`
 	Rules        []RulesetRule       `json:"rules" yaml:"rules"`
 }
 
 // BypassActorConfig identifies one actor allowed to bypass a ruleset. Exactly
-// one of Role, Team, App, OrgAdmin, or CustomRole must be set.
+// one of Role, Team, App, OrgAdmin, or CustomRole must be set. Team, App, and
+// CustomRole also accept the resolved "id:<number>" form ParseBypassActorID
+// recognises, so import output can be applied again unchanged even for a
+// private GitHub App whose slug the authenticated user cannot resolve.
 type BypassActorConfig struct {
 	Role       string `json:"role,omitempty" yaml:"role,omitempty"`
 	Team       string `json:"team,omitempty" yaml:"team,omitempty"`
@@ -155,6 +166,27 @@ type BypassActorConfig struct {
 	OrgAdmin   bool   `json:"orgAdmin,omitempty" yaml:"orgAdmin,omitempty"`
 	CustomRole string `json:"customRole,omitempty" yaml:"customRole,omitempty"`
 	BypassMode string `json:"bypassMode,omitempty" yaml:"bypassMode,omitempty"`
+}
+
+// bypassActorIDPrefix marks a bypass actor selector as an already-resolved
+// numeric ID rather than a name to look up.
+const bypassActorIDPrefix = "id:"
+
+// ParseBypassActorID interprets a Team, App, or CustomRole selector in the
+// resolved "id:<number>" form. found reports whether the value carries the
+// prefix at all; err reports a malformed number so validation rejects it
+// outright instead of the planner treating it as a literal slug and later
+// failing to resolve it against the GitHub API.
+func ParseBypassActorID(value string) (id int64, found bool, err error) {
+	if !strings.HasPrefix(value, bypassActorIDPrefix) {
+		return 0, false, nil
+	}
+	digits := strings.TrimPrefix(value, bypassActorIDPrefix)
+	parsed, parseErr := strconv.ParseInt(digits, 10, 64)
+	if parseErr != nil || parsed <= 0 {
+		return 0, true, fmt.Errorf("%q is not a positive id:<number>", value)
+	}
+	return parsed, true, nil
 }
 
 // RulesetRule retains endpoint-specific parameters while keeping the

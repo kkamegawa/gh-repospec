@@ -445,6 +445,228 @@ func TestImmutableReleasesTogglesWithPutAndDelete(t *testing.T) {
 	}
 }
 
+func TestGetTeamAndAppResolveIDs(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/orgs/octo-org/teams/platform":
+			_ = json.NewEncoder(w).Encode(Team{ID: 9, Slug: "platform"})
+		case "/apps/renovate":
+			_ = json.NewEncoder(w).Encode(App{ID: 7, Slug: "renovate"})
+		default:
+			assertions.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, err := client.GetTeam(context.Background(), "octo-org", "platform")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if team.ID != 9 {
+		t.Fatalf("team.ID = %d, want 9", team.ID)
+	}
+	app, err := client.GetApp(context.Background(), "renovate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if app.ID != 7 {
+		t.Fatalf("app.ID = %d, want 7", app.ID)
+	}
+}
+
+func TestListCustomRepositoryRolesUnwrapsResponse(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/orgs/octo-org/custom-repository-roles"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"total_count":1,"custom_roles":[{"id":501,"name":"release-manager"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := client.ListCustomRepositoryRoles(context.Background(), "octo-org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 1 || roles[0].ID != 501 || roles[0].Name != "release-manager" {
+		t.Fatalf("roles = %#v, want one role {501 release-manager}", roles)
+	}
+}
+
+func TestForkPullRequestApprovalEndpoints(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var putBody ForkPullRequestApproval
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/actions/permissions/fork-pr-contributor-approval"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			_ = json.NewEncoder(w).Encode(ForkPullRequestApproval{ApprovalPolicy: "first_time_contributors"})
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&putBody)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			assertions.Errorf("unexpected method %q", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+	actual, err := client.GetForkPullRequestApproval(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.ApprovalPolicy != "first_time_contributors" {
+		t.Fatalf("ApprovalPolicy = %q, want %q", actual.ApprovalPolicy, "first_time_contributors")
+	}
+	if err := client.SetForkPullRequestApproval(context.Background(), repo, ForkPullRequestApproval{ApprovalPolicy: "all_external_contributors"}); err != nil {
+		t.Fatal(err)
+	}
+	if putBody.ApprovalPolicy != "all_external_contributors" {
+		t.Fatalf("PUT body ApprovalPolicy = %q, want %q", putBody.ApprovalPolicy, "all_external_contributors")
+	}
+}
+
+func TestGetVulnerabilityAlertsEnabledTreats404AsDisabled(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var status int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/vulnerability-alerts"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+
+	status = http.StatusNoContent
+	enabled, err := client.GetVulnerabilityAlertsEnabled(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("204 response should report alerts enabled")
+	}
+
+	status = http.StatusNotFound
+	enabled, err = client.GetVulnerabilityAlertsEnabled(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("404 should not be an error, got %v", err)
+	}
+	if enabled {
+		t.Fatal("404 response should report alerts disabled")
+	}
+}
+
+func TestIsNotFoundRecognizesWrappedAPIError(t *testing.T) {
+	t.Parallel()
+	wrapped := fmt.Errorf("get repository: %w", &APIError{StatusCode: 404})
+	if !IsNotFound(wrapped) {
+		t.Fatal("IsNotFound did not recognize a wrapped *APIError")
+	}
+}
+
+func TestListRulesetsWalksEveryPage(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/rulesets"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		var rulesets []Ruleset
+		switch r.URL.Query().Get("page") {
+		case "1":
+			for i := 0; i < 100; i++ {
+				rulesets = append(rulesets, Ruleset{ID: int64(i), Name: fmt.Sprintf("ruleset-%d", i), Enforcement: "active"})
+			}
+		case "2":
+			rulesets = []Ruleset{{ID: 100, Name: "ruleset-100", Enforcement: "active"}}
+		default:
+			assertions.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+		_ = json.NewEncoder(w).Encode(rulesets)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rulesets, err := client.ListRulesets(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rulesets) != 101 {
+		t.Fatalf("len(rulesets) = %d, want 101", len(rulesets))
+	}
+}
+
+func TestCreateRulesetSendsBypassActorsAndEvaluateEnforcement(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/rulesets"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if r.Method != http.MethodPost {
+			assertions.Errorf("method = %q, want POST", r.Method)
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_ = json.NewEncoder(w).Encode(Ruleset{ID: 1, Name: "protect-main", Enforcement: "evaluate"})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.CreateRuleset(context.Background(), Repository{Owner: "octo", Name: "demo"}, Ruleset{
+		Name:        "protect-main",
+		Enforcement: "evaluate",
+		BypassActors: []BypassActor{
+			{ActorID: 5, ActorType: "RepositoryRole", BypassMode: "pull_request"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := body["enforcement"], "evaluate"; got != want {
+		t.Fatalf("enforcement = %v, want %v", got, want)
+	}
+	actors, ok := body["bypass_actors"].([]any)
+	if !ok || len(actors) != 1 {
+		t.Fatalf("bypass_actors = %v, want one entry", body["bypass_actors"])
+	}
+	entry, ok := actors[0].(map[string]any)
+	if !ok || entry["actor_id"] != float64(5) || entry["actor_type"] != "RepositoryRole" || entry["bypass_mode"] != "pull_request" {
+		t.Fatalf("bypass_actors[0] = %v, want actor_id 5, actor_type RepositoryRole, bypass_mode pull_request", entry)
+	}
+}
+
 func templateArchive(t *testing.T, entries map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer
