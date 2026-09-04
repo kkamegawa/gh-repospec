@@ -29,10 +29,10 @@ The comparison was made against the gh-infra documentation set (`import`,
 | Labels | Absent | `labels` section |
 | Milestones | Absent | `milestones` section |
 | `homepage`, `archived`, feature toggles, merge commit title/message formats, release immutability | Absent | `repository` section |
-| Ruleset bypass actors (role / team / app / organization admin / custom role) | Absent | `rulesets[].bypassActors` |
-| Ruleset `evaluate` enforcement (dry run) | `active` and `disabled` only | `rulesets[].enforcement` |
-| Actions fork pull request approval policy | Absent | `actions.forkPullRequestApproval` |
-| Dependency check: security updates require vulnerability alerts | Absent | `security` section |
+| Ruleset bypass actors (role / team / app / organization admin / custom role) | Implemented | `rulesets[].bypassActors` |
+| Ruleset `evaluate` enforcement (dry run) | Implemented | `rulesets[].enforcement` |
+| Actions fork pull request approval policy | Implemented (public repositories only; GitHub rejects the endpoint on private repositories) | `actions.forkPullRequestApproval` |
+| Dependency check: security updates require vulnerability alerts | Implemented | `security` section |
 
 ## Not adopted
 

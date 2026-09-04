@@ -92,6 +92,8 @@ type Service interface {
 	UpdateActionsPermissions(context.Context, githubapi.Repository, githubapi.ActionsPermissions) error
 	UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error
 	UpdateDefaultWorkflowPermissions(context.Context, githubapi.Repository, githubapi.DefaultWorkflowPermissions) error
+	GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error)
+	SetForkPullRequestApproval(context.Context, githubapi.Repository, githubapi.ForkPullRequestApproval) error
 	ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error)
 	CreateActionVariable(context.Context, githubapi.Repository, githubapi.ActionVariable) error
 	UpdateActionVariable(context.Context, githubapi.Repository, githubapi.ActionVariable) error
@@ -99,9 +101,17 @@ type Service interface {
 	ListRulesets(context.Context, githubapi.Repository) ([]githubapi.Ruleset, error)
 	CreateRuleset(context.Context, githubapi.Repository, githubapi.Ruleset) (githubapi.Ruleset, error)
 	UpdateRuleset(context.Context, githubapi.Repository, int64, githubapi.Ruleset) (githubapi.Ruleset, error)
+	// GetTeam, GetApp, and ListCustomRepositoryRoles resolve ruleset bypass
+	// actor selectors to the numeric IDs the rulesets API requires.
+	GetTeam(context.Context, string, string) (githubapi.Team, error)
+	GetApp(context.Context, string) (githubapi.App, error)
+	ListCustomRepositoryRoles(context.Context, string) ([]githubapi.CustomRepositoryRole, error)
 	UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error)
 	ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error
 	SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error
+	GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error)
+	SetVulnerabilityAlerts(context.Context, githubapi.Repository, bool) error
+	SetAutomatedSecurityFixes(context.Context, githubapi.Repository, bool) error
 	ListLabels(context.Context, githubapi.Repository) ([]githubapi.Label, error)
 	CreateLabel(context.Context, githubapi.Repository, githubapi.Label) (githubapi.Label, error)
 	UpdateLabel(context.Context, githubapi.Repository, string, githubapi.Label) (githubapi.Label, error)
@@ -150,11 +160,6 @@ type secretService interface {
 	ListAgentSecrets(context.Context, githubapi.Repository) (githubapi.SecretList, error)
 }
 
-type dependabotService interface {
-	SetVulnerabilityAlerts(context.Context, githubapi.Repository, bool) error
-	SetAutomatedSecurityFixes(context.Context, githubapi.Repository, bool) error
-}
-
 type userService interface {
 	GetAuthenticatedUser(context.Context) (githubapi.Owner, error)
 }
@@ -174,40 +179,50 @@ func New(service Service) (*Engine, error) {
 
 // Build calculates a complete change report without modifying GitHub.
 func (e *Engine) Build(ctx context.Context, cfg *config.Config, options Options) (Plan, error) {
+	plan, _, err := e.build(ctx, cfg, options)
+	return plan, err
+}
+
+// build is Build's implementation. It also returns the bypass actor resolver
+// used while planning, so Apply can reuse the identities it already resolved
+// instead of looking them up a second time.
+func (e *Engine) build(ctx context.Context, cfg *config.Config, options Options) (Plan, *bypassResolver, error) {
 	if e == nil || e.service == nil {
-		return Plan{}, errors.New("planner is not initialized")
+		return Plan{}, nil, errors.New("planner is not initialized")
 	}
 	if err := config.Validate(cfg); err != nil {
-		return Plan{}, fmt.Errorf("validate configuration: %w", err)
+		return Plan{}, nil, fmt.Errorf("validate configuration: %w", err)
 	}
 	repository, err := resolveRepository(cfg.Repository, options.RepositoryOverride)
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, nil, err
 	}
 	plan := Plan{Repository: repository}
 	info, err := e.service.GetRepository(ctx, repository)
 	if err != nil {
 		if !githubapi.IsNotFound(err) {
-			return Plan{}, fmt.Errorf("get repository %s: %w", repository, err)
+			return Plan{}, nil, fmt.Errorf("get repository %s: %w", repository, err)
 		}
 		if !cfg.Repository.Create {
-			return Plan{}, fmt.Errorf("repository %s does not exist and repository.create is false", repository)
+			return Plan{}, nil, fmt.Errorf("repository %s does not exist and repository.create is false", repository)
 		}
+		resolver := newRulesetBypassResolver(ctx, e.service, repository, githubapi.RepositoryInfo{}, false, cfg.Rulesets)
 		plan.Changes = append(plan.Changes, Change{Stage: StageRepository, Resource: "repository", State: ChangeCreate, Summary: "create repository"})
-		appendDeferredChanges(&plan, cfg)
-		return finalize(plan), nil
+		appendDeferredChanges(ctx, e.service, &plan, cfg, repository, resolver)
+		return finalize(plan), resolver, nil
 	}
 	plan.Exists = true
+	resolver := newRulesetBypassResolver(ctx, e.service, repository, info, true, cfg.Rulesets)
 	appendRepositoryChanges(&plan, cfg.Repository, info)
 	appendReleaseImmutabilityChanges(ctx, e.service, &plan, cfg.Repository, repository)
 	appendLabelChanges(ctx, e.service, &plan, cfg.Labels, repository)
 	appendMilestoneChanges(ctx, e.service, &plan, cfg.Milestones, repository)
-	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository)
-	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository)
-	appendSecurityChanges(&plan, cfg.Security)
+	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository)
+	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository, resolver)
+	appendSecurityChanges(ctx, e.service, &plan, cfg.Security, repository, true)
 	appendAgentChanges(ctx, e.service, &plan, cfg.Agents, repository)
 	appendSeedChanges(&plan, cfg)
-	return finalize(plan), nil
+	return finalize(plan), resolver, nil
 }
 
 // Apply recalculates the plan before making changes, then performs supported
@@ -215,7 +230,7 @@ func (e *Engine) Build(ctx context.Context, cfg *config.Config, options Options)
 // returned plan. A partial result can be safely reconciled by running apply
 // again after resolving the reported error.
 func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options) (Plan, error) {
-	plan, err := e.Build(ctx, cfg, options)
+	plan, resolver, err := e.build(ctx, cfg, options)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -297,7 +312,7 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 	if err := e.applyRemainingSecurity(ctx, repository, cfg.Security); err != nil {
 		return plan, err
 	}
-	if err := e.applyRulesets(ctx, repository, cfg.Rulesets); err != nil {
+	if err := e.applyRulesets(ctx, repository, cfg.Rulesets, resolver); err != nil {
 		return plan, err
 	}
 	// Archiving runs last of all, after every other change, because it makes
@@ -774,6 +789,14 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("update default workflow permissions for %s: %w", repository, err)
 		}
 	}
+	if desired.ForkPullRequestApproval != "" {
+		// Build already blocks this field on a private repository, because
+		// GitHub rejects the endpoint outright (HTTP 422) in that case.
+		request := githubapi.ForkPullRequestApproval{ApprovalPolicy: desired.ForkPullRequestApproval}
+		if err := e.service.SetForkPullRequestApproval(ctx, repository, request); err != nil {
+			return fmt.Errorf("set fork pull request approval for %s: %w", repository, err)
+		}
+	}
 	if err := e.applyActionVariables(ctx, repository, desired.Variables); err != nil {
 		return err
 	}
@@ -846,23 +869,27 @@ func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubap
 	if desired == nil {
 		return nil
 	}
-	if dependabot, ok := e.service.(dependabotService); ok {
-		if desired.DependabotAlerts != nil {
-			if err := dependabot.SetVulnerabilityAlerts(ctx, repository, desired.DependabotAlerts.Enabled); err != nil {
-				if !desired.DependabotAlerts.Optional {
-					return fmt.Errorf("set Dependabot alerts for %s: %w", repository, err)
-				}
+	if desired.DependabotAlerts != nil {
+		if err := e.service.SetVulnerabilityAlerts(ctx, repository, desired.DependabotAlerts.Enabled); err != nil {
+			if !desired.DependabotAlerts.Optional {
+				return fmt.Errorf("set Dependabot alerts for %s: %w", repository, err)
 			}
 		}
-		if desired.DependabotSecurityUpdates != nil {
-			if err := dependabot.SetAutomatedSecurityFixes(ctx, repository, desired.DependabotSecurityUpdates.Enabled); err != nil {
-				if !desired.DependabotSecurityUpdates.Optional {
-					return fmt.Errorf("set Dependabot security updates for %s: %w", repository, err)
-				}
+	}
+	if desired.DependabotSecurityUpdates != nil {
+		// Build already blocks this combination when the dependency is not
+		// satisfied; re-checking here means a stale plan can never reach a
+		// write GitHub is known to reject.
+		alertsEnabled, alertsKnown := effectiveDependabotAlertsEnabled(ctx, e.service, repository, true, desired)
+		if !alertsKnown || !alertsEnabled {
+			if !desired.DependabotSecurityUpdates.Optional {
+				return fmt.Errorf("set Dependabot security updates for %s: requires security.dependabotAlerts to be enabled", repository)
+			}
+		} else if err := e.service.SetAutomatedSecurityFixes(ctx, repository, desired.DependabotSecurityUpdates.Enabled); err != nil {
+			if !desired.DependabotSecurityUpdates.Optional {
+				return fmt.Errorf("set Dependabot security updates for %s: %w", repository, err)
 			}
 		}
-	} else if (desired.DependabotAlerts != nil && !desired.DependabotAlerts.Optional) || (desired.DependabotSecurityUpdates != nil && !desired.DependabotSecurityUpdates.Optional) {
-		return errors.New("dependabot operations are unavailable from the configured GitHub service")
 	}
 	if desired.CodeQLDefaultSetup != nil {
 		state := "not-configured"
@@ -993,9 +1020,15 @@ func defaultSecretPolicy(policy string) string {
 	return policy
 }
 
-func (e *Engine) applyRulesets(ctx context.Context, repository githubapi.Repository, desired []config.RulesetConfig) error {
+func (e *Engine) applyRulesets(ctx context.Context, repository githubapi.Repository, desired []config.RulesetConfig, resolver *bypassResolver) error {
 	if len(desired) == 0 {
 		return nil
+	}
+	// build passes the resolver used during planning so identities resolved
+	// there are not looked up a second time; a caller that exercises apply
+	// directly (as some tests do) still gets correct, if unmemoized, behavior.
+	if resolver == nil {
+		resolver = newBypassResolver(e.service, repository.Owner, false)
 	}
 	current, err := e.service.ListRulesets(ctx, repository)
 	if err != nil {
@@ -1006,7 +1039,14 @@ func (e *Engine) applyRulesets(ctx context.Context, repository githubapi.Reposit
 		existing[ruleset.Name] = ruleset
 	}
 	for _, ruleset := range desired {
-		request := toRuleset(ruleset)
+		bypassActors, failures := resolver.resolveAll(ctx, ruleset.BypassActors)
+		if len(failures) > 0 {
+			// Build already blocks any unresolvable bypass actor; this is a
+			// last-resort guard against writing a ruleset with an incomplete
+			// bypass list if that invariant is somehow violated.
+			return fmt.Errorf("resolve bypass actors for ruleset %q: %w", ruleset.Name, failures[0].Err)
+		}
+		request := toRuleset(ruleset, bypassActors)
 		if actual, ok := existing[ruleset.Name]; ok {
 			if _, err := e.service.UpdateRuleset(ctx, repository, actual.ID, request); err != nil {
 				return fmt.Errorf("update ruleset %q: %w", ruleset.Name, err)
@@ -1020,7 +1060,7 @@ func (e *Engine) applyRulesets(ctx context.Context, repository githubapi.Reposit
 	return nil
 }
 
-func toRuleset(ruleset config.RulesetConfig) githubapi.Ruleset {
+func toRuleset(ruleset config.RulesetConfig, bypassActors []githubapi.BypassActor) githubapi.Ruleset {
 	rules := make([]map[string]any, 0, len(ruleset.Rules))
 	for _, rule := range ruleset.Rules {
 		entry := map[string]any{"type": rule.Type}
@@ -1038,7 +1078,8 @@ func toRuleset(ruleset config.RulesetConfig) githubapi.Ruleset {
 		Conditions: map[string]any{
 			"ref_name": map[string]any{"include": include, "exclude": exclude},
 		},
-		Rules: rules,
+		Rules:        rules,
+		BypassActors: bypassActors,
 	}
 }
 
@@ -1218,7 +1259,7 @@ func appendMilestoneChanges(ctx context.Context, service Service, plan *Plan, de
 	}
 }
 
-func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository) {
+func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository, desiredRepository config.RepositoryConfig) {
 	if desired == nil {
 		return
 	}
@@ -1236,9 +1277,7 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: ChangeUpdate, Summary: "configure allowed Actions and reusable workflows"})
 	}
-	if desired.ForkPullRequestApproval != "" {
-		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeManual, Summary: "accepted but not yet applied"})
-	}
+	appendForkPullRequestApprovalChange(ctx, service, plan, desired, desiredRepository, repository, true)
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
 		if len(desired.Variables) > 0 {
@@ -1269,37 +1308,108 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	}
 }
 
-func appendSecurityChanges(plan *Plan, desired *config.SecurityConfig) {
+func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, desired *config.SecurityConfig, repository githubapi.Repository, exists bool) {
 	if desired == nil {
 		return
 	}
-	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, false)
-	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, false)
+	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, "")
+	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "")
+
+	// Only ask GitHub (or fall back to a blocked create-path assumption) when
+	// something downstream actually depends on the answer.
+	var alertsEnabled, alertsKnown bool
+	if desired.DependencyGraph != nil || desired.DependabotSecurityUpdates != nil {
+		alertsEnabled, alertsKnown = effectiveDependabotAlertsEnabled(ctx, service, repository, exists, desired)
+	}
+
 	// GitHub enables the dependency graph as part of enabling Dependabot alerts.
-	dependencyGraphUnavailable := desired.DependabotAlerts == nil || !desired.DependabotAlerts.Enabled
-	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphUnavailable)
-	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, false)
-	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, false)
-	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, false)
-	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, false)
+	dependencyGraphReason := ""
+	if desired.DependencyGraph != nil && (!alertsKnown || !alertsEnabled) {
+		dependencyGraphReason = "only settable by enabling security.dependabotAlerts"
+	}
+	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphReason)
+	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, "")
+
+	securityUpdatesReason := ""
+	if desired.DependabotSecurityUpdates != nil && (!alertsKnown || !alertsEnabled) {
+		securityUpdatesReason = "requires security.dependabotAlerts to be enabled"
+	}
+	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, securityUpdatesReason)
+	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, "")
+	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, "")
 }
 
-func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *config.FeatureSetting, unavailable bool) {
+// effectiveDependabotAlertsEnabled reports whether Dependabot alerts will be
+// enabled once this run finishes: the declared value when configuration
+// declares one, otherwise the repository's current state on GitHub, which is
+// unknowable before the repository exists. known is false only when neither
+// source could determine the answer; callers must then treat any dependency
+// on alerts as unsatisfied rather than assume it is.
+func effectiveDependabotAlertsEnabled(ctx context.Context, service Service, repository githubapi.Repository, exists bool, desired *config.SecurityConfig) (enabled, known bool) {
+	if desired.DependabotAlerts != nil {
+		return desired.DependabotAlerts.Enabled, true
+	}
+	if !exists {
+		return false, false
+	}
+	current, err := service.GetVulnerabilityAlertsEnabled(ctx, repository)
+	if err != nil {
+		return false, false
+	}
+	return current, true
+}
+
+// appendFeatureChange records one security feature. An empty reason means the
+// feature can be applied; a non-empty reason blocks it, or degrades to a
+// manual change when the declaration is optional.
+func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *config.FeatureSetting, reason string) {
 	if feature == nil {
 		return
 	}
-	if unavailable {
+	if reason != "" {
 		state := ChangeBlocked
 		if feature.Optional {
 			state = ChangeManual
 		}
-		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: state, Summary: "repository API support is unavailable"})
+		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: state, Summary: reason})
 		return
 	}
 	plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", feature.Enabled)})
 }
 
-func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository) {
+// appendForkPullRequestApprovalChange evaluates actions.forkPullRequestApproval.
+// GitHub rejects the fork PR contributor approval endpoint outright on a
+// private repository (HTTP 422), so that combination is blocked before any
+// network call, on both the live and deferred (repository-not-yet-created)
+// paths. live is false only from the deferred path, where there is no
+// repository yet to read current state from.
+func appendForkPullRequestApprovalChange(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, desiredRepository config.RepositoryConfig, repository githubapi.Repository, live bool) {
+	if desired.ForkPullRequestApproval == "" {
+		return
+	}
+	if desiredRepository.Visibility == "private" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeBlocked, Summary: "GitHub rejects fork pull request approval on private repositories"})
+		return
+	}
+	if !live {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeUpdate, Summary: "configure after repository creation"})
+		return
+	}
+	actual, err := service.GetForkPullRequestApproval(ctx, repository)
+	if err != nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeBlocked, Summary: capabilityError(err)})
+		return
+	}
+	state := ChangeUpdate
+	summary := "set to " + desired.ForkPullRequestApproval
+	if actual.ApprovalPolicy == desired.ForkPullRequestApproval {
+		state = ChangeNoop
+		summary = "already set to " + desired.ForkPullRequestApproval
+	}
+	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: state, Summary: summary})
+}
+
+func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository, resolver *bypassResolver) {
 	if len(desired) == 0 {
 		return
 	}
@@ -1318,10 +1428,32 @@ func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desi
 			state = ChangeUpdate
 		}
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: state, Summary: "converge ruleset"})
-		if len(ruleset.BypassActors) > 0 {
-			plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name + ".bypassActors", State: ChangeManual, Summary: "accepted but not yet applied"})
-		}
+		appendBypassActorChanges(ctx, plan, ruleset, resolver, state, "")
 	}
+}
+
+// appendBypassActorChanges resolves a ruleset's declared bypass actors and
+// records the result. suffix distinguishes the deferred, create-only path
+// ("after repository creation") from the live path; the resource and state
+// otherwise match exactly, so a resolution failure is reported identically
+// whether or not the repository exists yet.
+func appendBypassActorChanges(ctx context.Context, plan *Plan, ruleset config.RulesetConfig, resolver *bypassResolver, state ChangeState, suffix string) {
+	if len(ruleset.BypassActors) == 0 {
+		return
+	}
+	resolved, failures := resolver.resolveAll(ctx, ruleset.BypassActors)
+	for _, failure := range failures {
+		resource := fmt.Sprintf("ruleset.%s.bypassActors[%d]", ruleset.Name, failure.Index)
+		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: resource, State: ChangeBlocked, Summary: failure.Err.Error()})
+	}
+	if len(failures) > 0 {
+		return
+	}
+	summary := fmt.Sprintf("converge %d bypass actors", len(resolved))
+	if suffix != "" {
+		summary += " " + suffix
+	}
+	plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name + ".bypassActors", State: state, Summary: summary})
 }
 
 func appendAgentChanges(ctx context.Context, service Service, plan *Plan, desired *config.AgentsConfig, repository githubapi.Repository) {
@@ -1377,7 +1509,7 @@ func appendSeedChanges(plan *Plan, cfg *config.Config) {
 	}
 }
 
-func appendDeferredChanges(plan *Plan, cfg *config.Config) {
+func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg *config.Config, repository githubapi.Repository, resolver *bypassResolver) {
 	if cfg.Seed != nil || len(cfg.Commands) > 0 {
 		appendSeedChanges(plan, cfg)
 	}
@@ -1395,16 +1527,12 @@ func appendDeferredChanges(plan *Plan, cfg *config.Config) {
 	}
 	if cfg.Actions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
-		if cfg.Actions.ForkPullRequestApproval != "" {
-			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeManual, Summary: "accepted but not yet applied"})
-		}
+		appendForkPullRequestApprovalChange(ctx, service, plan, cfg.Actions, cfg.Repository, repository, false)
 	}
-	appendSecurityChanges(plan, cfg.Security)
+	appendSecurityChanges(ctx, service, plan, cfg.Security, repository, false)
 	for _, ruleset := range cfg.Rulesets {
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: ChangeCreate, Summary: "create after repository initialization"})
-		if len(ruleset.BypassActors) > 0 {
-			plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name + ".bypassActors", State: ChangeManual, Summary: "accepted but not yet applied"})
-		}
+		appendBypassActorChanges(ctx, plan, ruleset, resolver, ChangeCreate, "after repository creation")
 	}
 	if cfg.Agents != nil {
 		for _, variable := range cfg.Agents.Variables {

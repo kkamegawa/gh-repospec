@@ -26,10 +26,10 @@ Issue で追跡します。
 | labels | 無し | `labels` セクション |
 | milestones | 無し | `milestones` セクション |
 | `homepage`、`archived`、機能タブの切り替え、merge commit の題名/本文書式、release の不変化 | 無し | `repository` セクション |
-| ruleset の bypass actor(role / team / app / organization 管理者 / custom role) | 無し | `rulesets[].bypassActors` |
-| rulesetの`evaluate` enforcement(dry run) | `active`と`disabled`のみ | `rulesets[].enforcement` |
-| Actions の fork pull request 承認ポリシー | 無し | `actions.forkPullRequestApproval` |
-| security update が vulnerability alert に依存することの検証 | 無し | `security` セクション |
+| ruleset の bypass actor(role / team / app / organization 管理者 / custom role) | 実装済み | `rulesets[].bypassActors` |
+| rulesetの`evaluate` enforcement(dry run) | 実装済み | `rulesets[].enforcement` |
+| Actions の fork pull request 承認ポリシー | 実装済み(public リポジトリのみ。GitHub は private リポジトリに対してこのエンドポイントを拒否します) | `actions.forkPullRequestApproval` |
+| security update が vulnerability alert に依存することの検証 | 実装済み | `security` セクション |
 
 ## 取り込まない機能
 

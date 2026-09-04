@@ -285,15 +285,24 @@ func validateBypassActors(rulesetName string, actors []BypassActorConfig) error 
 		}
 		if actor.Team != "" {
 			set++
+			if err := validateBypassActorSelector(rulesetName, index, "team", actor.Team); err != nil {
+				return err
+			}
 		}
 		if actor.App != "" {
 			set++
+			if err := validateBypassActorSelector(rulesetName, index, "app", actor.App); err != nil {
+				return err
+			}
 		}
 		if actor.OrgAdmin {
 			set++
 		}
 		if actor.CustomRole != "" {
 			set++
+			if err := validateBypassActorSelector(rulesetName, index, "customRole", actor.CustomRole); err != nil {
+				return err
+			}
 		}
 		if set != 1 {
 			return fmt.Errorf("ruleset %q bypassActors[%d] must set exactly one of role, team, app, orgAdmin, or customRole", rulesetName, index)
@@ -303,6 +312,17 @@ func validateBypassActors(rulesetName string, actors []BypassActorConfig) error 
 		if !oneOf(actor.BypassMode, "always", "pull_request") {
 			return fmt.Errorf("ruleset %q bypassActors[%d] bypassMode must be always or pull_request", rulesetName, index)
 		}
+	}
+	return nil
+}
+
+// validateBypassActorSelector accepts a slug or the resolved "id:<number>"
+// form ParseBypassActorID recognises. Role and orgAdmin are not eligible
+// here: their actor IDs are the fixed GitHub base role IDs, so import always
+// writes their symbolic form instead.
+func validateBypassActorSelector(rulesetName string, index int, field, value string) error {
+	if _, found, err := ParseBypassActorID(value); found && err != nil {
+		return fmt.Errorf("ruleset %q bypassActors[%d] %s must be a slug or id:<number>: %w", rulesetName, index, field, err)
 	}
 	return nil
 }

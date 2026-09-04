@@ -65,7 +65,10 @@ duration構文を使用します。
 
 `actions.forkPullRequestApproval`は、forkからのworkflow実行に手動承認を要求する条件を
 選択します。値は`first_time_contributors_new_to_github`、`first_time_contributors`、
-`all_external_contributors`で、`allowedActions`と同じ列挙スタイルに合わせます。
+`all_external_contributors`で、`allowedActions`と同じ列挙スタイルに合わせます。GitHubは
+private リポジトリに対してこのエンドポイントを拒否するため、
+`repository.visibility: private`と同時に指定した場合は適用を試みず、blockedとして
+報告します。
 
 `security.dependabotSecurityUpdates`は、Dependabot alertが実効的に有効であることを
 要求します。GitHub APIがそれ以外を拒否するためです。依存関係は`plan`時に設定と

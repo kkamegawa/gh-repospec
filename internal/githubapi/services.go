@@ -23,12 +23,24 @@ type API interface {
 	UpdateActionsPermissions(context.Context, Repository, ActionsPermissions) error
 	UpdateSelectedActions(context.Context, Repository, SelectedActionsRequest) error
 	UpdateDefaultWorkflowPermissions(context.Context, Repository, DefaultWorkflowPermissions) error
+	GetForkPullRequestApproval(context.Context, Repository) (ForkPullRequestApproval, error)
+	SetForkPullRequestApproval(context.Context, Repository, ForkPullRequestApproval) error
 	ListRulesets(context.Context, Repository) ([]Ruleset, error)
 	CreateRuleset(context.Context, Repository, Ruleset) (Ruleset, error)
 	UpdateRuleset(context.Context, Repository, int64, Ruleset) (Ruleset, error)
+	// GetTeam, GetApp, and ListCustomRepositoryRoles are org-scoped, not
+	// repository-scoped, because they resolve ruleset bypass actor selectors
+	// that identify an organization team, GitHub App, or custom role rather
+	// than anything tied to one repository.
+	GetTeam(context.Context, string, string) (Team, error)
+	GetApp(context.Context, string) (App, error)
+	ListCustomRepositoryRoles(context.Context, string) ([]CustomRepositoryRole, error)
 	UpdateSecurityAndAnalysis(context.Context, Repository, SecurityAndAnalysisRequest) (RepositoryInfo, error)
 	ConfigureCodeQLDefaultSetup(context.Context, Repository, CodeQLDefaultSetupRequest) error
 	SetPrivateVulnerabilityReporting(context.Context, Repository, bool) error
+	GetVulnerabilityAlertsEnabled(context.Context, Repository) (bool, error)
+	SetVulnerabilityAlerts(context.Context, Repository, bool) error
+	SetAutomatedSecurityFixes(context.Context, Repository, bool) error
 	ListLabels(context.Context, Repository) ([]Label, error)
 	CreateLabel(context.Context, Repository, Label) (Label, error)
 	UpdateLabel(context.Context, Repository, string, Label) (Label, error)
@@ -125,10 +137,25 @@ func (c *Client) UpdateSelectedActions(ctx context.Context, repo Repository, req
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/selected-actions", request, nil)
 }
 
-func (c *Client) ListRulesets(ctx context.Context, repo Repository) ([]Ruleset, error) {
-	var result []Ruleset
-	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/rulesets", nil, &result)
+// GetForkPullRequestApproval retrieves the fork PR contributor approval policy.
+// GitHub rejects this endpoint for private repositories with HTTP 422.
+func (c *Client) GetForkPullRequestApproval(ctx context.Context, repo Repository) (ForkPullRequestApproval, error) {
+	var result ForkPullRequestApproval
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/permissions/fork-pr-contributor-approval", nil, &result)
 	return result, err
+}
+
+// SetForkPullRequestApproval sets the fork PR contributor approval policy.
+func (c *Client) SetForkPullRequestApproval(ctx context.Context, repo Repository, request ForkPullRequestApproval) error {
+	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/fork-pr-contributor-approval", request, nil)
+}
+
+// ListRulesets lists every ruleset declared directly on the repository. It
+// paginates like ListLabels and ListMilestones: GitHub defaults to 30 rulesets
+// per page, and an unpaginated read would misreport an existing ruleset past
+// that page as absent, causing CreateRuleset to attempt a duplicate.
+func (c *Client) ListRulesets(ctx context.Context, repo Repository) ([]Ruleset, error) {
+	return listAll[Ruleset](ctx, c, repoPath(repo)+"/rulesets")
 }
 
 func (c *Client) CreateRuleset(ctx context.Context, repo Repository, ruleset Ruleset) (Ruleset, error) {
@@ -144,6 +171,33 @@ func (c *Client) UpdateRuleset(ctx context.Context, repo Repository, id int64, r
 	var result Ruleset
 	err := c.do(ctx, http.MethodPut, repoPath(repo)+"/rulesets/"+strconv.FormatInt(id, 10), ruleset, &result)
 	return result, err
+}
+
+// GetTeam resolves an organization team slug to its numeric ID for a ruleset
+// bypass actor. Org-scoped: it has no relation to any single repository.
+func (c *Client) GetTeam(ctx context.Context, org, slug string) (Team, error) {
+	var result Team
+	err := c.do(ctx, http.MethodGet, "/orgs/"+escape(org)+"/teams/"+escape(slug), nil, &result)
+	return result, err
+}
+
+// GetApp resolves a GitHub App slug to its numeric ID for a ruleset bypass
+// actor. This is a public, unauthenticated-shape endpoint scoped to the App
+// itself, not to any organization or repository.
+func (c *Client) GetApp(ctx context.Context, slug string) (App, error) {
+	var result App
+	err := c.do(ctx, http.MethodGet, "/apps/"+escape(slug), nil, &result)
+	return result, err
+}
+
+// ListCustomRepositoryRoles lists an organization's custom repository roles,
+// used to resolve a ruleset bypass actor customRole name to its numeric ID.
+// The response is a wrapped object, not a bare array, so listAll cannot
+// decode it directly.
+func (c *Client) ListCustomRepositoryRoles(ctx context.Context, org string) ([]CustomRepositoryRole, error) {
+	var result customRepositoryRoleList
+	err := c.do(ctx, http.MethodGet, "/orgs/"+escape(org)+"/custom-repository-roles", nil, &result)
+	return result.CustomRoles, err
 }
 
 func (c *Client) UpdateSecurityAndAnalysis(ctx context.Context, repo Repository, settings SecurityAndAnalysisRequest) (RepositoryInfo, error) {
@@ -265,6 +319,20 @@ func (c *Client) SetVulnerabilityAlerts(ctx context.Context, repo Repository, en
 		method = http.MethodPut
 	}
 	return c.do(ctx, method, repoPath(repo)+"/vulnerability-alerts", nil, nil)
+}
+
+// GetVulnerabilityAlertsEnabled reports whether Dependabot alerts are
+// currently enabled. GitHub represents this as a 204 (enabled) or 404
+// (disabled) response with no body, rather than a JSON boolean.
+func (c *Client) GetVulnerabilityAlertsEnabled(ctx context.Context, repo Repository) (bool, error) {
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/vulnerability-alerts", nil, nil)
+	if err == nil {
+		return true, nil
+	}
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // SetAutomatedSecurityFixes enables or disables Dependabot security updates.

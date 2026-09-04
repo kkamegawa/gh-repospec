@@ -73,7 +73,10 @@ a ruleset to a repository that already has traffic.
 `actions.forkPullRequestApproval` selects when a workflow run from a fork
 requires manual approval: `first_time_contributors_new_to_github`,
 `first_time_contributors`, or `all_external_contributors`, matching the
-enumeration style already used by `allowedActions`.
+enumeration style already used by `allowedActions`. GitHub rejects this
+endpoint outright on a private repository; declaring it alongside
+`repository.visibility: private` is reported as blocked rather than
+attempted.
 
 `security.dependabotSecurityUpdates` requires Dependabot alerts to be
 effectively enabled, because the GitHub API rejects it otherwise. The

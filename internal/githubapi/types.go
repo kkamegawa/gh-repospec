@@ -1,7 +1,10 @@
 // Package githubapi contains the GitHub REST operations used by the planner and applier.
 package githubapi
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 // APIVersion is sent with every request so GitHub REST behavior is stable.
 const APIVersion = "2026-03-10"
@@ -112,16 +115,68 @@ type SelectedActionsRequest struct {
 	PatternsAllowed    []string `json:"patterns_allowed,omitempty"`
 }
 
+// ForkPullRequestApproval is the fork PR contributor approval policy. GitHub
+// rejects this endpoint for private repositories, so ApprovalPolicy has no
+// omitempty: a false-shaped zero value must never be silently dropped from
+// the PUT body the way ActionsPermissions.SHAPinningRequired can be.
+type ForkPullRequestApproval struct {
+	ApprovalPolicy string `json:"approval_policy"`
+}
+
+// Team is the subset of an organization team needed to resolve a ruleset
+// bypass actor slug to the numeric ID the rulesets API requires.
+type Team struct {
+	ID   int64  `json:"id"`
+	Slug string `json:"slug"`
+}
+
+// App is the subset of a GitHub App needed to resolve a ruleset bypass actor
+// slug to the numeric ID the rulesets API requires.
+type App struct {
+	ID   int64  `json:"id"`
+	Slug string `json:"slug"`
+}
+
+// CustomRepositoryRole is one organization custom repository role, used to
+// resolve a ruleset bypass actor customRole name to the numeric ID the
+// rulesets API requires.
+type CustomRepositoryRole struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// customRepositoryRoleList is GitHub's wrapped response for listing custom
+// repository roles; unlike labels and milestones it is not a bare array, so
+// listAll cannot decode it directly.
+type customRepositoryRoleList struct {
+	TotalCount  int                    `json:"total_count"`
+	CustomRoles []CustomRepositoryRole `json:"custom_roles"`
+}
+
 // Ruleset is an intentionally flexible representation of a repository ruleset.
 // Rules and conditions retain GitHub's API shape without losing new rule types.
 type Ruleset struct {
-	ID           int64            `json:"id,omitempty"`
-	Name         string           `json:"name"`
-	Target       string           `json:"target,omitempty"`
-	Enforcement  string           `json:"enforcement"`
-	Conditions   map[string]any   `json:"conditions,omitempty"`
-	Rules        []map[string]any `json:"rules,omitempty"`
-	BypassActors []map[string]any `json:"bypass_actors,omitempty"`
+	ID          int64            `json:"id,omitempty"`
+	Name        string           `json:"name"`
+	Target      string           `json:"target,omitempty"`
+	Enforcement string           `json:"enforcement"`
+	Conditions  map[string]any   `json:"conditions,omitempty"`
+	Rules       []map[string]any `json:"rules,omitempty"`
+	// BypassActors deliberately has no omitempty: like Rules and Conditions, a
+	// ruleset write replaces the whole declared set, so an empty or absent list
+	// in configuration must clear bypass actors set through the GitHub UI
+	// rather than silently leaving them in place.
+	BypassActors []BypassActor `json:"bypass_actors"`
+}
+
+// BypassActor is one rulesets API bypass_actors entry. Unlike rules and
+// conditions its shape is fixed by the API, so it is typed rather than a raw
+// map. ActorID has no omitempty because GitHub still requires the field for
+// OrganizationAdmin even though it ignores the value there.
+type BypassActor struct {
+	ActorID    int64  `json:"actor_id"`
+	ActorType  string `json:"actor_type"`
+	BypassMode string `json:"bypass_mode"`
 }
 
 // SecurityAndAnalysisRequest is the security_and_analysis block of Update a repository.
@@ -330,8 +385,10 @@ func (e *APIError) Error() string {
 	return e.Method + " " + e.Path + " returned HTTP " + itoa(e.StatusCode) + ": " + e.Message
 }
 
-// IsNotFound reports whether err is a GitHub 404 response.
+// IsNotFound reports whether err is a GitHub 404 response. errors.As is used
+// instead of a direct type assertion so a wrapped APIError (fmt.Errorf with
+// %w) is still recognised.
 func IsNotFound(err error) bool {
-	e, ok := err.(*APIError)
-	return ok && e.StatusCode == 404
+	var apiError *APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == 404
 }

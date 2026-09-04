@@ -342,11 +342,11 @@ func TestApplyConvergesRepositoryFeatureAndMergeCommitSettings(t *testing.T) {
 	}
 }
 
-// TestBuildSurfacesPendingBypassActorsAndForkPullRequestApproval guards
-// visibility for fields accepted by config validation but not yet applied
-// (issue #10): they must appear as manual changes, never silently dropped,
-// and must never block the parts of the plan that are supported.
-func TestBuildSurfacesPendingBypassActorsAndForkPullRequestApproval(t *testing.T) {
+// TestBuildPlansBypassActorsAndForkPullRequestApproval guards visibility for
+// issue #10: both fields must be actually planned for write, never reported
+// as a manual no-op, and must never block the parts of the plan that are
+// otherwise supported.
+func TestBuildPlansBypassActorsAndForkPullRequestApproval(t *testing.T) {
 	t.Parallel()
 	enabled := true
 	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
@@ -367,14 +367,295 @@ func TestBuildSurfacesPendingBypassActorsAndForkPullRequestApproval(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !hasChange(plan, "actions.forkPullRequestApproval", ChangeManual) {
-		t.Fatalf("plan did not surface forkPullRequestApproval as manual: %#v", plan.Changes)
+	if !hasChange(plan, "actions.forkPullRequestApproval", ChangeUpdate) {
+		t.Fatalf("plan did not plan forkPullRequestApproval for write: %#v", plan.Changes)
 	}
-	if !hasChange(plan, "ruleset.protect-main.bypassActors", ChangeManual) {
-		t.Fatalf("plan did not surface bypassActors as manual: %#v", plan.Changes)
+	// The ruleset itself does not exist yet on the fake, so its bypassActors
+	// entry is created alongside it rather than updated.
+	if !hasChange(plan, "ruleset.protect-main.bypassActors", ChangeCreate) {
+		t.Fatalf("plan did not plan bypassActors for write: %#v", plan.Changes)
 	}
 	if plan.HasBlocked() {
-		t.Fatalf("pending fields unexpectedly blocked the plan: %#v", plan.Changes)
+		t.Fatalf("resolvable fields unexpectedly blocked the plan: %#v", plan.Changes)
+	}
+}
+
+// TestBuildBlocksUnresolvableBypassActor guards docs/design.md's requirement
+// that an actor slug which cannot be resolved blocks the plan instead of
+// silently dropping the bypass or failing midway through apply.
+func TestBuildBlocksUnresolvableBypassActor(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Owner: githubapi.Owner{Type: "Organization"}, Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo-org", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules:        []config.RulesetRule{{Type: "deletion"}},
+			BypassActors: []config.BypassActorConfig{{Team: "unknown-team", BypassMode: "always"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.HasBlocked() {
+		t.Fatalf("unresolvable bypass actor did not block the plan: %#v", plan.Changes)
+	}
+	if !hasChange(plan, "ruleset.protect-main.bypassActors[0]", ChangeBlocked) {
+		t.Fatalf("plan did not name the unresolvable entry by index: %#v", plan.Changes)
+	}
+}
+
+// TestBuildBlocksOrganizationActorOnPersonalRepository guards the personal
+// repository short-circuit: GitHub's organization endpoints 404 for a User
+// account, so an org-only actor type is reported with its own message
+// instead of a confusing "not found" lookup failure. role and app are
+// unaffected, since both exist on personal repositories too.
+func TestBuildBlocksOrganizationActorOnPersonalRepository(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{Owner: githubapi.Owner{Type: "User"}, Visibility: "public"},
+		apps:       map[string]githubapi.App{"renovate": {ID: 7, Slug: "renovate"}},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octocat", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules: []config.RulesetRule{{Type: "deletion"}},
+			BypassActors: []config.BypassActorConfig{
+				{OrgAdmin: true, BypassMode: "always"},
+				{App: "renovate", BypassMode: "always"},
+			},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "ruleset.protect-main.bypassActors[0]", ChangeBlocked) {
+		t.Fatalf("orgAdmin was not blocked on a personal repository: %#v", plan.Changes)
+	}
+	if service.getTeamCalls != 0 {
+		t.Fatalf("personal repository short-circuit still queried the Teams API: %d calls", service.getTeamCalls)
+	}
+	if hasChange(plan, "ruleset.protect-main.bypassActors[1]", ChangeBlocked) {
+		t.Fatalf("app bypass actor was unexpectedly blocked on a personal repository: %#v", plan.Changes)
+	}
+}
+
+// TestBuildAcceptsResolvedBypassActorIDsWithoutLookups guards the
+// "id:<number>" form docs/design.md requires so import output applies again
+// unchanged, without spending a lookup on an identity already resolved.
+func TestBuildAcceptsResolvedBypassActorIDsWithoutLookups(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Owner: githubapi.Owner{Type: "Organization"}, Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo-org", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules:        []config.RulesetRule{{Type: "deletion"}},
+			BypassActors: []config.BypassActorConfig{{Team: "id:42", BypassMode: "always"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.HasBlocked() {
+		t.Fatalf("resolved id:<number> form unexpectedly blocked the plan: %#v", plan.Changes)
+	}
+	if service.getTeamCalls != 0 {
+		t.Fatalf("id:<number> form should not query the Teams API: %d calls", service.getTeamCalls)
+	}
+}
+
+// TestBuildCachesBypassActorLookupsAcrossRulesets guards the resolver's
+// cache: naming the same team from two rulesets in one plan must cost one
+// Teams API request, not two.
+func TestBuildCachesBypassActorLookupsAcrossRulesets(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{Owner: githubapi.Owner{Type: "Organization"}, Visibility: "public"},
+		teams:      map[string]githubapi.Team{"octo-org/platform": {ID: 9, Slug: "platform"}},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo-org", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{
+			{
+				Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+				Rules:        []config.RulesetRule{{Type: "deletion"}},
+				BypassActors: []config.BypassActorConfig{{Team: "platform", BypassMode: "always"}},
+			},
+			{
+				Name: "protect-release", Enforcement: "active", Target: "branch", Include: []string{"release/*"},
+				Rules:        []config.RulesetRule{{Type: "deletion"}},
+				BypassActors: []config.BypassActorConfig{{Team: "platform", BypassMode: "always"}},
+			},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.HasBlocked() {
+		t.Fatalf("known team unexpectedly blocked the plan: %#v", plan.Changes)
+	}
+	if service.getTeamCalls != 1 {
+		t.Fatalf("getTeamCalls = %d, want 1 (cached across rulesets)", service.getTeamCalls)
+	}
+}
+
+// TestBuildBlocksForkPullRequestApprovalOnPrivateRepository guards a GitHub
+// constraint not stated in docs/design.md until this issue: the fork PR
+// contributor approval endpoint rejects private repositories outright
+// (HTTP 422), so that combination must never reach apply.
+func TestBuildBlocksForkPullRequestApprovalOnPrivateRepository(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		visibility string
+		wantState  ChangeState
+	}{
+		{name: "private is blocked", visibility: "private", wantState: ChangeBlocked},
+		{name: "public is planned", visibility: "public", wantState: ChangeUpdate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: tc.visibility}}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: tc.visibility},
+				Actions:       &config.ActionsConfig{ForkPullRequestApproval: "all_external_contributors"},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasChange(plan, "actions.forkPullRequestApproval", tc.wantState) {
+				t.Fatalf("visibility %q: plan.Changes = %#v, want actions.forkPullRequestApproval as %s", tc.visibility, plan.Changes, tc.wantState)
+			}
+		})
+	}
+}
+
+// TestBuildDependabotDependency guards docs/design.md's three-state
+// dependency: security.dependabotSecurityUpdates requires Dependabot alerts
+// to be effectively enabled, evaluated against configuration first and the
+// live repository state as the fallback.
+func TestBuildDependabotDependency(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		alerts      *config.FeatureSetting
+		liveEnabled bool
+		wantState   ChangeState
+	}{
+		{name: "alerts declared true", alerts: &config.FeatureSetting{Enabled: true}, wantState: ChangeUpdate},
+		{name: "alerts omitted, live enabled", alerts: nil, liveEnabled: true, wantState: ChangeUpdate},
+		{name: "alerts omitted, live disabled", alerts: nil, liveEnabled: false, wantState: ChangeBlocked},
+		{name: "alerts declared false", alerts: &config.FeatureSetting{Enabled: false}, wantState: ChangeBlocked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{
+				repository:                 githubapi.RepositoryInfo{Visibility: "public"},
+				vulnerabilityAlertsEnabled: tc.liveEnabled,
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+				Security: &config.SecurityConfig{
+					DependabotAlerts:          tc.alerts,
+					DependabotSecurityUpdates: &config.FeatureSetting{Enabled: true},
+				},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasChange(plan, "security.dependabotSecurityUpdates", tc.wantState) {
+				t.Fatalf("plan.Changes = %#v, want security.dependabotSecurityUpdates as %s", plan.Changes, tc.wantState)
+			}
+		})
+	}
+}
+
+// TestBuildDependabotSecurityUpdatesDegradesToManualWhenOptional guards the
+// existing optional escape hatch: a blocked dependency must still degrade to
+// a manual change, not stop the run, when the declaration opts in.
+func TestBuildDependabotSecurityUpdatesDegradesToManualWhenOptional(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Security: &config.SecurityConfig{
+			DependabotAlerts:          &config.FeatureSetting{Enabled: false},
+			DependabotSecurityUpdates: &config.FeatureSetting{Enabled: true, Optional: true},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "security.dependabotSecurityUpdates", ChangeManual) {
+		t.Fatalf("optional dependency violation did not degrade to manual: %#v", plan.Changes)
+	}
+	if plan.HasBlocked() {
+		t.Fatalf("optional dependency violation unexpectedly blocked the plan: %#v", plan.Changes)
+	}
+}
+
+// TestBuildBlocksDependabotSecurityUpdatesOnNewRepository guards the create
+// path: the live repository state cannot be consulted before the repository
+// exists, so an omitted dependabotAlerts declaration is treated as
+// unsatisfied rather than assumed enabled.
+func TestBuildBlocksDependabotSecurityUpdatesOnNewRepository(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{getRepositoryErr: &githubapi.APIError{StatusCode: 404}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Create: true},
+		Security: &config.SecurityConfig{
+			DependabotSecurityUpdates: &config.FeatureSetting{Enabled: true},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "security.dependabotSecurityUpdates", ChangeBlocked) {
+		t.Fatalf("plan.Changes = %#v, want security.dependabotSecurityUpdates blocked on the create path", plan.Changes)
 	}
 }
 
@@ -389,6 +670,7 @@ func hasChange(plan Plan, resource string, state ChangeState) bool {
 
 type fakeService struct {
 	repository                     githubapi.RepositoryInfo
+	getRepositoryErr               error
 	actions                        githubapi.ActionsPermissions
 	actionVariables                githubapi.ActionVariableList
 	agentVariables                 githubapi.AgentVariableList
@@ -396,6 +678,13 @@ type fakeService struct {
 	labels                         []githubapi.Label
 	milestones                     []githubapi.Milestone
 	immutableReleases              githubapi.ImmutableReleases
+	forkPullRequestApproval        githubapi.ForkPullRequestApproval
+	forkPullRequestApprovalErr     error
+	vulnerabilityAlertsEnabled     bool
+	vulnerabilityAlertsErr         error
+	teams                          map[string]githubapi.Team
+	apps                           map[string]githubapi.App
+	customRoles                    []githubapi.CustomRepositoryRole
 	updateRepositoryCalls          int
 	listActionVariablesCalls       int
 	createOrUpdateEnvironmentCalls int
@@ -403,10 +692,13 @@ type fakeService struct {
 	updateLabelCalls               int
 	createMilestoneCalls           int
 	updateMilestoneCalls           int
+	getTeamCalls                   int
+	getAppCalls                    int
+	listCustomRepositoryRolesCalls int
 }
 
 func (f *fakeService) GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error) {
-	return f.repository, nil
+	return f.repository, f.getRepositoryErr
 }
 
 func (f *fakeService) CreateRepository(_ context.Context, request githubapi.CreateRepositoryRequest) (githubapi.RepositoryInfo, error) {
@@ -470,6 +762,47 @@ func (*fakeService) UpdateDefaultWorkflowPermissions(context.Context, githubapi.
 }
 
 func (*fakeService) UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error {
+	return nil
+}
+
+func (f *fakeService) GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error) {
+	return f.forkPullRequestApproval, f.forkPullRequestApprovalErr
+}
+
+func (*fakeService) SetForkPullRequestApproval(context.Context, githubapi.Repository, githubapi.ForkPullRequestApproval) error {
+	return nil
+}
+
+func (f *fakeService) GetTeam(_ context.Context, org, slug string) (githubapi.Team, error) {
+	f.getTeamCalls++
+	if team, ok := f.teams[org+"/"+slug]; ok {
+		return team, nil
+	}
+	return githubapi.Team{}, &githubapi.APIError{StatusCode: 404, Method: "GET", Path: "/orgs/" + org + "/teams/" + slug}
+}
+
+func (f *fakeService) GetApp(_ context.Context, slug string) (githubapi.App, error) {
+	f.getAppCalls++
+	if app, ok := f.apps[slug]; ok {
+		return app, nil
+	}
+	return githubapi.App{}, &githubapi.APIError{StatusCode: 404, Method: "GET", Path: "/apps/" + slug}
+}
+
+func (f *fakeService) ListCustomRepositoryRoles(context.Context, string) ([]githubapi.CustomRepositoryRole, error) {
+	f.listCustomRepositoryRolesCalls++
+	return f.customRoles, nil
+}
+
+func (f *fakeService) GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error) {
+	return f.vulnerabilityAlertsEnabled, f.vulnerabilityAlertsErr
+}
+
+func (*fakeService) SetVulnerabilityAlerts(context.Context, githubapi.Repository, bool) error {
+	return nil
+}
+
+func (*fakeService) SetAutomatedSecurityFixes(context.Context, githubapi.Repository, bool) error {
 	return nil
 }
 

@@ -8,7 +8,7 @@
 
 Version 1 targets personal repositories and GitHub Free, Pro, and Team organizations on GitHub.com. GitHub Enterprise Server is rejected. Enterprise Cloud is outside the supported scope.
 
-Part of the contract below is specified but not yet implemented: `import`, `plan --ci`, `apply --force-secrets`, ruleset bypass actors, and `actions.forkPullRequestApproval`. They come from the [gh-infra feature review](docs/gh-infra-parity.md), are specified in [docs/design.md](docs/design.md), and are tracked as implementation issues. Everything else is implemented.
+Part of the contract below is specified but not yet implemented: `import`, `plan --ci`, and `apply --force-secrets`. They come from the [gh-infra feature review](docs/gh-infra-parity.md), are specified in [docs/design.md](docs/design.md), and are tracked as implementation issues. Everything else is implemented.
 
 ## Install
 

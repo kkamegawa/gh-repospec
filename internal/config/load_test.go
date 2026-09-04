@@ -300,6 +300,58 @@ func TestValidateRulesetEnforcementAndBypassActors(t *testing.T) {
 	}
 }
 
+// TestValidateBypassActorResolvedIDForm guards docs/design.md's requirement
+// that team, app, and customRole accept the resolved "id:<number>" form so
+// import output can be applied again unchanged, while role and orgAdmin
+// reject it since their actor IDs are the fixed GitHub base role IDs.
+func TestValidateBypassActorResolvedIDForm(t *testing.T) {
+	t.Parallel()
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+
+	resolved := base
+	resolved.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules: []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{
+			{Team: "id:42", BypassMode: "always"},
+			{App: "id:7", BypassMode: "always"},
+			{CustomRole: "id:19", BypassMode: "always"},
+		},
+	}}
+	if err := Validate(&resolved); err != nil {
+		t.Fatalf("Validate() error = %v, want the resolved id:<number> form accepted for team, app, and customRole", err)
+	}
+
+	for _, malformed := range []string{"id:", "id:abc", "id:-1", "id:0"} {
+		invalid := base
+		invalid.Rulesets = []RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules:        []RulesetRule{{Type: "deletion"}},
+			BypassActors: []BypassActorConfig{{App: malformed, BypassMode: "always"}},
+		}}
+		err := Validate(&invalid)
+		if err == nil {
+			t.Fatalf("Validate() unexpectedly accepted malformed app selector %q", malformed)
+		}
+		if !strings.Contains(err.Error(), "bypassActors[0]") {
+			t.Fatalf("Validate() error = %v, want it to name the offending entry index", err)
+		}
+	}
+
+	roleWithID := base
+	roleWithID.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules:        []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{{Role: "id:5", BypassMode: "always"}},
+	}}
+	if err := Validate(&roleWithID); err == nil {
+		t.Fatal("Validate() unexpectedly accepted id:<number> for role: role IDs are fixed, not resolved")
+	}
+}
+
 func TestValidateActionsForkPullRequestApproval(t *testing.T) {
 	t.Parallel()
 	base := Config{

@@ -8,7 +8,7 @@
 
 Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team の組織を対象にします。GitHub Enterprise Server は拒否し、Enterprise Cloud はサポート対象外です。
 
-以下の契約のうち一部は仕様として定義済みで、実装はこれからです。`import`、`plan --ci`、`apply --force-secrets`、ruleset の bypass actor、`actions.forkPullRequestApproval` が該当します。いずれも [gh-infra との機能比較](docs/gh-infra-parity_ja.md) に基づき、[docs/design_ja.md](docs/design_ja.md) で仕様化し、Issue で追跡します。それ以外は実装済みです。
+以下の契約のうち一部は仕様として定義済みで、実装はこれからです。`import`、`plan --ci`、`apply --force-secrets` が該当します。いずれも [gh-infra との機能比較](docs/gh-infra-parity_ja.md) に基づき、[docs/design_ja.md](docs/design_ja.md) で仕様化し、Issue で追跡します。それ以外は実装済みです。
 
 ## インストール
 

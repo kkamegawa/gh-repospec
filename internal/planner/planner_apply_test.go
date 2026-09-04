@@ -419,3 +419,173 @@ func (s *recordingService) SetImmutableReleases(ctx context.Context, repository 
 	s.mutations = append(s.mutations, "releaseImmutability")
 	return s.fakeService.SetImmutableReleases(ctx, repository, enabled)
 }
+
+func (s *recordingService) SetForkPullRequestApproval(ctx context.Context, repository githubapi.Repository, request githubapi.ForkPullRequestApproval) error {
+	s.mutations = append(s.mutations, "fork-pr-approval")
+	return s.fakeService.SetForkPullRequestApproval(ctx, repository, request)
+}
+
+func (s *recordingService) SetVulnerabilityAlerts(ctx context.Context, repository githubapi.Repository, enabled bool) error {
+	s.mutations = append(s.mutations, "dependabot-alerts")
+	s.vulnerabilityAlertsEnabled = enabled
+	return s.fakeService.SetVulnerabilityAlerts(ctx, repository, enabled)
+}
+
+func (s *recordingService) SetAutomatedSecurityFixes(ctx context.Context, repository githubapi.Repository, enabled bool) error {
+	s.mutations = append(s.mutations, "dependabot-security-updates")
+	return s.fakeService.SetAutomatedSecurityFixes(ctx, repository, enabled)
+}
+
+// TestApplySendsResolvedBypassActorsAndEvaluateEnforcement guards the wire
+// shape apply actually sends: role and the resolved "id:<number>" form both
+// resolve to the numeric actor IDs the rulesets API requires, and
+// enforcement: evaluate passes through unchanged.
+func TestApplySendsResolvedBypassActorsAndEvaluateEnforcement(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Owner: githubapi.Owner{Type: "Organization"}, Visibility: "public"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo-org", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "evaluate", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules: []config.RulesetRule{{Type: "deletion"}},
+			BypassActors: []config.BypassActorConfig{
+				{Role: "admin", BypassMode: "pull_request"},
+				{Team: "id:42", BypassMode: "always"},
+			},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.lastRuleset.Enforcement != "evaluate" {
+		t.Fatalf("lastRuleset.Enforcement = %q, want %q", service.lastRuleset.Enforcement, "evaluate")
+	}
+	want := []githubapi.BypassActor{
+		{ActorID: 5, ActorType: "RepositoryRole", BypassMode: "pull_request"},
+		{ActorID: 42, ActorType: "Team", BypassMode: "always"},
+	}
+	if !reflect.DeepEqual(service.lastRuleset.BypassActors, want) {
+		t.Fatalf("lastRuleset.BypassActors = %#v, want %#v", service.lastRuleset.BypassActors, want)
+	}
+}
+
+// TestApplyResolvesBypassActorsOncePerRun guards resolver reuse between plan
+// and apply: build resolves once during planning, and Apply must reuse that
+// resolver's cache rather than looking the same team up a second time.
+func TestApplyResolvesBypassActorsOncePerRun(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Owner: githubapi.Owner{Type: "Organization"}, Visibility: "public"},
+		teams:      map[string]githubapi.Team{"octo-org/platform": {ID: 9, Slug: "platform"}},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo-org", Name: "demo", Visibility: "public"},
+		Rulesets: []config.RulesetConfig{{
+			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+			Rules:        []config.RulesetRule{{Type: "deletion"}},
+			BypassActors: []config.BypassActorConfig{{Team: "platform", BypassMode: "always"}},
+		}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.getTeamCalls != 1 {
+		t.Fatalf("getTeamCalls = %d, want 1 (resolved once across plan and apply)", service.getTeamCalls)
+	}
+}
+
+// TestApplySetsForkPullRequestApprovalAfterActionsPermissions guards apply
+// order: the fork PR approval policy is a separate endpoint from Actions
+// permissions and must be set after them, matching the plan's settings stage.
+func TestApplySetsForkPullRequestApprovalAfterActionsPermissions(t *testing.T) {
+	t.Parallel()
+	enabled := true
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		actions:    githubapi.ActionsPermissions{Enabled: false},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions:       &config.ActionsConfig{Enabled: &enabled, ForkPullRequestApproval: "all_external_contributors"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := slices.Index(service.mutations, "actions")
+	forkApproval := slices.Index(service.mutations, "fork-pr-approval")
+	if actions == -1 || forkApproval == -1 || actions > forkApproval {
+		t.Fatalf("fork pull request approval must apply after Actions permissions: %#v", service.mutations)
+	}
+}
+
+// TestApplyEnablesDependabotAlertsBeforeSecurityUpdates guards
+// docs/design.md's ordering requirement: enabling both in the same file
+// applies alerts first, because GitHub rejects security updates otherwise.
+func TestApplyEnablesDependabotAlertsBeforeSecurityUpdates(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Security: &config.SecurityConfig{
+			DependabotAlerts:          &config.FeatureSetting{Enabled: true},
+			DependabotSecurityUpdates: &config.FeatureSetting{Enabled: true},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	alerts := slices.Index(service.mutations, "dependabot-alerts")
+	securityUpdates := slices.Index(service.mutations, "dependabot-security-updates")
+	if alerts == -1 || securityUpdates == -1 || alerts > securityUpdates {
+		t.Fatalf("Dependabot alerts must apply before security updates: %#v", service.mutations)
+	}
+}
+
+// TestApplySkipsSecurityUpdatesWhenAlertsAreNotEffectivelyEnabled guards the
+// belt-and-suspenders check in applyRemainingSecurity: even if a caller
+// somehow bypasses the blocked plan, apply itself never sends a security
+// updates write GitHub is known to reject.
+func TestApplySkipsSecurityUpdatesWhenAlertsAreNotEffectivelyEnabled(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository:                 githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		vulnerabilityAlertsEnabled: false,
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+		DependabotSecurityUpdates: &config.FeatureSetting{Enabled: true},
+	})
+	if err == nil {
+		t.Fatal("applyRemainingSecurity unexpectedly succeeded with alerts not effectively enabled")
+	}
+	if slices.Contains(service.mutations, "dependabot-security-updates") {
+		t.Fatalf("SetAutomatedSecurityFixes was called despite alerts not being effectively enabled: %#v", service.mutations)
+	}
+}
