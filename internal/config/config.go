@@ -169,6 +169,24 @@ type BypassActorConfig struct {
 	BypassMode string `json:"bypassMode,omitempty" yaml:"bypassMode,omitempty"`
 }
 
+// RepositoryRoleActorIDs are GitHub's built-in repository role IDs for
+// ruleset bypass actors. They are stable but undocumented by GitHub, and
+// distinct from an organization custom repository role, whose ID is
+// assigned when the role is created and is always resolved through the API
+// instead. The planner uses this map to resolve a declared role selector to
+// its ID before a write; import uses it in reverse, to recognize a fetched
+// actor ID as one of these fixed roles rather than a custom role.
+var RepositoryRoleActorIDs = map[string]int64{
+	"maintain": 2,
+	"write":    4,
+	"admin":    5,
+}
+
+// OrganizationAdminActorID is the ruleset bypass actor ID GitHub expects for
+// the OrganizationAdmin actor type. GitHub ignores the value but rejects a
+// request that omits it.
+const OrganizationAdminActorID = 1
+
 // bypassActorIDPrefix marks a bypass actor selector as an already-resolved
 // numeric ID rather than a name to look up.
 const bypassActorIDPrefix = "id:"
