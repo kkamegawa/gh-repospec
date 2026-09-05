@@ -106,6 +106,63 @@ func TestComputePlanLabelsAddsUpdatesAndKeepsNotApplied(t *testing.T) {
 	}
 }
 
+// TestComputePlanNeverIntroducesAnUndeclaredLabelDescription guards against
+// planning a description update purely because the imported label has one:
+// an omitted description decodes as "", indistinguishable from "declared
+// empty", and planning an update there would ask the YAML writer to add a
+// sub-field that was never declared, which it refuses.
+func TestComputePlanNeverIntroducesAnUndeclaredLabelDescription(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Labels: []config.LabelConfig{{Name: "bug", Color: "d73a4a"}}}
+	desired := &config.Config{Labels: []config.LabelConfig{{Name: "bug", Color: "d73a4a", Description: "a bug"}}}
+	plan := computePlan(current, desired)
+	if len(plan.Collections) != 1 || len(plan.Collections[0].Updated) != 0 {
+		t.Fatalf("Collections = %#v, want no update planned for an undeclared description", plan.Collections)
+	}
+}
+
+// TestComputePlanRefreshesAlreadyDeclaredLabelDescriptionToEmpty guards the
+// other direction: once a description is already declared, GitHub reporting
+// it removed is a value change to an existing field, not an add, and must
+// still refresh through.
+func TestComputePlanRefreshesAlreadyDeclaredLabelDescriptionToEmpty(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Labels: []config.LabelConfig{{Name: "bug", Color: "d73a4a", Description: "a bug"}}}
+	desired := &config.Config{Labels: []config.LabelConfig{{Name: "bug", Color: "d73a4a"}}}
+	plan := computePlan(current, desired)
+	if len(plan.Collections) != 1 || len(plan.Collections[0].Updated) != 1 {
+		t.Fatalf("Collections = %#v, want the declared description cleared", plan.Collections)
+	}
+}
+
+// TestComputePlanRefreshesDeclaredMilestoneStateAndDueOnEvenWhenGitHubClearsThem
+// guards against the mirror-image bug: requiring the desired value to be
+// non-empty too (in addition to the declared one) left a stale declared
+// state or dueOn in place whenever GitHub reported the field absent,
+// breaking import -> refresh -> plan convergence.
+func TestComputePlanRefreshesDeclaredMilestoneStateAndDueOnEvenWhenGitHubClearsThem(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Milestones: []config.MilestoneConfig{{Title: "v1", State: "closed", DueOn: "2026-01-01"}}}
+	desired := &config.Config{Milestones: []config.MilestoneConfig{{Title: "v1"}}}
+	plan := computePlan(current, desired)
+	if len(plan.Collections) != 1 || len(plan.Collections[0].Updated) != 1 {
+		t.Fatalf("Collections = %#v, want state and dueOn refreshed to reflect GitHub clearing them", plan.Collections)
+	}
+	scalars := plan.Collections[0].Updated[0].Scalars
+	var sawState, sawDueOn bool
+	for _, sc := range scalars {
+		if sc.Path == "state" {
+			sawState = true
+		}
+		if sc.Path == "dueOn" {
+			sawDueOn = true
+		}
+	}
+	if !sawState || !sawDueOn {
+		t.Fatalf("Scalars = %#v, want both state and dueOn updates", scalars)
+	}
+}
+
 func TestComputePlanUndeclaredCollectionIsNeverTouched(t *testing.T) {
 	t.Parallel()
 	current := &config.Config{} // Labels is nil: undeclared
