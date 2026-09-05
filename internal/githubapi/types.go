@@ -176,7 +176,7 @@ type customRepositoryRoleList struct {
 	CustomRoles []CustomRepositoryRole `json:"custom_roles"`
 }
 
-func (l *customRepositoryRoleList) pageItems() []CustomRepositoryRole { return l.CustomRoles }
+func (l *customRepositoryRoleList) pageItems() []CustomRepositoryRole { return l.CustomRoles } //nolint:unused // called only through the wrappedList[T] generic constraint in listAllWrapped, which some analyzers cannot trace back to this concrete type
 
 // Ruleset is an intentionally flexible representation of a repository ruleset.
 // Rules and conditions retain GitHub's API shape without losing new rule types.
@@ -272,7 +272,7 @@ type SecretList struct {
 	Secrets    []SecretMetadata `json:"secrets"`
 }
 
-func (l *SecretList) pageItems() []SecretMetadata { return l.Secrets }
+func (l *SecretList) pageItems() []SecretMetadata { return l.Secrets } //nolint:unused // see customRepositoryRoleList.pageItems
 
 // ActionVariable represents a repository Actions variable.
 type ActionVariable struct {
@@ -288,7 +288,7 @@ type ActionVariableList struct {
 	Variables  []ActionVariable `json:"variables"`
 }
 
-func (l *ActionVariableList) pageItems() []ActionVariable { return l.Variables }
+func (l *ActionVariableList) pageItems() []ActionVariable { return l.Variables } //nolint:unused // see customRepositoryRoleList.pageItems
 
 // EnvironmentRequest contains the repository environment properties supported by
 // GitHub's create-or-update environment endpoint. Nil fields are left unchanged
@@ -330,7 +330,7 @@ type environmentList struct {
 	Environments []Environment `json:"environments"`
 }
 
-func (l *environmentList) pageItems() []Environment { return l.Environments }
+func (l *environmentList) pageItems() []Environment { return l.Environments } //nolint:unused // see customRepositoryRoleList.pageItems
 
 // GitReference identifies a branch ref and its current object SHA.
 type GitReference struct {
@@ -433,7 +433,7 @@ type AgentVariableList struct {
 	Variables  []AgentVariable `json:"variables"`
 }
 
-func (l *AgentVariableList) pageItems() []AgentVariable { return l.Variables }
+func (l *AgentVariableList) pageItems() []AgentVariable { return l.Variables } //nolint:unused // see customRepositoryRoleList.pageItems
 
 // APIError is a typed, token-safe error response from GitHub.
 type APIError struct {
