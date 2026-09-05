@@ -133,33 +133,41 @@ blocks a change this run was also supposed to make.
 
 ## import
 
-`import <owner/repository>` fetches the live state of an existing repository
-and writes a `schemaVersion: 1` document, so an already-configured repository
-can be brought under this extension without transcribing settings by hand. The
-default output is the document on standard output; `--format` selects YAML or
-JSON, and `-R`/`--repo` is accepted as an alternative to the positional
-argument for consistency with the other commands.
+`import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`
+fetches an existing repository and produces a `schemaVersion: 1` document.
+`-R`/`--repo` substitutes for the positional repository, but the two forms
+cannot be combined. YAML is the default stdout format; JSON is available for
+automation. Import only reads GitHub and never makes a repository write.
 
-Imported sections are `repository` (including topics, features, merge
-settings, and archived state), `labels`, `milestones`, `rulesets` with their
-bypass actors, `actions` permissions, variables, and environments, and
-`security`. Server-generated values such as ruleset IDs and timestamps are not
-written, because the ruleset name is the stable identity in this contract.
+The importer maps `repository` (topics, features, merge settings, and archived
+state), `labels`, `milestones`, `rulesets` and bypass actors, Actions
+permissions/variables/environment names, `security`, and agent variables.
+Server-generated ruleset IDs and timestamps are omitted. Ruleset names are the
+stable identity; imported Team, App, and custom-role bypass actors use the
+existing `id:<number>` selector. Inherited or otherwise unrepresentable
+rulesets are reported rather than silently reduced.
 
-Three things are not importable and are reported, not silently omitted. Secret
-values are never returned by the GitHub API, so secrets appear as a comment
-listing the names found on the repository, and the user supplies each
-`sourceEnv`. `seed` and `commands` describe local intent that no repository
-state implies. `agents` file paths depend on the seed layout; agent variables
-are imported, agent secret names follow the same rule as Actions secrets.
+Secret values and `sourceEnv` names cannot be read from GitHub. Secret names
+are reported as YAML comments and JSON diagnostics so the user can provide a
+source environment variable. `seed`, `commands`, and agent file paths are
+local intent and are never inferred. A refresh preserves those declarations,
+including secret update policies, `optional` flags, and agent paths.
 
-`--into <path>` runs the same fetch against an existing configuration file and
-updates it in place instead of writing a new document. The file is rewritten
-through YAML node editing so comments, key order, and formatting survive; a
-JSON configuration is reformatted as JSON. The differences are printed and
-confirmed before the file is written, and `--yes` skips the prompt. Fields the
-file does not declare stay undeclared: `--into` refreshes what is managed, it
-does not expand the managed surface.
+`--into <path>` refreshes only paths and top-level sections already declared in
+the file. A declared collection is its complete managed boundary: entries are
+added, updated, or removed to match the imported state, including every
+importable attribute. Retained entry order and attached comments are kept;
+new entries are appended in name order. Undeclared sections remain undeclared,
+and an empty declared collection remains declared.
+
+YAML refresh uses parsed node positions to replace only affected byte ranges.
+Comments, key order, indentation, quote style, and line endings outside those
+ranges are preserved; re-encoding an entire YAML node is not sufficient. JSON
+is reformatted as JSON while retaining JSON input. The proposed difference is
+shown and confirmed before saving, with `--yes` skipping confirmation. A
+no-op, validation error, declined confirmation, concurrent edit, or save error
+leaves the original file unchanged. An input format and an explicit
+`--format` value must agree when `--into` is used.
 
 ## Drift detection and CI
 

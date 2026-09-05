@@ -117,27 +117,32 @@ rulesetは最後に適用します。全体はトランザクションでは
 
 ## import
 
-`import <owner/repository>`は既存リポジトリのライブ状態を取得し、`schemaVersion: 1`の
-文書を書き出します。設定済みリポジトリを手作業で書き写すことなく本拡張の管理下に
-置くためです。既定では文書を標準出力へ出力し、`--format`でYAMLとJSONを選択します。
-他のコマンドとの一貫性のため、位置引数の代わりに`-R`/`--repo`も使用できます。
+`import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`は既存リポジトリを
+取得し、`schemaVersion: 1`の文書を生成します。位置引数の代わりに`-R`/`--repo`を使えますが、
+両方の指定は拒否します。標準出力の既定形式はYAMLで、自動処理向けにJSONも選べます。importは
+GitHubを読み取るだけで、リポジトリへの書き込みは行いません。
 
-取り込むセクションは、`repository`(topic、features、merge設定、archived状態を含む)、
-`labels`、`milestones`、bypass actorを含む`rulesets`、`actions`の権限・variable・
-environment、`security`です。rulesetのIDやtimestampなどサーバー生成値は書き出しません。
-本契約ではruleset nameが安定した識別子だからです。
+`repository`(topic、features、merge設定、archived状態を含む)、`labels`、`milestones`、
+bypass actorを含む`rulesets`、Actionsの権限・variable・environment名、`security`、agent
+variableを取り込みます。rulesetのIDやtimestampなどサーバー生成値は除外します。ruleset nameを
+安定した識別子とし、Team・App・custom roleのbypass actorは既存の`id:<number>`形式で出力します。
+継承されたrulesetや表現できないrulesetは、黙って縮退させず報告します。
 
-取り込めないものは3つあり、黙って省略せず報告します。secretの値はGitHub APIが返さないため、
-リポジトリ上に存在するsecret名をコメントとして提示し、`sourceEnv`は利用者が指定します。
-`seed`と`commands`はリポジトリ状態からは導けないローカルな意図です。`agents`のファイル
-パスはseedの構成に依存します。agent variableは取り込み、agent secretの扱いはActions
-secretと同じです。
+GitHubからsecretの値と`sourceEnv`は取得できません。secret名はYAMLコメントとJSONの診断情報で
+報告し、利用者がsource環境変数を指定します。`seed`、`commands`、agentのファイルパスは
+ローカルの意図であり、推測しません。refresh時にはsecretの更新ポリシー、`optional`、agentの
+パスを含めて、これらの宣言を保持します。
 
-`--into <path>`は同じ取得を行い、新しい文書を出力する代わりに既存の設定ファイルを
-その場で更新します。書き換えはYAMLノード編集で行い、コメント、キー順、整形を保持します。
-JSON設定はJSONとして再整形します。差分を表示して確認を求めてから書き込み、`--yes`で
-確認を省略します。ファイルが宣言していないフィールドは宣言されないままです。`--into`は
-管理下にある項目を更新するもので、管理対象を広げるものではありません。
+`--into <path>`は、ファイルに既に宣言されているパスとトップレベルセクションだけを更新します。
+宣言済みcollectionは完全な管理境界です。取り込み可能なすべての属性について、項目の追加・更新・
+削除をリモート状態に合わせます。残す項目の順序と付属コメントを維持し、新規項目は名前順で末尾に
+追加します。未宣言セクションは追加せず、空の宣言済みcollectionも宣言されたまま更新します。
+
+YAMLは解析したノード位置を使い、変更対象のbyte範囲だけを置換します。範囲外のコメント、キー順、
+字下げ、引用符、改行コードを保持します。YAML全体の再エンコードだけではこの保証を満たしません。
+JSONはJSONとして再整形し、入力形式を維持します。変更案を表示してから確認し、`--yes`で確認を
+省略します。変更なし、検証エラー、確認拒否、同時編集、保存エラーの場合は元ファイルを変更しません。
+`--into`で明示した`--format`は入力ファイルの形式と一致している必要があります。
 
 ## ドリフト検出と CI
 
