@@ -492,3 +492,29 @@ seed:
 		t.Fatal("LoadForRefresh() did not decode the seed declaration")
 	}
 }
+
+// TestRepositoryRoleActorIDRoundTrips guards the accessor pair that replaced
+// the previously exported, mutable RepositoryRoleActorIDs map: a caller can
+// only read a fixed role's ID or reverse an ID back to its role name, never
+// mutate the shared table itself.
+func TestRepositoryRoleActorIDRoundTrips(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"maintain", "write", "admin"} {
+		id, ok := RepositoryRoleActorID(role)
+		if !ok {
+			t.Fatalf("RepositoryRoleActorID(%q) ok = false, want true", role)
+		}
+		name, ok := RoleNameForActorID(id)
+		if !ok || name != role {
+			t.Fatalf("RoleNameForActorID(%d) = (%q, %v), want (%q, true)", id, name, ok, role)
+		}
+	}
+	if _, ok := RepositoryRoleActorID("owner"); ok {
+		t.Fatal("RepositoryRoleActorID(\"owner\") unexpectedly succeeded; owner is not one of the fixed roles")
+	}
+	// A custom repository role shares the RepositoryRole actor type but has
+	// a server-assigned ID outside the fixed set; it must not resolve here.
+	if _, ok := RoleNameForActorID(900); ok {
+		t.Fatal("RoleNameForActorID(900) unexpectedly resolved a role name for a non-fixed ID")
+	}
+}
