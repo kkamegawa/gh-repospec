@@ -118,7 +118,7 @@ func (r *bypassResolver) resolveAll(ctx context.Context, actors []config.BypassA
 func (r *bypassResolver) resolve(ctx context.Context, actor config.BypassActorConfig) (githubapi.BypassActor, error) {
 	switch {
 	case actor.Role != "":
-		id, ok := config.RepositoryRoleActorIDs[actor.Role]
+		id, ok := config.RepositoryRoleActorID(actor.Role)
 		if !ok {
 			// Unreachable once config.Validate has run: role is restricted to
 			// admin, write, or maintain.

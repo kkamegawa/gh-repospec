@@ -238,6 +238,68 @@ func TestImportMapsRulesetDetailNotJustTheListSummary(t *testing.T) {
 	}
 }
 
+// TestImportNormalizesRuleParametersForByteStableOutput guards against the
+// two ways decoded JSON rule parameters could make import output vary
+// between runs of the same live state: a whole number decoding as float64
+// (which must read back as an integer, not 5 vs 5.0), and Go's randomized
+// map iteration order (which encoding/json and yaml.v3 already resolve by
+// always encoding a map's keys sorted — this test locks that combination in
+// rather than trusting it silently).
+func TestImportNormalizesRuleParametersForByteStableOutput(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.rulesets = []githubapi.Ruleset{{ID: 1, Name: "r", Target: "branch", Enforcement: "active"}}
+	reader.rulesetDetail[1] = githubapi.Ruleset{
+		Name: "r", Target: "branch", Enforcement: "active",
+		Conditions: map[string]any{"ref_name": map[string]any{"include": []any{"~ALL"}}},
+		Rules: []map[string]any{{
+			"type": "required_status_checks",
+			"parameters": map[string]any{
+				"zebra_max_count": float64(5),  // whole number: must import as an int, not 5.0
+				"apple_ratio":     float64(1.5), // genuine fraction: must be preserved exactly
+				"mango_nested":    map[string]any{"count": float64(3)},
+			},
+		}},
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	params := result.Config.Rulesets[0].Rules[0].Parameters
+	if v, ok := params["zebra_max_count"].(int64); !ok || v != 5 {
+		t.Fatalf("zebra_max_count = %#v, want int64(5)", params["zebra_max_count"])
+	}
+	if v, ok := params["apple_ratio"].(float64); !ok || v != 1.5 {
+		t.Fatalf("apple_ratio = %#v, want float64(1.5) preserved", params["apple_ratio"])
+	}
+	nested, ok := params["mango_nested"].(map[string]any)
+	if !ok {
+		t.Fatalf("mango_nested = %#v, want a nested map", params["mango_nested"])
+	}
+	if v, ok := nested["count"].(int64); !ok || v != 3 {
+		t.Fatalf("mango_nested.count = %#v, want int64(3), normalization must recurse", nested["count"])
+	}
+
+	// Marshal twice and confirm byte-identical output despite Go's
+	// randomized map iteration order — this is the actual guarantee a
+	// repeated import needs, not just the typed assertions above.
+	first, err := yaml.Marshal(result.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := yaml.Marshal(result.Config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatalf("two marshals of the same import result differ:\n--- first ---\n%s\n--- second ---\n%s", first, second)
+	}
+	if strings.Contains(string(first), "5.0") {
+		t.Fatalf("output = %s, want the whole-number parameter rendered as 5, not 5.0", first)
+	}
+}
+
 func TestImportReversesEveryBypassActorType(t *testing.T) {
 	t.Parallel()
 	reader := newFakeReader()

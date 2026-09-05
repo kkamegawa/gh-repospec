@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,7 +76,8 @@ func mapRuleset(detail githubapi.Ruleset) (config.RulesetConfig, error) {
 		if ruleType == "" {
 			return config.RulesetConfig{}, fmt.Errorf("has a rule with no type")
 		}
-		rules = append(rules, config.RulesetRule{Type: ruleType, Parameters: asMap(rule["parameters"])})
+		parameters, _ := normalizeParameters(rule["parameters"]).(map[string]any)
+		rules = append(rules, config.RulesetRule{Type: ruleType, Parameters: parameters})
 	}
 
 	return config.RulesetConfig{
@@ -105,7 +107,7 @@ func conditionRefs(conditions map[string]any) (include, exclude []string) {
 
 // mapBypassActor reverses one rulesets API bypass_actors entry. RepositoryRole
 // is shared by the fixed repository roles and by organization custom roles;
-// an ID matching config.RepositoryRoleActorIDs is the symbolic role, and any
+// an ID config.RoleNameForActorID recognizes is the symbolic role, and any
 // other ID is a custom role addressed by config.ParseBypassActorID's
 // "id:<number>" form, the same form Team and Integration always use because
 // import cannot resolve a numeric ID back to a slug.
@@ -118,7 +120,7 @@ func mapBypassActor(actor githubapi.BypassActor) (config.BypassActorConfig, erro
 	case "Team":
 		return config.BypassActorConfig{Team: resolvedActorID(actor.ActorID), BypassMode: actor.BypassMode}, nil
 	case "RepositoryRole":
-		if role, ok := roleNameForActorID(actor.ActorID); ok {
+		if role, ok := config.RoleNameForActorID(actor.ActorID); ok {
 			return config.BypassActorConfig{Role: role, BypassMode: actor.BypassMode}, nil
 		}
 		return config.BypassActorConfig{CustomRole: resolvedActorID(actor.ActorID), BypassMode: actor.BypassMode}, nil
@@ -129,11 +131,34 @@ func mapBypassActor(actor githubapi.BypassActor) (config.BypassActorConfig, erro
 
 func resolvedActorID(id int64) string { return "id:" + strconv.FormatInt(id, 10) }
 
-func roleNameForActorID(id int64) (string, bool) {
-	for name, roleID := range config.RepositoryRoleActorIDs {
-		if roleID == id {
-			return name, true
+// normalizeParameters recursively converts a whole-number float64 — the
+// shape JSON decoding always produces for a rule parameter number — back to
+// int64, so a parameter that started life as an integer on GitHub reads
+// back as one rather than as an integer-valued float. This is required for
+// byte-stable output alongside, not instead of, encoding/json's and
+// yaml.v3's own guarantees: both already render a map's keys in sorted
+// order and format a whole-number float64 without a decimal point, so no
+// separate key-ordering step is needed here, only the type itself.
+func normalizeParameters(value any) any {
+	switch v := value.(type) {
+	case map[string]any:
+		normalized := make(map[string]any, len(v))
+		for key, item := range v {
+			normalized[key] = normalizeParameters(item)
 		}
+		return normalized
+	case []any:
+		normalized := make([]any, len(v))
+		for i, item := range v {
+			normalized[i] = normalizeParameters(item)
+		}
+		return normalized
+	case float64:
+		if !math.IsInf(v, 0) && !math.IsNaN(v) && v == math.Trunc(v) {
+			return int64(v)
+		}
+		return v
+	default:
+		return v
 	}
-	return "", false
 }
