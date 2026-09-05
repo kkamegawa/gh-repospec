@@ -6,9 +6,6 @@ import (
 	"github.com/kkamegawa/gh-repospec/internal/config"
 )
 
-func strPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool    { return &b }
-
 func TestComputePlanOnlyTouchesDeclaredScalars(t *testing.T) {
 	t.Parallel()
 	current := &config.Config{
