@@ -85,7 +85,7 @@ gh repospec version
 
 The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`. `--version`/`-v` are accepted as aliases for `version`.
 
-`plan --ci` turns the plan into a drift check for scheduled workflows. `apply --force-secrets` re-sets every configured secret in that run, which is how a credential rotation is applied without editing the file. `import` reads a repository and writes configuration; with `--into` it refreshes an existing file in place, preserving its comments and key order. Secret values are never returned by the GitHub API, so `import` reports secret names rather than inventing values.
+`plan --ci` turns the plan into a drift check for scheduled workflows. `apply --force-secrets` re-sets every configured secret in that run, which is how a credential rotation is applied without editing the file. `import` reads a repository and writes configuration; with `--into` it refreshes an existing file in place, preserving its comments and key order. A refresh only touches what the file already declares, and it never deletes a declaration the repository does not have — that entry is kept and reported as not yet applied. Secret values are never returned by the GitHub API, so `import` reports secret names rather than inventing values.
 
 | Exit code | Meaning |
 | --- | --- |

@@ -44,6 +44,12 @@ duration構文を使用します。
 `squashMergeCommitTitle`、`squashMergeCommitMessage`)、`releaseImmutability`です。
 アーカイブは可逆で、`archived: false`で解除します。
 
+`homepage`は任意で、キーが無い状態と空の値を区別します。省略すれば現在の値をそのままにし、
+空文字列を明示すれば値を消去します。`description`にも同じ理由で同じ区別が必要です。import出力が
+読み取り元のリポジトリに対して収束しなければならず、「管理しない」を表現できないフィールドは
+変更を報告し続けるためですが、現在のスキーマではまだ通常の文字列です。`homepage`と同じ三状態に
+することは、[Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22)で別途追跡しています。
+
 `labels`と`milestones`は、契約全体と同じく追加的なコレクションです。labelは`name`、
 先頭の`#`を含まない16進6桁の`color`、任意の`description`を取ります。milestoneは
 `title`、任意の`description`、`open`または`closed`の`state`、任意の`dueOn`
@@ -117,27 +123,55 @@ rulesetは最後に適用します。全体はトランザクションでは
 
 ## import
 
-`import <owner/repository>`は既存リポジトリのライブ状態を取得し、`schemaVersion: 1`の
-文書を書き出します。設定済みリポジトリを手作業で書き写すことなく本拡張の管理下に
-置くためです。既定では文書を標準出力へ出力し、`--format`でYAMLとJSONを選択します。
-他のコマンドとの一貫性のため、位置引数の代わりに`-R`/`--repo`も使用できます。
+`import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`は既存リポジトリを
+取得し、`schemaVersion: 1`の文書を生成します。位置引数の代わりに`-R`/`--repo`を使えますが、
+両方の指定は拒否します。標準出力の既定形式はYAMLで、自動処理向けにJSONも選べます。診断は
+標準エラーへ出力するため、標準出力をリダイレクトした文書はそのまま有効です。importは
+GitHubを読み取るだけで、リポジトリへの書き込みは行いません。
 
-取り込むセクションは、`repository`(topic、features、merge設定、archived状態を含む)、
-`labels`、`milestones`、bypass actorを含む`rulesets`、`actions`の権限・variable・
-environment、`security`です。rulesetのIDやtimestampなどサーバー生成値は書き出しません。
-本契約ではruleset nameが安定した識別子だからです。
+`repository`(topic、features、merge設定、archived状態を含む)、`labels`、`milestones`、
+bypass actorを含む`rulesets`、Actionsの権限・variable・environment名、`security`、agent
+variableを取り込みます。これらのうち本拡張にまだ存在しない読み取りがいくつかあり、
+[`plan_ja.md`](plan_ja.md)に一覧を示します。うち2つは契約そのものに影響します。rulesetの
+list APIは識別情報・target・enforcementしか返さないため、rules、conditions、bypass actorは
+ruleset単位の詳細取得で得ます。securityの状態はリポジトリの`security_and_analysis`と機能別
+エンドポイントから取得し、状態を取得できない機能は`false`とせず報告します。
 
-取り込めないものは3つあり、黙って省略せず報告します。secretの値はGitHub APIが返さないため、
-リポジトリ上に存在するsecret名をコメントとして提示し、`sourceEnv`は利用者が指定します。
-`seed`と`commands`はリポジトリ状態からは導けないローカルな意図です。`agents`のファイル
-パスはseedの構成に依存します。agent variableは取り込み、agent secretの扱いはActions
-secretと同じです。
+rulesetのIDやtimestampなどサーバー生成値は除外します。ruleset nameが安定した識別子だからです。
+bypass actorはactor typeで逆変換します。`Integration`は`app`、actor IDの1は`orgAdmin`、
+`RepositoryRole`は固定IDの2・4・5(`maintain`、`write`、`admin`)を記号的な`role`とし、それ以外の
+IDは`customRole: id:<number>`とします。両者は同じactor typeを共有するためです。team、app、
+custom roleは既存の`id:<number>`形式を使い、`role`は使いません。bypass actorが空の場合も空リスト
+として明示的に出力します。省略すると次のapplyでactorが消えるためです。ruleのparametersはキーを
+整列し数値を整数として出力するため、同じリポジトリからは常に同じバイト列が得られます。継承された
+rulesetや表現できないrulesetは、黙って縮退させず報告します。
 
-`--into <path>`は同じ取得を行い、新しい文書を出力する代わりに既存の設定ファイルを
-その場で更新します。書き換えはYAMLノード編集で行い、コメント、キー順、整形を保持します。
-JSON設定はJSONとして再整形します。差分を表示して確認を求めてから書き込み、`--yes`で
-確認を省略します。ファイルが宣言していないフィールドは宣言されないままです。`--into`は
-管理下にある項目を更新するもので、管理対象を広げるものではありません。
+GitHubからsecretの値と`sourceEnv`は取得できません。secret名はYAMLコメントとJSONの診断情報で
+報告し、利用者がsource環境変数を指定します。ローカルの意図は推測しません。`seed`とその
+`overwrite`、`commands`、agentのファイルパス、`agents.secrets`、`repository.create`、
+`repository.allowVisibilityChange`は、リポジトリの状態からは導けない判断です。refresh時には
+secretの更新ポリシーと`optional`を含め、これらをすべて保持します。
+
+`--into <path>`は、ファイルに既に宣言されているパスとトップレベルセクションだけを更新します。
+宣言済みcollectionの中では、GitHub上に存在する項目を更新し、ファイルに無い項目を名前順で追加
+します。GitHub上に存在しない宣言済み項目は削除せず、未適用として報告します。設定の項目は
+「まだ適用されていないかもしれない希望状態」であり、これを削除するとドリフトを黙って追認する
+ためです。契約の他の部分を支える追加的な規則と同じ考え方です。未宣言セクションは追加せず、空の
+宣言済みcollectionも宣言されたまま更新し、残す項目の順序と付属コメントを維持します。ライブの
+状態を取得できなかった`security`の機能は、既存の宣言を保持して報告します。
+
+YAML refreshは、すべてのトークンがバイトオフセットを持つASTへ解析し、変更されたスパンだけを
+置換します。これにより、スパン外のコメント、キー順、字下げ、引用符、改行コードはそのまま残ります。
+ノード開始位置の行番号と桁だけでは足りません。スパンの終端が得られないうえ、CRLFをLFへ正規化する
+parserでは元の改行コードを保持できないためです。`config.Load`は従来どおり独自の厳格なparserを
+使い、refresh用のparserは書き換え経路に限定します。両者が「有効な文書」の判断で食い違ってはいけません。
+JSONはJSONとして再整形し、入力形式を維持します。
+
+変更案を表示してから確認し、`--yes`で確認を省略します。保存前に更新候補を検証しますが、この検証には
+`seed`のパスに対する通常のファイルシステム検査を含めません。実行環境にseedディレクトリが無いという
+理由でrefreshが失敗しないようにするためです。変更なし、検証エラー、確認拒否、同時編集、保存エラーの
+場合は元ファイルを変更しません。`--into`で明示した`--format`は入力ファイルの形式と一致している
+必要があります。
 
 ## ドリフト検出と CI
 

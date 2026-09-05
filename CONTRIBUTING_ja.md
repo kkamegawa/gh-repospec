@@ -37,6 +37,7 @@ go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 - 動作、validation、failure path に対するテストを追加・更新します。
 - 英語ドキュメントと対応する `_ja.md` を同時に更新します。LICENSE と SECURITY.md は英語のみです。
 - 合意済みの設計変更なしに、command approval、path validation、secret redaction、force しない Git 更新を弱めないでください。
+- wiki のページは公開済みの GitHub wiki が正であり、`wiki-staging/` は追跡対象外のローカル作業コピーです。編集前に wiki リポジトリを取得し、取得し直していない staging のコピーを公開しないでください。他者のページを黙って巻き戻すことになります。
 
 ## Issue の報告
 

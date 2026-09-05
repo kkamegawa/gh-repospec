@@ -47,6 +47,15 @@ projects, wiki, and discussions, the merge commit title and message formats
 `squashMergeCommitMessage`), and `releaseImmutability`. Archiving is
 reversible: `archived: false` unarchives a repository.
 
+`homepage` is optional and distinguishes an absent key from an empty value:
+omitting it leaves the current value alone, while an explicit empty string
+clears it. `description` needs the same distinction for the same reason —
+`import` output has to converge against the repository it was read from, and
+a field that cannot express "not managed" reports a change forever — but is
+still a plain string in the current schema; making it tri-state like
+`homepage` is tracked separately as
+[Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22).
+
 `labels` and `milestones` are additive collections, consistent with the rest
 of the contract. Labels take a `name`, a `color` as six hexadecimal digits
 without a leading `#`, and an optional `description`. Milestones take a
@@ -133,33 +142,72 @@ blocks a change this run was also supposed to make.
 
 ## import
 
-`import <owner/repository>` fetches the live state of an existing repository
-and writes a `schemaVersion: 1` document, so an already-configured repository
-can be brought under this extension without transcribing settings by hand. The
-default output is the document on standard output; `--format` selects YAML or
-JSON, and `-R`/`--repo` is accepted as an alternative to the positional
-argument for consistency with the other commands.
+`import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`
+fetches an existing repository and produces a `schemaVersion: 1` document.
+`-R`/`--repo` substitutes for the positional repository, but the two forms
+cannot be combined. YAML is the default stdout format; JSON is available for
+automation. Diagnostics go to standard error, so a redirected document stays
+valid. Import only reads GitHub and never makes a repository write.
 
-Imported sections are `repository` (including topics, features, merge
-settings, and archived state), `labels`, `milestones`, `rulesets` with their
-bypass actors, `actions` permissions, variables, and environments, and
-`security`. Server-generated values such as ruleset IDs and timestamps are not
-written, because the ruleset name is the stable identity in this contract.
+The importer maps `repository` (topics, features, merge settings, and archived
+state), `labels`, `milestones`, `rulesets` and bypass actors, Actions
+permissions, variables, and environment names, `security`, and agent
+variables. Several of those reads do not exist in this extension yet;
+[`plan.md`](plan.md) enumerates them. Two shape the contract. The rulesets list
+endpoint returns only identity, target, and enforcement, so each ruleset is
+fetched individually to obtain its rules, conditions, and bypass actors.
+Security state comes from `security_and_analysis` on the repository plus the
+per-feature endpoints; a feature whose state cannot be read is reported rather
+than written as `false`.
 
-Three things are not importable and are reported, not silently omitted. Secret
-values are never returned by the GitHub API, so secrets appear as a comment
-listing the names found on the repository, and the user supplies each
-`sourceEnv`. `seed` and `commands` describe local intent that no repository
-state implies. `agents` file paths depend on the seed layout; agent variables
-are imported, agent secret names follow the same rule as Actions secrets.
+Server-generated ruleset IDs and timestamps are omitted, because the ruleset
+name is the stable identity. Bypass actors are reversed by actor type:
+`Integration` becomes `app`, actor ID 1 becomes `orgAdmin`, and
+`RepositoryRole` becomes the symbolic `role` for the fixed IDs 2, 4, and 5
+(`maintain`, `write`, `admin`) and `customRole: id:<number>` for any other ID,
+because both share that actor type. Teams, apps, and custom roles use the
+existing `id:<number>` selector; `role` never does. An empty bypass actor list
+is written out explicitly, since omitting it clears the actors on the next
+apply. Rule parameters are emitted with sorted keys and integral numbers, so
+the same repository always produces the same bytes. Inherited or otherwise
+unrepresentable rulesets are reported rather than silently reduced.
 
-`--into <path>` runs the same fetch against an existing configuration file and
-updates it in place instead of writing a new document. The file is rewritten
-through YAML node editing so comments, key order, and formatting survive; a
-JSON configuration is reformatted as JSON. The differences are printed and
-confirmed before the file is written, and `--yes` skips the prompt. Fields the
-file does not declare stay undeclared: `--into` refreshes what is managed, it
-does not expand the managed surface.
+Secret values and `sourceEnv` names cannot be read from GitHub. Secret names
+are reported as YAML comments and JSON diagnostics so the user can supply a
+source environment variable. Local intent is never inferred: `seed` and its
+`overwrite` list, `commands`, agent file paths, `agents.secrets`,
+`repository.create`, and `repository.allowVisibilityChange` describe decisions
+that no repository state implies. A refresh preserves all of them, along with
+secret update policies and `optional` flags.
+
+`--into <path>` refreshes only paths and top-level sections already declared in
+the file. Within a declared collection, entries that exist on GitHub are
+updated and entries missing from the file are added in name order; a declared
+entry that does not exist on GitHub is kept and reported as not yet applied,
+never deleted. A configuration entry is a desired state that may simply not
+have been applied, and dropping it would silently accept drift — the same
+additive rule that governs the rest of the contract. Undeclared sections stay
+undeclared, an empty declared collection stays declared, and retained entry
+order with attached comments is preserved. A `security` feature whose live
+state could not be read keeps its existing declaration and is reported.
+
+YAML refresh parses the file into an AST that carries a byte offset for every
+token and replaces only the spans that changed, so comments, key order,
+indentation, quote style, and line endings outside those spans survive
+untouched. Start-of-node line and column numbers alone are not enough: they
+give no span end, and a parser that normalizes CRLF to LF cannot preserve the
+original line endings. `config.Load` keeps its own strict parser, and the
+refresh parser is confined to rewriting; the two must not diverge on what a
+valid document is. JSON is reformatted as JSON while retaining JSON input.
+
+The proposed difference is shown and confirmed before saving, with `--yes`
+skipping confirmation. The candidate document is validated before it is
+written, but that validation excludes the filesystem checks that `seed` paths
+normally receive, so a refresh does not fail because a seed directory is
+absent on the machine running it. A no-op, validation error, declined
+confirmation, concurrent edit, or save error leaves the original file
+unchanged. An input format and an explicit `--format` value must agree when
+`--into` is used.
 
 ## Drift detection and CI
 

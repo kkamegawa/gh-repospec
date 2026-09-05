@@ -37,6 +37,7 @@ Use an imperative English commit subject, for example `Add ruleset validation`.
 - Add or update tests for behavior, validation, and failure paths.
 - Update English documentation and its `_ja.md` counterpart together. LICENSE and SECURITY.md remain English-only.
 - Do not weaken command approval, path validation, secret redaction, or non-forced Git updates without an agreed design change.
+- The published GitHub wiki is the source of truth for wiki pages; `wiki-staging/` is an untracked local working copy. Pull the wiki repository before editing and never publish a staging copy you have not just refreshed, or you will silently revert someone else's page.
 
 ## Reporting issues
 
