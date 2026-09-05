@@ -287,7 +287,11 @@ func labelCollectionChange(current, desired []config.LabelConfig) CollectionChan
 		if c.Color != d.Color {
 			scalars = append(scalars, ScalarChange{Path: "color", Value: stringValue(d.Color)})
 		}
-		if c.Description != d.Description {
+		// c.Description == "" is indistinguishable from "never declared";
+		// planning an update in that case would ask the YAML writer to add a
+		// sub-field that doesn't exist yet, which it refuses. Once declared,
+		// any change (including clearing it) is a value edit, not an add.
+		if c.Description != "" && c.Description != d.Description {
 			scalars = append(scalars, ScalarChange{Path: "description", Value: stringValue(d.Description)})
 		}
 		if len(scalars) > 0 {
@@ -325,14 +329,23 @@ func milestoneCollectionChange(current, desired []config.MilestoneConfig) Collec
 			change.NotApplied = append(change.NotApplied, c.Title)
 			continue
 		}
+		// Each guard requires only the currently declared value to be
+		// non-empty, not the desired one: once a field is declared, GitHub
+		// reporting it as absent (state "" or dueOn cleared) is still a
+		// value change to an existing field, and must refresh through to
+		// keep import -> refresh -> plan convergent. Requiring the desired
+		// side non-empty too would leave stale declared values in place.
+		// An undeclared field (current == "") stays undeclared: planning an
+		// update there would ask the YAML writer to add a sub-field that
+		// doesn't exist yet, which it refuses.
 		var scalars []ScalarChange
-		if c.Description != d.Description {
+		if c.Description != "" && c.Description != d.Description {
 			scalars = append(scalars, ScalarChange{Path: "description", Value: stringValue(d.Description)})
 		}
-		if c.State != "" && d.State != "" && c.State != d.State {
+		if c.State != "" && c.State != d.State {
 			scalars = append(scalars, ScalarChange{Path: "state", Value: stringValue(d.State)})
 		}
-		if c.DueOn != "" && d.DueOn != "" && c.DueOn != d.DueOn {
+		if c.DueOn != "" && c.DueOn != d.DueOn {
 			scalars = append(scalars, ScalarChange{Path: "dueOn", Value: stringValue(d.DueOn)})
 		}
 		if len(scalars) > 0 {

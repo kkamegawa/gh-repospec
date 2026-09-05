@@ -12,23 +12,45 @@ import (
 // preserving, so unlike ApplyYAML this reformats the whole document rather
 // than editing byte ranges; the input format is retained (JSON stays JSON).
 func ApplyJSON(current *config.Config, plan Plan) ([]byte, error) {
-	updated := *current
-	if err := applyScalarsToConfig(&updated, plan.Scalars); err != nil {
+	updated, err := deepCopyConfig(current)
+	if err != nil {
+		return nil, err
+	}
+	if err := applyScalarsToConfig(updated, plan.Scalars); err != nil {
 		return nil, err
 	}
 	for _, cc := range plan.Collections {
-		if err := applyCollectionToConfig(&updated, cc); err != nil {
+		if err := applyCollectionToConfig(updated, cc); err != nil {
 			return nil, err
 		}
 	}
 	if plan.Rulesets != nil {
 		updated.Rulesets = applyRulesetChange(updated.Rulesets, plan.Rulesets)
 	}
-	data, err := json.MarshalIndent(&updated, "", "  ")
+	data, err := json.MarshalIndent(updated, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("render refreshed JSON: %w", err)
 	}
 	return append(data, '\n'), nil
+}
+
+// deepCopyConfig clones cfg so applying planned changes never mutates the
+// caller's Config through a shared pointer. config.Config nests several
+// pointer fields (Actions, Security, Agents, Seed, Repository.Features),
+// so `updated := *current` only copies the outer struct: writes through
+// those pointers, like cfg.Actions.Enabled = ..., would still land on
+// current's own ActionsConfig. A JSON round trip clones every level in one
+// pass without hand-listing each nested pointer.
+func deepCopyConfig(cfg *config.Config) (*config.Config, error) {
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("clone config for refresh: %w", err)
+	}
+	var clone config.Config
+	if err := json.Unmarshal(data, &clone); err != nil {
+		return nil, fmt.Errorf("clone config for refresh: %w", err)
+	}
+	return &clone, nil
 }
 
 // applyScalarsToConfig sets each planned scalar change on cfg. The path set
