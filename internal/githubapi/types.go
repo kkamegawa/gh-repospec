@@ -18,7 +18,8 @@ type Repository struct {
 // String returns the canonical owner/name form.
 func (r Repository) String() string { return r.Owner + "/" + r.Name }
 
-// RepositoryInfo is the subset of repository state needed by the planner.
+// RepositoryInfo is the subset of repository state needed by the planner
+// and the importer.
 type RepositoryInfo struct {
 	ID                       int64    `json:"id"`
 	Owner                    Owner    `json:"owner"`
@@ -44,6 +45,19 @@ type RepositoryInfo struct {
 	MergeCommitMessage       string   `json:"merge_commit_message"`
 	SquashMergeCommitTitle   string   `json:"squash_merge_commit_title"`
 	SquashMergeCommitMessage string   `json:"squash_merge_commit_message"`
+	// SecurityAndAnalysis is nil when GitHub omits the block entirely (a
+	// repository type that does not support it). Import reports secretScanning
+	// and pushProtection as unavailable rather than false in that case.
+	SecurityAndAnalysis *SecurityAndAnalysisStatus `json:"security_and_analysis,omitempty"`
+}
+
+// SecurityAndAnalysisStatus is the security_and_analysis block returned by
+// Get a repository. Its shape mirrors SecurityAndAnalysisRequest, which is
+// used only for the write.
+type SecurityAndAnalysisStatus struct {
+	AdvancedSecurity          *SecurityFeature `json:"advanced_security,omitempty"`
+	SecretScanning            *SecurityFeature `json:"secret_scanning,omitempty"`
+	SecretScanningPushProtect *SecurityFeature `json:"secret_scanning_push_protection,omitempty"`
 }
 
 // Owner identifies the account that owns a repository.
@@ -115,6 +129,15 @@ type SelectedActionsRequest struct {
 	PatternsAllowed    []string `json:"patterns_allowed,omitempty"`
 }
 
+// SelectedActions is GitHub's currently configured Actions and reusable
+// workflow allowlist, read back from the selected-actions endpoint. Its
+// shape mirrors SelectedActionsRequest, which is used only for the write.
+type SelectedActions struct {
+	GitHubOwnedAllowed bool     `json:"github_owned_allowed"`
+	VerifiedAllowed    bool     `json:"verified_allowed"`
+	PatternsAllowed    []string `json:"patterns_allowed,omitempty"`
+}
+
 // ForkPullRequestApproval is the fork PR contributor approval policy. GitHub
 // rejects this endpoint for private repositories, so ApprovalPolicy has no
 // omitempty: a false-shaped zero value must never be silently dropped from
@@ -153,6 +176,8 @@ type customRepositoryRoleList struct {
 	CustomRoles []CustomRepositoryRole `json:"custom_roles"`
 }
 
+func (l *customRepositoryRoleList) pageItems() []CustomRepositoryRole { return l.CustomRoles }
+
 // Ruleset is an intentionally flexible representation of a repository ruleset.
 // Rules and conditions retain GitHub's API shape without losing new rule types.
 type Ruleset struct {
@@ -167,6 +192,10 @@ type Ruleset struct {
 	// in configuration must clear bypass actors set through the GitHub UI
 	// rather than silently leaving them in place.
 	BypassActors []BypassActor `json:"bypass_actors"`
+	// SourceType is read-only: "Repository", "Organization", or "Enterprise".
+	// Import uses it to recognize an inherited ruleset that the repository
+	// does not own and therefore cannot represent as a declared ruleset.
+	SourceType string `json:"source_type,omitempty"`
 }
 
 // BypassActor is one rulesets API bypass_actors entry. Unlike rules and
@@ -198,6 +227,29 @@ type CodeQLDefaultSetupRequest struct {
 	QuerySuite string   `json:"query_suite,omitempty"`
 }
 
+// CodeQLDefaultSetupStatus is the current CodeQL default setup configuration.
+// State is "configured" or "not-configured"; other fields the read endpoint
+// returns (runner_type, schedule, updated_at, and so on) are not needed here
+// and are silently ignored by the JSON decoder.
+type CodeQLDefaultSetupStatus struct {
+	State      string   `json:"state"`
+	Languages  []string `json:"languages,omitempty"`
+	QuerySuite string   `json:"query_suite,omitempty"`
+}
+
+// automatedSecurityFixesStatus is the response body GitHub returns when
+// Dependabot security updates are enabled; a 404 means disabled and carries
+// no body, matching GetVulnerabilityAlertsEnabled's pattern.
+type automatedSecurityFixesStatus struct {
+	Enabled bool `json:"enabled"`
+}
+
+// privateVulnerabilityReportingStatus is the response body for the private
+// vulnerability reporting status endpoint.
+type privateVulnerabilityReportingStatus struct {
+	Enabled bool `json:"enabled"`
+}
+
 // PublicKey is used to encrypt a secret before it is sent to GitHub.
 type PublicKey struct {
 	KeyID string `json:"key_id"`
@@ -220,6 +272,8 @@ type SecretList struct {
 	Secrets    []SecretMetadata `json:"secrets"`
 }
 
+func (l *SecretList) pageItems() []SecretMetadata { return l.Secrets }
+
 // ActionVariable represents a repository Actions variable.
 type ActionVariable struct {
 	Name      string    `json:"name"`
@@ -233,6 +287,8 @@ type ActionVariableList struct {
 	TotalCount int              `json:"total_count"`
 	Variables  []ActionVariable `json:"variables"`
 }
+
+func (l *ActionVariableList) pageItems() []ActionVariable { return l.Variables }
 
 // EnvironmentRequest contains the repository environment properties supported by
 // GitHub's create-or-update environment endpoint. Nil fields are left unchanged
@@ -266,6 +322,15 @@ type Environment struct {
 	UpdatedAt      string `json:"updated_at"`
 	ProtectionRule []any  `json:"protection_rules,omitempty"`
 }
+
+// environmentList is GitHub's wrapped response for listing repository
+// environments; like custom repository roles it is not a bare array.
+type environmentList struct {
+	TotalCount   int           `json:"total_count"`
+	Environments []Environment `json:"environments"`
+}
+
+func (l *environmentList) pageItems() []Environment { return l.Environments }
 
 // GitReference identifies a branch ref and its current object SHA.
 type GitReference struct {
@@ -367,6 +432,8 @@ type AgentVariableList struct {
 	TotalCount int             `json:"total_count"`
 	Variables  []AgentVariable `json:"variables"`
 }
+
+func (l *AgentVariableList) pageItems() []AgentVariable { return l.Variables }
 
 // APIError is a typed, token-safe error response from GitHub.
 type APIError struct {
