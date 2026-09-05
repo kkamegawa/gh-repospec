@@ -461,3 +461,34 @@ func TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck(t *testing.T) {
 		t.Fatal("ValidateDeclaredSurface() unexpectedly accepted an empty seed.directory.path")
 	}
 }
+
+// TestLoadForRefreshSkipsSeedFilesystemCheck guards the same contract at the
+// file-loading entry point --into actually uses.
+func TestLoadForRefreshSkipsSeedFilesystemCheck(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "bootstrap.yaml")
+	content := `schemaVersion: 1
+repository:
+  owner: octo-org
+  name: example
+  visibility: public
+seed:
+  directory:
+    path: does-not-exist
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() unexpectedly accepted a seed directory that does not exist on disk")
+	}
+	cfg, err := LoadForRefresh(path)
+	if err != nil {
+		t.Fatalf("LoadForRefresh() error = %v, want the missing seed directory ignored", err)
+	}
+	if cfg.Seed == nil || cfg.Seed.Directory == nil {
+		t.Fatal("LoadForRefresh() did not decode the seed declaration")
+	}
+}
