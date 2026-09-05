@@ -667,6 +667,331 @@ func TestCreateRulesetSendsBypassActorsAndEvaluateEnforcement(t *testing.T) {
 	}
 }
 
+func TestGetRulesetRetrievesFullDefinition(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/rulesets/42"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if r.Method != http.MethodGet {
+			assertions.Errorf("method = %q, want GET", r.Method)
+		}
+		_, _ = w.Write([]byte(`{
+			"id": 42, "name": "protect-main", "target": "branch", "enforcement": "active",
+			"source_type": "Repository",
+			"rules": [{"type": "deletion"}],
+			"bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]
+		}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ruleset, err := client.GetRuleset(context.Background(), Repository{Owner: "octo", Name: "demo"}, 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ruleset.SourceType != "Repository" {
+		t.Fatalf("SourceType = %q, want %q", ruleset.SourceType, "Repository")
+	}
+	if len(ruleset.Rules) != 1 || len(ruleset.BypassActors) != 1 {
+		t.Fatalf("GetRuleset() = %#v, want the full rules and bypass_actors the list endpoint omits", ruleset)
+	}
+
+	if _, err := client.GetRuleset(context.Background(), Repository{Owner: "octo", Name: "demo"}, 0); err == nil {
+		t.Fatal("GetRuleset() with a non-positive ID unexpectedly succeeded")
+	}
+}
+
+func TestListEnvironmentsWalksEveryPage(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/environments"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if got, want := r.URL.Query().Get("per_page"), "100"; got != want {
+			assertions.Errorf("per_page = %q, want %q", got, want)
+		}
+		var environments []Environment
+		switch r.URL.Query().Get("page") {
+		case "1":
+			for i := 0; i < 100; i++ {
+				environments = append(environments, Environment{Name: fmt.Sprintf("env-%d", i)})
+			}
+		case "2":
+			environments = []Environment{{Name: "production"}}
+		default:
+			assertions.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(environments), "environments": environments})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	environments, err := client.ListEnvironments(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(environments) != 101 {
+		t.Fatalf("len(environments) = %d, want 101", len(environments))
+	}
+	if environments[100].Name != "production" {
+		t.Fatalf("environments[100].Name = %q, want %q", environments[100].Name, "production")
+	}
+}
+
+func TestListActionVariablesAndSecretsWalkEveryPage(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		switch r.URL.Path {
+		case "/repos/octo/demo/actions/variables":
+			var variables []ActionVariable
+			if page == "1" {
+				for i := 0; i < 100; i++ {
+					variables = append(variables, ActionVariable{Name: fmt.Sprintf("VAR_%d", i), Value: "x"})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(variables), "variables": variables})
+		case "/repos/octo/demo/actions/secrets":
+			var secrets []SecretMetadata
+			if page == "1" {
+				for i := 0; i < 100; i++ {
+					secrets = append(secrets, SecretMetadata{Name: fmt.Sprintf("SECRET_%d", i)})
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(secrets), "secrets": secrets})
+		default:
+			assertions.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+	variables, err := client.ListActionVariables(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variables.Variables) != 100 {
+		t.Fatalf("len(variables.Variables) = %d, want 100 (GitHub's default page size of 30 must not silently truncate this)", len(variables.Variables))
+	}
+	secrets, err := client.ListActionsSecrets(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secrets.Secrets) != 100 {
+		t.Fatalf("len(secrets.Secrets) = %d, want 100", len(secrets.Secrets))
+	}
+}
+
+func TestGetSelectedActionsAndDefaultWorkflowPermissions(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/octo/demo/actions/permissions/selected-actions":
+			_, _ = w.Write([]byte(`{"github_owned_allowed":true,"verified_allowed":false,"patterns_allowed":["actions/checkout@*"]}`))
+		case "/repos/octo/demo/actions/permissions/workflow":
+			_, _ = w.Write([]byte(`{"default_workflow_permissions":"read","can_approve_pull_request_reviews":false}`))
+		default:
+			assertions.Errorf("unexpected path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+	selected, err := client.GetSelectedActions(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selected.GitHubOwnedAllowed || selected.VerifiedAllowed || len(selected.PatternsAllowed) != 1 {
+		t.Fatalf("GetSelectedActions() = %#v", selected)
+	}
+	permissions, err := client.GetDefaultWorkflowPermissions(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if permissions.DefaultWorkflowPermissions != "read" || permissions.CanApprovePullRequest {
+		t.Fatalf("GetDefaultWorkflowPermissions() = %#v", permissions)
+	}
+}
+
+func TestGetAutomatedSecurityFixesEnabledTreats404AsDisabled(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	var status int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/automated-security-fixes"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if status == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(map[string]any{"enabled": true, "paused": false})
+			return
+		}
+		w.WriteHeader(status)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := Repository{Owner: "octo", Name: "demo"}
+
+	status = http.StatusOK
+	enabled, err := client.GetAutomatedSecurityFixesEnabled(context.Background(), repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("200 response with enabled:true should report enabled")
+	}
+
+	status = http.StatusNotFound
+	enabled, err = client.GetAutomatedSecurityFixesEnabled(context.Background(), repo)
+	if err != nil {
+		t.Fatalf("404 should not be an error, got %v", err)
+	}
+	if enabled {
+		t.Fatal("404 response should report disabled")
+	}
+}
+
+func TestGetPrivateVulnerabilityReportingEnabled(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/private-vulnerability-reporting"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"enabled":true}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := client.GetPrivateVulnerabilityReportingEnabled(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !enabled {
+		t.Fatal("GetPrivateVulnerabilityReportingEnabled() = false, want true")
+	}
+}
+
+func TestGetCodeQLDefaultSetup(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/code-scanning/default-setup"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"state":"configured","languages":["go"],"query_suite":"default","updated_at":"2026-01-01T00:00:00Z"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := client.GetCodeQLDefaultSetup(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != "configured" || len(status.Languages) != 1 || status.Languages[0] != "go" {
+		t.Fatalf("GetCodeQLDefaultSetup() = %#v", status)
+	}
+}
+
+func TestRepositoryInfoDecodesSecurityAndAnalysis(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{
+			"name": "demo", "visibility": "public",
+			"security_and_analysis": {
+				"secret_scanning": {"status": "enabled"},
+				"secret_scanning_push_protection": {"status": "disabled"}
+			}
+		}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := client.GetRepository(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.SecurityAndAnalysis == nil {
+		t.Fatal("SecurityAndAnalysis was not decoded")
+	}
+	if info.SecurityAndAnalysis.SecretScanning == nil || info.SecurityAndAnalysis.SecretScanning.Status != "enabled" {
+		t.Fatalf("SecretScanning = %#v, want status enabled", info.SecurityAndAnalysis.SecretScanning)
+	}
+	if info.SecurityAndAnalysis.SecretScanningPushProtect == nil || info.SecurityAndAnalysis.SecretScanningPushProtect.Status != "disabled" {
+		t.Fatalf("SecretScanningPushProtect = %#v, want status disabled", info.SecurityAndAnalysis.SecretScanningPushProtect)
+	}
+}
+
+func TestListCustomRepositoryRolesWalksEveryPage(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/orgs/octo-org/custom-repository-roles"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		var roles []CustomRepositoryRole
+		switch r.URL.Query().Get("page") {
+		case "1":
+			for i := 0; i < 100; i++ {
+				roles = append(roles, CustomRepositoryRole{ID: int64(i + 1), Name: fmt.Sprintf("role-%d", i)})
+			}
+		case "2":
+			roles = []CustomRepositoryRole{{ID: 501, Name: "release-manager"}}
+		default:
+			assertions.Errorf("unexpected page %q", r.URL.Query().Get("page"))
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"total_count": len(roles), "custom_roles": roles})
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles, err := client.ListCustomRepositoryRoles(context.Background(), "octo-org")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(roles) != 101 {
+		t.Fatalf("len(roles) = %d, want 101 (an organization with more than one page of custom roles must not lose the rest)", len(roles))
+	}
+}
+
 func templateArchive(t *testing.T, entries map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

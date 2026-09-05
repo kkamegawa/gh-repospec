@@ -131,10 +131,26 @@ func (c *Client) UpdateDefaultWorkflowPermissions(ctx context.Context, repo Repo
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/workflow", settings, nil)
 }
 
+// GetDefaultWorkflowPermissions retrieves the current GITHUB_TOKEN defaults.
+func (c *Client) GetDefaultWorkflowPermissions(ctx context.Context, repo Repository) (DefaultWorkflowPermissions, error) {
+	var result DefaultWorkflowPermissions
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/permissions/workflow", nil, &result)
+	return result, err
+}
+
 // UpdateSelectedActions sets the Actions and reusable workflows allowlist used when
 // Actions permissions are configured as "selected".
 func (c *Client) UpdateSelectedActions(ctx context.Context, repo Repository, request SelectedActionsRequest) error {
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/selected-actions", request, nil)
+}
+
+// GetSelectedActions retrieves the current Actions and reusable workflows
+// allowlist. It is only meaningful when Actions permissions are configured
+// as "selected"; GitHub still answers the request otherwise, defaulted.
+func (c *Client) GetSelectedActions(ctx context.Context, repo Repository) (SelectedActions, error) {
+	var result SelectedActions
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/permissions/selected-actions", nil, &result)
+	return result, err
 }
 
 // GetForkPullRequestApproval retrieves the fork PR contributor approval policy.
@@ -173,6 +189,18 @@ func (c *Client) UpdateRuleset(ctx context.Context, repo Repository, id int64, r
 	return result, err
 }
 
+// GetRuleset retrieves one ruleset's full definition, including rules,
+// conditions, and bypass actors. ListRulesets cannot substitute for this: its
+// response carries only identity, target, and enforcement.
+func (c *Client) GetRuleset(ctx context.Context, repo Repository, id int64) (Ruleset, error) {
+	if id <= 0 {
+		return Ruleset{}, fmt.Errorf("ruleset ID must be positive")
+	}
+	var result Ruleset
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/rulesets/"+strconv.FormatInt(id, 10), nil, &result)
+	return result, err
+}
+
 // GetTeam resolves an organization team slug to its numeric ID for a ruleset
 // bypass actor. Org-scoped: it has no relation to any single repository.
 func (c *Client) GetTeam(ctx context.Context, org, slug string) (Team, error) {
@@ -193,11 +221,12 @@ func (c *Client) GetApp(ctx context.Context, slug string) (App, error) {
 // ListCustomRepositoryRoles lists an organization's custom repository roles,
 // used to resolve a ruleset bypass actor customRole name to its numeric ID.
 // The response is a wrapped object, not a bare array, so listAll cannot
-// decode it directly.
+// decode it directly; an organization with more custom roles than fit on one
+// page would otherwise silently miss the later ones.
 func (c *Client) ListCustomRepositoryRoles(ctx context.Context, org string) ([]CustomRepositoryRole, error) {
-	var result customRepositoryRoleList
-	err := c.do(ctx, http.MethodGet, "/orgs/"+escape(org)+"/custom-repository-roles", nil, &result)
-	return result.CustomRoles, err
+	return listAllWrapped[CustomRepositoryRole](ctx, c, "/orgs/"+escape(org)+"/custom-repository-roles", func() *customRepositoryRoleList {
+		return &customRepositoryRoleList{}
+	})
 }
 
 func (c *Client) UpdateSecurityAndAnalysis(ctx context.Context, repo Repository, settings SecurityAndAnalysisRequest) (RepositoryInfo, error) {
@@ -213,12 +242,37 @@ func (c *Client) ConfigureCodeQLDefaultSetup(ctx context.Context, repo Repositor
 	return c.do(ctx, http.MethodPatch, repoPath(repo)+"/code-scanning/default-setup", settings, nil)
 }
 
+// GetCodeQLDefaultSetup retrieves the current CodeQL default setup
+// configuration. GitHub returns state "not-configured" rather than an error
+// for a repository that has never enabled it.
+func (c *Client) GetCodeQLDefaultSetup(ctx context.Context, repo Repository) (CodeQLDefaultSetupStatus, error) {
+	var result CodeQLDefaultSetupStatus
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/code-scanning/default-setup", nil, &result)
+	return result, err
+}
+
 func (c *Client) SetPrivateVulnerabilityReporting(ctx context.Context, repo Repository, enabled bool) error {
 	method := http.MethodDelete
 	if enabled {
 		method = http.MethodPut
 	}
 	return c.do(ctx, method, repoPath(repo)+"/private-vulnerability-reporting", nil, nil)
+}
+
+// GetPrivateVulnerabilityReportingEnabled reports whether private
+// vulnerability reporting is enabled. Unlike vulnerability alerts, this
+// endpoint returns a 200 JSON body rather than a bodyless 204/404 pair; a 404
+// is still treated as disabled for a repository type that does not expose it.
+func (c *Client) GetPrivateVulnerabilityReportingEnabled(ctx context.Context, repo Repository) (bool, error) {
+	var result privateVulnerabilityReportingStatus
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/private-vulnerability-reporting", nil, &result)
+	if err == nil {
+		return result.Enabled, nil
+	}
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 // maxListPages bounds listAll so a misbehaving or unexpectedly large endpoint
@@ -243,6 +297,39 @@ func listAll[T any](ctx context.Context, c *Client, basePath string) ([]T, error
 		}
 		all = append(all, pageResult...)
 		if len(pageResult) < 100 {
+			return all, nil
+		}
+	}
+	return nil, fmt.Errorf("list %s exceeded %d pages", basePath, maxListPages)
+}
+
+// wrappedList is implemented by a decode target for a GitHub list endpoint
+// whose items are nested in a field (for example
+// {"total_count":N,"variables":[...]}) rather than returned as a bare array,
+// so listAll cannot decode it directly.
+type wrappedList[T any] interface {
+	pageItems() []T
+}
+
+// listAllWrapped walks every page of a wrapped GitHub list endpoint at 100
+// items per page, stopping at the first short page. newPage returns a fresh
+// decode target for each page; T is given explicitly by the caller and W is
+// inferred from newPage's return type.
+func listAllWrapped[T any, W wrappedList[T]](ctx context.Context, c *Client, basePath string, newPage func() W) ([]T, error) {
+	separator := "?"
+	if strings.Contains(basePath, "?") {
+		separator = "&"
+	}
+	var all []T
+	for page := 1; page <= maxListPages; page++ {
+		result := newPage()
+		apiPath := fmt.Sprintf("%s%sper_page=100&page=%d", basePath, separator, page)
+		if err := c.do(ctx, http.MethodGet, apiPath, nil, result); err != nil {
+			return nil, err
+		}
+		items := result.pageItems()
+		all = append(all, items...)
+		if len(items) < 100 {
 			return all, nil
 		}
 	}
@@ -344,6 +431,21 @@ func (c *Client) SetAutomatedSecurityFixes(ctx context.Context, repo Repository,
 	return c.do(ctx, method, repoPath(repo)+"/automated-security-fixes", nil, nil)
 }
 
+// GetAutomatedSecurityFixesEnabled reports whether Dependabot security
+// updates are enabled. GitHub returns a 200 JSON body when enabled and a
+// bodyless 404 when disabled.
+func (c *Client) GetAutomatedSecurityFixesEnabled(ctx context.Context, repo Repository) (bool, error) {
+	var result automatedSecurityFixesStatus
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/automated-security-fixes", nil, &result)
+	if err == nil {
+		return result.Enabled, nil
+	}
+	if IsNotFound(err) {
+		return false, nil
+	}
+	return false, err
+}
+
 func (c *Client) GetAgentSecretPublicKey(ctx context.Context, repo Repository) (PublicKey, error) {
 	var result PublicKey
 	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/agents/secrets/public-key", nil, &result)
@@ -354,17 +456,24 @@ func (c *Client) PutAgentSecret(ctx context.Context, repo Repository, name strin
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/agents/secrets/"+escape(name), secret, nil)
 }
 
-// ListAgentSecrets lists repository agent secret names without values.
+// ListAgentSecrets lists repository agent secret names without values,
+// across every page: GitHub defaults to 30 per page, and import needs the
+// complete list to report every secret name as a diagnostic.
 func (c *Client) ListAgentSecrets(ctx context.Context, repo Repository) (SecretList, error) {
-	var result SecretList
-	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/agents/secrets", nil, &result)
-	return result, err
+	secrets, err := listAllWrapped[SecretMetadata](ctx, c, repoPath(repo)+"/agents/secrets", func() *SecretList { return &SecretList{} })
+	if err != nil {
+		return SecretList{}, err
+	}
+	return SecretList{TotalCount: len(secrets), Secrets: secrets}, nil
 }
 
+// ListAgentVariables lists every repository agent variable, across every page.
 func (c *Client) ListAgentVariables(ctx context.Context, repo Repository) (AgentVariableList, error) {
-	var result AgentVariableList
-	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/agents/variables", nil, &result)
-	return result, err
+	variables, err := listAllWrapped[AgentVariable](ctx, c, repoPath(repo)+"/agents/variables", func() *AgentVariableList { return &AgentVariableList{} })
+	if err != nil {
+		return AgentVariableList{}, err
+	}
+	return AgentVariableList{TotalCount: len(variables), Variables: variables}, nil
 }
 
 func (c *Client) CreateAgentVariable(ctx context.Context, repo Repository, variable AgentVariable) error {
@@ -393,19 +502,24 @@ func (c *Client) PutActionsSecret(ctx context.Context, repo Repository, name str
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/secrets/"+escape(name), secret, nil)
 }
 
-// ListActionsSecrets lists repository Actions secret names without values.
+// ListActionsSecrets lists repository Actions secret names without values,
+// across every page: GitHub defaults to 30 per page, and import needs the
+// complete list to report every secret name as a diagnostic.
 func (c *Client) ListActionsSecrets(ctx context.Context, repo Repository) (SecretList, error) {
-	var result SecretList
-	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/secrets", nil, &result)
-	return result, err
+	secrets, err := listAllWrapped[SecretMetadata](ctx, c, repoPath(repo)+"/actions/secrets", func() *SecretList { return &SecretList{} })
+	if err != nil {
+		return SecretList{}, err
+	}
+	return SecretList{TotalCount: len(secrets), Secrets: secrets}, nil
 }
 
-// ListActionVariables lists repository Actions variables. Callers should paginate only
-// after this minimal bootstrap operation needs more than GitHub's default page size.
+// ListActionVariables lists every repository Actions variable, across every page.
 func (c *Client) ListActionVariables(ctx context.Context, repo Repository) (ActionVariableList, error) {
-	var result ActionVariableList
-	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/variables", nil, &result)
-	return result, err
+	variables, err := listAllWrapped[ActionVariable](ctx, c, repoPath(repo)+"/actions/variables", func() *ActionVariableList { return &ActionVariableList{} })
+	if err != nil {
+		return ActionVariableList{}, err
+	}
+	return ActionVariableList{TotalCount: len(variables), Variables: variables}, nil
 }
 
 // CreateActionVariable creates a repository Actions variable.
@@ -432,6 +546,13 @@ func (c *Client) CreateOrUpdateEnvironment(ctx context.Context, repo Repository,
 	var result Environment
 	err := c.do(ctx, http.MethodPut, repoPath(repo)+"/environments/"+escape(name), request, &result)
 	return result, err
+}
+
+// ListEnvironments lists every repository environment, across every page.
+func (c *Client) ListEnvironments(ctx context.Context, repo Repository) ([]Environment, error) {
+	return listAllWrapped[Environment](ctx, c, repoPath(repo)+"/environments", func() *environmentList {
+		return &environmentList{}
+	})
 }
 
 // GetBranchHead retrieves the current commit ref for a branch.
