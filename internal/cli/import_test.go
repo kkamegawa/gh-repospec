@@ -218,7 +218,7 @@ func TestExecuteImportIntoRefusesPromptOnNonInteractiveInputWithoutYes(t *testin
 	if !strings.Contains(err.Error(), "--yes") {
 		t.Fatalf("error = %q, want it to name --yes", err)
 	}
-	unchanged, readErr := os.ReadFile(path)
+	unchanged, readErr := os.ReadFile(path) //nolint:gosec // path is this test's own t.TempDir() file, not user input
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -269,7 +269,7 @@ func TestExecuteImportIntoYesSkipsPrompt(t *testing.T) {
 	if err := executeImportInto(result, importOptions{into: path, yes: true}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	refreshed, err := os.ReadFile(path)
+	refreshed, err := os.ReadFile(path) //nolint:gosec // path is this test's own t.TempDir() file, not user input
 	if err != nil {
 		t.Fatal(err)
 	}

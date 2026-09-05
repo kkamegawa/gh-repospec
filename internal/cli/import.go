@@ -158,7 +158,7 @@ func writeImportDocument(output io.Writer, cfg config.Config, format string) err
 }
 
 func executeImportInto(result importer.Result, options importOptions, stdin io.Reader, stdout, stderr io.Writer) error {
-	original, err := os.ReadFile(options.into) //nolint:gosec // the path is explicitly supplied by the user
+	original, err := os.ReadFile(options.into)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", options.into, err)
 	}
