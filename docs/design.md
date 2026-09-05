@@ -47,6 +47,12 @@ projects, wiki, and discussions, the merge commit title and message formats
 `squashMergeCommitMessage`), and `releaseImmutability`. Archiving is
 reversible: `archived: false` unarchives a repository.
 
+`description` and `homepage` are both optional and both distinguish an absent
+key from an empty value: omitting either leaves the current value alone, while
+an explicit empty string clears it. The distinction matters because `import`
+output has to converge against the repository it was read from, and a field
+that cannot express "not managed" reports a change forever.
+
 `labels` and `milestones` are additive collections, consistent with the rest
 of the contract. Labels take a `name`, a `color` as six hexadecimal digits
 without a leading `#`, and an optional `description`. Milestones take a
@@ -137,37 +143,68 @@ blocks a change this run was also supposed to make.
 fetches an existing repository and produces a `schemaVersion: 1` document.
 `-R`/`--repo` substitutes for the positional repository, but the two forms
 cannot be combined. YAML is the default stdout format; JSON is available for
-automation. Import only reads GitHub and never makes a repository write.
+automation. Diagnostics go to standard error, so a redirected document stays
+valid. Import only reads GitHub and never makes a repository write.
 
 The importer maps `repository` (topics, features, merge settings, and archived
 state), `labels`, `milestones`, `rulesets` and bypass actors, Actions
-permissions/variables/environment names, `security`, and agent variables.
-Server-generated ruleset IDs and timestamps are omitted. Ruleset names are the
-stable identity; imported Team, App, and custom-role bypass actors use the
-existing `id:<number>` selector. Inherited or otherwise unrepresentable
-rulesets are reported rather than silently reduced.
+permissions, variables, and environment names, `security`, and agent
+variables. Several of those reads do not exist in this extension yet;
+[`plan.md`](plan.md) enumerates them. Two shape the contract. The rulesets list
+endpoint returns only identity, target, and enforcement, so each ruleset is
+fetched individually to obtain its rules, conditions, and bypass actors.
+Security state comes from `security_and_analysis` on the repository plus the
+per-feature endpoints; a feature whose state cannot be read is reported rather
+than written as `false`.
+
+Server-generated ruleset IDs and timestamps are omitted, because the ruleset
+name is the stable identity. Bypass actors are reversed by actor type:
+`Integration` becomes `app`, actor ID 1 becomes `orgAdmin`, and
+`RepositoryRole` becomes the symbolic `role` for the fixed IDs 2, 4, and 5
+(`maintain`, `write`, `admin`) and `customRole: id:<number>` for any other ID,
+because both share that actor type. Teams, apps, and custom roles use the
+existing `id:<number>` selector; `role` never does. An empty bypass actor list
+is written out explicitly, since omitting it clears the actors on the next
+apply. Rule parameters are emitted with sorted keys and integral numbers, so
+the same repository always produces the same bytes. Inherited or otherwise
+unrepresentable rulesets are reported rather than silently reduced.
 
 Secret values and `sourceEnv` names cannot be read from GitHub. Secret names
-are reported as YAML comments and JSON diagnostics so the user can provide a
-source environment variable. `seed`, `commands`, and agent file paths are
-local intent and are never inferred. A refresh preserves those declarations,
-including secret update policies, `optional` flags, and agent paths.
+are reported as YAML comments and JSON diagnostics so the user can supply a
+source environment variable. Local intent is never inferred: `seed` and its
+`overwrite` list, `commands`, agent file paths, `agents.secrets`,
+`repository.create`, and `repository.allowVisibilityChange` describe decisions
+that no repository state implies. A refresh preserves all of them, along with
+secret update policies and `optional` flags.
 
 `--into <path>` refreshes only paths and top-level sections already declared in
-the file. A declared collection is its complete managed boundary: entries are
-added, updated, or removed to match the imported state, including every
-importable attribute. Retained entry order and attached comments are kept;
-new entries are appended in name order. Undeclared sections remain undeclared,
-and an empty declared collection remains declared.
+the file. Within a declared collection, entries that exist on GitHub are
+updated and entries missing from the file are added in name order; a declared
+entry that does not exist on GitHub is kept and reported as not yet applied,
+never deleted. A configuration entry is a desired state that may simply not
+have been applied, and dropping it would silently accept drift — the same
+additive rule that governs the rest of the contract. Undeclared sections stay
+undeclared, an empty declared collection stays declared, and retained entry
+order with attached comments is preserved. A `security` feature whose live
+state could not be read keeps its existing declaration and is reported.
 
-YAML refresh uses parsed node positions to replace only affected byte ranges.
-Comments, key order, indentation, quote style, and line endings outside those
-ranges are preserved; re-encoding an entire YAML node is not sufficient. JSON
-is reformatted as JSON while retaining JSON input. The proposed difference is
-shown and confirmed before saving, with `--yes` skipping confirmation. A
-no-op, validation error, declined confirmation, concurrent edit, or save error
-leaves the original file unchanged. An input format and an explicit
-`--format` value must agree when `--into` is used.
+YAML refresh parses the file into an AST that carries a byte offset for every
+token and replaces only the spans that changed, so comments, key order,
+indentation, quote style, and line endings outside those spans survive
+untouched. Start-of-node line and column numbers alone are not enough: they
+give no span end, and a parser that normalizes CRLF to LF cannot preserve the
+original line endings. `config.Load` keeps its own strict parser, and the
+refresh parser is confined to rewriting; the two must not diverge on what a
+valid document is. JSON is reformatted as JSON while retaining JSON input.
+
+The proposed difference is shown and confirmed before saving, with `--yes`
+skipping confirmation. The candidate document is validated before it is
+written, but that validation excludes the filesystem checks that `seed` paths
+normally receive, so a refresh does not fail because a seed directory is
+absent on the machine running it. A no-op, validation error, declined
+confirmation, concurrent edit, or save error leaves the original file
+unchanged. An input format and an explicit `--format` value must agree when
+`--into` is used.
 
 ## Drift detection and CI
 
