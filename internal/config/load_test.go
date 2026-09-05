@@ -433,3 +433,31 @@ repository:
 		t.Fatalf("Description = %v, want \"hello\"", cfg.Repository.Description)
 	}
 }
+
+// TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck guards the refresh
+// contract: a refresh candidate must not fail merely because the machine
+// running it lacks the seed content locally, while Validate (used by Load,
+// and by apply before it stages anything) must still catch it.
+func TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+		Seed:          &SeedConfig{Directory: &DirectorySeed{Path: filepath.Join(t.TempDir(), "does-not-exist")}},
+	}
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a seed directory that does not exist on disk")
+	}
+	if err := ValidateDeclaredSurface(&cfg); err != nil {
+		t.Fatalf("ValidateDeclaredSurface() error = %v, want the missing seed directory ignored", err)
+	}
+
+	empty := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+		Seed:          &SeedConfig{Directory: &DirectorySeed{Path: ""}},
+	}
+	if err := ValidateDeclaredSurface(&empty); err == nil {
+		t.Fatal("ValidateDeclaredSurface() unexpectedly accepted an empty seed.directory.path")
+	}
+}

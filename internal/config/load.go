@@ -58,6 +58,19 @@ func resolveLocalSeedPath(cfg *Config, base string) {
 
 // Validate checks semantic constraints that cannot be expressed by Go tags.
 func Validate(cfg *Config) error {
+	return validate(cfg, true)
+}
+
+// ValidateDeclaredSurface validates a configuration the same way Validate
+// does, except it does not stat a seed.directory or seed.zip path on disk.
+// A refresh candidate can be valid on the repository it describes even when
+// the machine running the refresh does not have the seed content locally;
+// that is a concern for apply, not for accepting the refreshed document.
+func ValidateDeclaredSurface(cfg *Config) error {
+	return validate(cfg, false)
+}
+
+func validate(cfg *Config, checkSeedFilesystem bool) error {
 	if cfg == nil {
 		return errors.New("configuration is required")
 	}
@@ -67,7 +80,7 @@ func Validate(cfg *Config) error {
 	if err := validateRepository(cfg.Repository); err != nil {
 		return err
 	}
-	if err := validateSeed(cfg.Seed); err != nil {
+	if err := validateSeed(cfg.Seed, checkSeedFilesystem); err != nil {
 		return err
 	}
 	if err := validateActions(cfg.Actions); err != nil {
@@ -165,7 +178,7 @@ func validateMilestones(milestones []MilestoneConfig) error {
 	return validateUnique("milestones", titles)
 }
 
-func validateSeed(seed *SeedConfig) error {
+func validateSeed(seed *SeedConfig, checkSeedFilesystem bool) error {
 	if seed == nil {
 		return nil
 	}
@@ -178,14 +191,24 @@ func validateSeed(seed *SeedConfig) error {
 	}
 	if seed.Directory != nil {
 		count++
-		if err := validateLocalSeedPath("seed.directory.path", seed.Directory.Path, false); err != nil {
-			return err
+		if seed.Directory.Path == "" {
+			return errors.New("seed.directory.path is required")
+		}
+		if checkSeedFilesystem {
+			if err := validateLocalSeedPath("seed.directory.path", seed.Directory.Path, false); err != nil {
+				return err
+			}
 		}
 	}
 	if seed.ZIP != nil {
 		count++
-		if err := validateLocalSeedPath("seed.zip.path", seed.ZIP.Path, true); err != nil {
-			return err
+		if seed.ZIP.Path == "" {
+			return errors.New("seed.zip.path is required")
+		}
+		if checkSeedFilesystem {
+			if err := validateLocalSeedPath("seed.zip.path", seed.ZIP.Path, true); err != nil {
+				return err
+			}
 		}
 	}
 	if count != 1 {
