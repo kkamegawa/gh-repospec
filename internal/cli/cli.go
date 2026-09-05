@@ -54,6 +54,12 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return err
 		}
 		return executeApply(context.Background(), options, stdin, stdout, stderr)
+	case "import":
+		options, err := parseImportFlags(args[1:], stderr)
+		if err != nil {
+			return err
+		}
+		return executeImport(context.Background(), options, stdin, stdout, stderr)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return nil
@@ -149,7 +155,7 @@ func executeApply(ctx context.Context, options executionOptions, stdin io.Reader
 		return errors.New("apply is blocked; resolve blocked plan entries before retrying")
 	}
 	if !options.yes {
-		confirmed, err := confirm(stdin, stderr, plan.Repository.String())
+		confirmed, err := confirm(stdin, stderr, fmt.Sprintf("Apply the planned remote changes to %s?", plan.Repository))
 		if err != nil {
 			return err
 		}
@@ -208,8 +214,8 @@ func writePlan(output io.Writer, plan planner.Plan, format string) error {
 	return nil
 }
 
-func confirm(input io.Reader, output io.Writer, repository string) (bool, error) {
-	if _, err := fmt.Fprintf(output, "Apply the planned remote changes to %s? [y/N] ", repository); err != nil {
+func confirm(input io.Reader, output io.Writer, prompt string) (bool, error) {
+	if _, err := fmt.Fprintf(output, "%s [y/N] ", prompt); err != nil {
 		return false, err
 	}
 	scanner := bufio.NewScanner(input)
@@ -251,18 +257,30 @@ func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `Usage: gh repospec <command> [flags]
 
 Commands:
-  validate --file <path>                     Validate a schemaVersion 1 YAML or JSON configuration.
-  plan --file <path> [-R owner/repository]   Preview changes without modifying GitHub.
-  apply --file <path> [-R owner/repository]  Confirm and apply supported changes.
-  version, --version, -v                     Print the gh-repospec version.
+  validate --file <path>                          Validate a schemaVersion 1 YAML or JSON configuration.
+  plan --file <path> [-R owner/repository]        Preview changes without modifying GitHub.
+  apply --file <path> [-R owner/repository]       Confirm and apply supported changes.
+  import <owner/repository> [--into <path>]       Read a repository and write or refresh a configuration.
+  version, --version, -v                          Print the gh-repospec version.
 
 Common flags:
-  -f, --file <path>        Configuration path (required).
-  -R, --repo <owner/name>  Override the repository declared in the configuration.
-  --format <text|json>     Select plan output format.
+  -f, --file <path>        Configuration path (required for validate/plan/apply).
+  -R, --repo <owner/name>  Override the repository declared in the configuration, or substitute for
+                           import's positional repository (not both).
+  --format <text|json>     Select plan output format (import instead uses --format <yaml|json>).
 
 Apply flags:
   --yes                    Skip the remote-change confirmation prompt.
   --approve-command <id>   Approve a configured command; repeat for each command.
+
+Import flags:
+  --format <yaml|json>     Select the written document's format (default yaml).
+  --into <path>            Refresh an existing configuration file in place instead of writing a new
+                           document. Only paths and sections the file already declares are refreshed;
+                           a declared entry GitHub does not have is kept and reported, never deleted.
+  --yes                    Skip the --into confirmation prompt.
+
+import never writes to GitHub. It reports secret names as diagnostics on
+standard error; secret values are never returned by the GitHub API.
 `)
 }

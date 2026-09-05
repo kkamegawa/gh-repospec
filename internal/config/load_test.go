@@ -462,6 +462,37 @@ func TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck(t *testing.T) {
 	}
 }
 
+// TestLoadForRefreshSkipsSeedFilesystemCheck guards the same contract at the
+// file-loading entry point --into actually uses.
+func TestLoadForRefreshSkipsSeedFilesystemCheck(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "bootstrap.yaml")
+	content := `schemaVersion: 1
+repository:
+  owner: octo-org
+  name: example
+  visibility: public
+seed:
+  directory:
+    path: does-not-exist
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(path); err == nil {
+		t.Fatal("Load() unexpectedly accepted a seed directory that does not exist on disk")
+	}
+	cfg, err := LoadForRefresh(path)
+	if err != nil {
+		t.Fatalf("LoadForRefresh() error = %v, want the missing seed directory ignored", err)
+	}
+	if cfg.Seed == nil || cfg.Seed.Directory == nil {
+		t.Fatal("LoadForRefresh() did not decode the seed declaration")
+	}
+}
+
 // TestRepositoryRoleActorIDRoundTrips guards the accessor pair that replaced
 // the previously exported, mutable RepositoryRoleActorIDs map: a caller can
 // only read a fixed role's ID or reverse an ID back to its role name, never

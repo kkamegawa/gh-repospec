@@ -13,10 +13,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Load reads a YAML or JSON configuration document and validates it. yaml.v3
-// accepts JSON as a YAML subset, detects duplicate mapping keys, and its
-// KnownFields option rejects fields that do not belong to the typed contract.
+// Load reads a YAML or JSON configuration document and validates it fully,
+// including that a declared seed.directory or seed.zip exists on disk.
+// yaml.v3 accepts JSON as a YAML subset, detects duplicate mapping keys, and
+// its KnownFields option rejects fields that do not belong to the typed
+// contract.
 func Load(path string) (*Config, error) {
+	return load(path, Validate)
+}
+
+// LoadForRefresh reads and decodes a configuration exactly the way Load
+// does, but validates it with ValidateDeclaredSurface instead: a --into
+// refresh candidate must not fail merely because the machine running it
+// lacks the file's declared seed content locally.
+func LoadForRefresh(path string) (*Config, error) {
+	return load(path, ValidateDeclaredSurface)
+}
+
+func load(path string, validate func(*Config) error) (*Config, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // the path is explicitly supplied by the user
 	if err != nil {
 		return nil, fmt.Errorf("read configuration %q: %w", path, err)
@@ -36,7 +50,7 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("decode configuration %q: %w", path, err)
 	}
 	resolveLocalSeedPath(&cfg, filepath.Dir(path))
-	if err := Validate(&cfg); err != nil {
+	if err := validate(&cfg); err != nil {
 		return nil, fmt.Errorf("validate configuration %q: %w", path, err)
 	}
 	return &cfg, nil
