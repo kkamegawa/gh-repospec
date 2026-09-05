@@ -90,8 +90,11 @@ type Service interface {
 	ReplaceTopics(context.Context, githubapi.Repository, []string) ([]string, error)
 	GetActionsPermissions(context.Context, githubapi.Repository) (githubapi.ActionsPermissions, error)
 	UpdateActionsPermissions(context.Context, githubapi.Repository, githubapi.ActionsPermissions) error
+	GetSelectedActions(context.Context, githubapi.Repository) (githubapi.SelectedActions, error)
 	UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error
+	GetDefaultWorkflowPermissions(context.Context, githubapi.Repository) (githubapi.DefaultWorkflowPermissions, error)
 	UpdateDefaultWorkflowPermissions(context.Context, githubapi.Repository, githubapi.DefaultWorkflowPermissions) error
+	ListEnvironments(context.Context, githubapi.Repository) ([]githubapi.Environment, error)
 	GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error)
 	SetForkPullRequestApproval(context.Context, githubapi.Repository, githubapi.ForkPullRequestApproval) error
 	ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error)
@@ -107,10 +110,13 @@ type Service interface {
 	GetApp(context.Context, string) (githubapi.App, error)
 	ListCustomRepositoryRoles(context.Context, string) ([]githubapi.CustomRepositoryRole, error)
 	UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error)
+	GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error)
 	ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error
+	GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error)
 	SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error
 	GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error)
 	SetVulnerabilityAlerts(context.Context, githubapi.Repository, bool) error
+	GetAutomatedSecurityFixesEnabled(context.Context, githubapi.Repository) (bool, error)
 	SetAutomatedSecurityFixes(context.Context, githubapi.Repository, bool) error
 	ListLabels(context.Context, githubapi.Repository) ([]githubapi.Label, error)
 	CreateLabel(context.Context, githubapi.Repository, githubapi.Label) (githubapi.Label, error)
@@ -219,7 +225,7 @@ func (e *Engine) build(ctx context.Context, cfg *config.Config, options Options)
 	appendMilestoneChanges(ctx, e.service, &plan, cfg.Milestones, repository)
 	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository)
 	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository, resolver)
-	appendSecurityChanges(ctx, e.service, &plan, cfg.Security, repository, true)
+	appendSecurityChanges(ctx, e.service, &plan, cfg.Security, repository, info, true)
 	appendAgentChanges(ctx, e.service, &plan, cfg.Agents, repository)
 	appendSeedChanges(&plan, cfg)
 	return finalize(plan), resolver, nil
@@ -1275,10 +1281,26 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.permissions", State: ChangeUpdate, Summary: "update Actions permissions"})
 	}
 	if desired.DefaultWorkflowPermissions != "" || desired.CanApprovePullRequestWorkflows != nil {
-		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowPermissions", State: ChangeUpdate, Summary: "update GITHUB_TOKEN permissions"})
+		state, summary := ChangeUpdate, "update GITHUB_TOKEN permissions"
+		if current, err := service.GetDefaultWorkflowPermissions(ctx, repository); err == nil {
+			permissionsMatch := desired.DefaultWorkflowPermissions == "" || desired.DefaultWorkflowPermissions == current.DefaultWorkflowPermissions
+			approvalMatches := desired.CanApprovePullRequestWorkflows == nil || *desired.CanApprovePullRequestWorkflows == current.CanApprovePullRequest
+			if permissionsMatch && approvalMatches {
+				state, summary = ChangeNoop, "GITHUB_TOKEN permissions already converged"
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowPermissions", State: state, Summary: summary})
 	}
 	if desired.AllowedActions == "selected" && desired.SelectedActions != nil {
-		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: ChangeUpdate, Summary: "configure allowed Actions and reusable workflows"})
+		state, summary := ChangeUpdate, "configure allowed Actions and reusable workflows"
+		if current, err := service.GetSelectedActions(ctx, repository); err == nil {
+			if current.GitHubOwnedAllowed == desired.SelectedActions.GitHubOwnedAllowed &&
+				current.VerifiedAllowed == desired.SelectedActions.VerifiedAllowed &&
+				sameStrings(current.PatternsAllowed, desired.SelectedActions.PatternsAllowed) {
+				state, summary = ChangeNoop, "allowlist already converged"
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: state, Summary: summary})
 	}
 	appendForkPullRequestApprovalChange(plan, desired, desiredRepository, true)
 	variables, err := service.ListActionVariables(ctx, repository)
@@ -1306,40 +1328,95 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	for _, secret := range desired.Secrets {
 		appendSecretChange(plan, "actions.secret."+secret.Name, secret)
 	}
-	for _, environment := range desired.Environments {
-		plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: ChangeUpdate, Summary: "ensure Actions environment"})
+	if len(desired.Environments) > 0 {
+		existing := map[string]bool{}
+		environments, err := service.ListEnvironments(ctx, repository)
+		known := err == nil
+		if known {
+			for _, environment := range environments {
+				existing[environment.Name] = true
+			}
+		}
+		for _, environment := range desired.Environments {
+			state := ChangeUpdate
+			if known {
+				state = ChangeCreate
+				if existing[environment.Name] {
+					state = ChangeNoop
+				}
+			}
+			plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: state, Summary: "ensure Actions environment"})
+		}
 	}
 }
 
-func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, desired *config.SecurityConfig, repository githubapi.Repository, exists bool) {
+func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, desired *config.SecurityConfig, repository githubapi.Repository, info githubapi.RepositoryInfo, exists bool) {
 	if desired == nil {
 		return
 	}
-	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, "")
-	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "")
+	secretScanningCurrent, secretScanningKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanning })
+	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, "", secretScanningCurrent, exists && secretScanningKnown)
+
+	pushProtectionCurrent, pushProtectionKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanningPushProtect })
+	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "", pushProtectionCurrent, exists && pushProtectionKnown)
 
 	// Only ask GitHub (or fall back to a blocked create-path assumption) when
 	// something downstream actually depends on the answer.
 	var alertsEnabled, alertsKnown bool
-	if desired.DependencyGraph != nil || desired.DependabotSecurityUpdates != nil {
+	if desired.DependencyGraph != nil || desired.DependabotAlerts != nil || desired.DependabotSecurityUpdates != nil {
 		alertsEnabled, alertsKnown = effectiveDependabotAlertsEnabled(ctx, service, repository, exists, desired)
 	}
 
 	// GitHub enables the dependency graph as part of enabling Dependabot alerts.
+	// There is no read endpoint for dependency graph status at all, so this
+	// stays an unconditional update whenever it is not blocked outright.
 	dependencyGraphReason := ""
 	if desired.DependencyGraph != nil && (!alertsKnown || !alertsEnabled) {
 		dependencyGraphReason = "only settable by enabling security.dependabotAlerts"
 	}
-	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphReason)
-	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, "")
+	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphReason, false, false)
+	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, "", alertsEnabled, exists && alertsKnown && desired.DependabotAlerts != nil)
 
 	securityUpdatesReason := ""
 	if desired.DependabotSecurityUpdates != nil && (!alertsKnown || !alertsEnabled) {
 		securityUpdatesReason = "requires security.dependabotAlerts to be enabled"
 	}
-	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, securityUpdatesReason)
-	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, "")
-	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, "")
+	securityUpdatesCurrent, securityUpdatesKnown := false, false
+	if securityUpdatesReason == "" && exists {
+		if current, err := service.GetAutomatedSecurityFixesEnabled(ctx, repository); err == nil {
+			securityUpdatesCurrent, securityUpdatesKnown = current, true
+		}
+	}
+	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, securityUpdatesReason, securityUpdatesCurrent, securityUpdatesKnown)
+
+	codeQLCurrent, codeQLKnown := false, false
+	if exists {
+		if status, err := service.GetCodeQLDefaultSetup(ctx, repository); err == nil {
+			codeQLCurrent, codeQLKnown = status.State == "configured", true
+		}
+	}
+	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, "", codeQLCurrent, codeQLKnown)
+
+	privateVRCurrent, privateVRKnown := false, false
+	if exists {
+		if current, err := service.GetPrivateVulnerabilityReportingEnabled(ctx, repository); err == nil {
+			privateVRCurrent, privateVRKnown = current, true
+		}
+	}
+	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, "", privateVRCurrent, privateVRKnown)
+}
+
+// securityAndAnalysisFeatureEnabled reads one feature's status out of a
+// repository's security_and_analysis block, if GitHub reported one at all.
+func securityAndAnalysisFeatureEnabled(info githubapi.RepositoryInfo, pick func(*githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature) (enabled, known bool) {
+	if info.SecurityAndAnalysis == nil {
+		return false, false
+	}
+	feature := pick(info.SecurityAndAnalysis)
+	if feature == nil {
+		return false, false
+	}
+	return feature.Status == "enabled", true
 }
 
 // effectiveDependabotAlertsEnabled reports whether Dependabot alerts will be
@@ -1364,8 +1441,11 @@ func effectiveDependabotAlertsEnabled(ctx context.Context, service Service, repo
 
 // appendFeatureChange records one security feature. An empty reason means the
 // feature can be applied; a non-empty reason blocks it, or degrades to a
-// manual change when the declaration is optional.
-func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *config.FeatureSetting, reason string) {
+// manual change when the declaration is optional. current is the live value
+// on GitHub and is only meaningful when known is true — a repository that
+// does not exist yet, or a read that failed, reports an update rather than
+// guessing at a noop that might not hold once the value is actually knowable.
+func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *config.FeatureSetting, reason string, current, known bool) {
 	if feature == nil {
 		return
 	}
@@ -1375,6 +1455,10 @@ func appendFeatureChange(plan *Plan, stage Stage, resource string, feature *conf
 			state = ChangeManual
 		}
 		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: state, Summary: reason})
+		return
+	}
+	if known && current == feature.Enabled {
+		plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: ChangeNoop, Summary: fmt.Sprintf("already set to %t", feature.Enabled)})
 		return
 	}
 	plan.Changes = append(plan.Changes, Change{Stage: stage, Resource: resource, State: ChangeUpdate, Summary: fmt.Sprintf("set to %t", feature.Enabled)})
@@ -1525,7 +1609,7 @@ func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
 		appendForkPullRequestApprovalChange(plan, cfg.Actions, cfg.Repository, false)
 	}
-	appendSecurityChanges(ctx, service, plan, cfg.Security, repository, false)
+	appendSecurityChanges(ctx, service, plan, cfg.Security, repository, githubapi.RepositoryInfo{}, false)
 	for _, ruleset := range cfg.Rulesets {
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: ChangeCreate, Summary: "create after repository initialization"})
 		appendBypassActorChanges(ctx, plan, ruleset, resolver, ChangeCreate, "after repository creation")

@@ -125,6 +125,71 @@ func TestBuildReportsSelectedActionsChange(t *testing.T) {
 	}
 }
 
+// TestBuildActionsSettingsConvergeAgainstLiveState guards the same
+// round-trip hazard for actions.selectedActions, actions.workflowPermissions,
+// and actions.environment.<name>: each was previously reported as an update
+// whenever declared, regardless of whether GitHub already matched.
+func TestBuildActionsSettingsConvergeAgainstLiveState(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository:                 githubapi.RepositoryInfo{Visibility: "public"},
+		selectedActions:            githubapi.SelectedActions{GitHubOwnedAllowed: true, VerifiedAllowed: true, PatternsAllowed: []string{"actions/checkout@*"}},
+		defaultWorkflowPermissions: githubapi.DefaultWorkflowPermissions{DefaultWorkflowPermissions: "read", CanApprovePullRequest: true},
+		environments:               []githubapi.Environment{{Name: "production"}},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canApprove := true
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			AllowedActions:                 "selected",
+			SelectedActions:                &config.SelectedActionsConfig{GitHubOwnedAllowed: true, VerifiedAllowed: true, PatternsAllowed: []string{"actions/checkout@*"}},
+			DefaultWorkflowPermissions:     "read",
+			CanApprovePullRequestWorkflows: &canApprove,
+			Environments:                   []config.Environment{{Name: "production"}},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "actions.selectedActions", ChangeNoop) {
+		t.Fatalf("plan.Changes = %#v, want actions.selectedActions as noop when it already matches", plan.Changes)
+	}
+	if !hasChange(plan, "actions.workflowPermissions", ChangeNoop) {
+		t.Fatalf("plan.Changes = %#v, want actions.workflowPermissions as noop when it already matches", plan.Changes)
+	}
+	if !hasChange(plan, "actions.environment.production", ChangeNoop) {
+		t.Fatalf("plan.Changes = %#v, want actions.environment.production as noop when it already exists", plan.Changes)
+	}
+}
+
+// TestBuildActionsEnvironmentReportsCreateWhenAbsent is the mirror case: an
+// environment GitHub does not have yet is a create, not a noop or a blind
+// update.
+func TestBuildActionsEnvironmentReportsCreateWhenAbsent(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions:       &config.ActionsConfig{Environments: []config.Environment{{Name: "staging"}}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "actions.environment.staging", ChangeCreate) {
+		t.Fatalf("plan.Changes = %#v, want actions.environment.staging as a create", plan.Changes)
+	}
+}
+
 func TestApplyActionsConvergesVariablesAndEnvironmentsOnce(t *testing.T) {
 	t.Parallel()
 	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
@@ -704,6 +769,88 @@ func TestBuildBlocksForkPullRequestApprovalOnPrivateRepository(t *testing.T) {
 	}
 }
 
+// TestBuildSecurityFeaturesConvergeAgainstLiveState guards the round-trip
+// hazard every security feature shared until now: reporting an update
+// whenever a feature is declared, never comparing it against the value
+// GitHub already has. An imported document that already matches the
+// repository it was read from must plan no changes for these fields.
+func TestBuildSecurityFeaturesConvergeAgainstLiveState(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{
+			Visibility: "public",
+			SecurityAndAnalysis: &githubapi.SecurityAndAnalysisStatus{
+				SecretScanning:            &githubapi.SecurityFeature{Status: "enabled"},
+				SecretScanningPushProtect: &githubapi.SecurityFeature{Status: "disabled"},
+			},
+		},
+		vulnerabilityAlertsEnabled:     true,
+		automatedSecurityFixesEnabled:  true,
+		codeQLDefaultSetup:             githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+		privateVulnerabilityReporting:  true,
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Security: &config.SecurityConfig{
+			SecretScanning:                &config.FeatureSetting{Enabled: true},
+			PushProtection:                &config.FeatureSetting{Enabled: false},
+			DependabotAlerts:              &config.FeatureSetting{Enabled: true},
+			DependabotSecurityUpdates:     &config.FeatureSetting{Enabled: true},
+			CodeQLDefaultSetup:            &config.FeatureSetting{Enabled: true},
+			PrivateVulnerabilityReporting: &config.FeatureSetting{Enabled: true},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, resource := range []string{
+		"security.secretScanning", "security.pushProtection", "security.dependabotAlerts",
+		"security.dependabotSecurityUpdates", "security.codeqlDefaultSetup", "security.privateVulnerabilityReporting",
+	} {
+		if !hasChange(plan, resource, ChangeNoop) {
+			t.Fatalf("plan.Changes = %#v, want %s as noop when it already matches the live value", plan.Changes, resource)
+		}
+	}
+	if plan.HasChanges() {
+		t.Fatalf("plan.HasChanges() = true, want false when every declared security feature already matches: %#v", plan.Changes)
+	}
+}
+
+// TestBuildSecurityFeaturesReportUpdateWhenLiveValueDiffers is the mirror of
+// the convergence test: a feature that genuinely differs from the live
+// value must still be reported as an update, not silently treated as a noop.
+func TestBuildSecurityFeaturesReportUpdateWhenLiveValueDiffers(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{
+			Visibility: "public",
+			SecurityAndAnalysis: &githubapi.SecurityAndAnalysisStatus{
+				SecretScanning: &githubapi.SecurityFeature{Status: "disabled"},
+			},
+		},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Security:      &config.SecurityConfig{SecretScanning: &config.FeatureSetting{Enabled: true}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "security.secretScanning", ChangeUpdate) {
+		t.Fatalf("plan.Changes = %#v, want security.secretScanning as an update", plan.Changes)
+	}
+}
+
 // TestBuildDependabotDependency guards docs/design.md's three-state
 // dependency: security.dependabotSecurityUpdates requires Dependabot alerts
 // to be effectively enabled, evaluated against configuration first and the
@@ -828,6 +975,15 @@ type fakeService struct {
 	forkPullRequestApprovalErr     error
 	vulnerabilityAlertsEnabled     bool
 	vulnerabilityAlertsErr         error
+	automatedSecurityFixesEnabled  bool
+	automatedSecurityFixesErr      error
+	privateVulnerabilityReporting  bool
+	privateVulnerabilityReportErr  error
+	codeQLDefaultSetup             githubapi.CodeQLDefaultSetupStatus
+	codeQLDefaultSetupErr          error
+	selectedActions                githubapi.SelectedActions
+	defaultWorkflowPermissions     githubapi.DefaultWorkflowPermissions
+	environments                   []githubapi.Environment
 	teams                          map[string]githubapi.Team
 	apps                           map[string]githubapi.App
 	customRoles                    []githubapi.CustomRepositoryRole
@@ -904,12 +1060,24 @@ func (f *fakeService) UpdateActionsPermissions(_ context.Context, _ githubapi.Re
 	return nil
 }
 
+func (f *fakeService) GetDefaultWorkflowPermissions(context.Context, githubapi.Repository) (githubapi.DefaultWorkflowPermissions, error) {
+	return f.defaultWorkflowPermissions, nil
+}
+
 func (*fakeService) UpdateDefaultWorkflowPermissions(context.Context, githubapi.Repository, githubapi.DefaultWorkflowPermissions) error {
 	return nil
 }
 
+func (f *fakeService) GetSelectedActions(context.Context, githubapi.Repository) (githubapi.SelectedActions, error) {
+	return f.selectedActions, nil
+}
+
 func (*fakeService) UpdateSelectedActions(context.Context, githubapi.Repository, githubapi.SelectedActionsRequest) error {
 	return nil
+}
+
+func (f *fakeService) ListEnvironments(context.Context, githubapi.Repository) ([]githubapi.Environment, error) {
+	return f.environments, nil
 }
 
 func (f *fakeService) GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error) {
@@ -954,6 +1122,10 @@ func (*fakeService) SetVulnerabilityAlerts(context.Context, githubapi.Repository
 	return nil
 }
 
+func (f *fakeService) GetAutomatedSecurityFixesEnabled(context.Context, githubapi.Repository) (bool, error) {
+	return f.automatedSecurityFixesEnabled, f.automatedSecurityFixesErr
+}
+
 func (*fakeService) SetAutomatedSecurityFixes(context.Context, githubapi.Repository, bool) error {
 	return nil
 }
@@ -992,8 +1164,16 @@ func (*fakeService) UpdateSecurityAndAnalysis(context.Context, githubapi.Reposit
 	return githubapi.RepositoryInfo{}, nil
 }
 
+func (f *fakeService) GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error) {
+	return f.codeQLDefaultSetup, f.codeQLDefaultSetupErr
+}
+
 func (*fakeService) ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error {
 	return nil
+}
+
+func (f *fakeService) GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error) {
+	return f.privateVulnerabilityReporting, f.privateVulnerabilityReportErr
 }
 
 func (*fakeService) SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error {
