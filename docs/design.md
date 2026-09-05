@@ -47,11 +47,14 @@ projects, wiki, and discussions, the merge commit title and message formats
 `squashMergeCommitMessage`), and `releaseImmutability`. Archiving is
 reversible: `archived: false` unarchives a repository.
 
-`description` and `homepage` are both optional and both distinguish an absent
-key from an empty value: omitting either leaves the current value alone, while
-an explicit empty string clears it. The distinction matters because `import`
-output has to converge against the repository it was read from, and a field
-that cannot express "not managed" reports a change forever.
+`homepage` is optional and distinguishes an absent key from an empty value:
+omitting it leaves the current value alone, while an explicit empty string
+clears it. `description` needs the same distinction for the same reason —
+`import` output has to converge against the repository it was read from, and
+a field that cannot express "not managed" reports a change forever — but is
+still a plain string in the current schema; making it tri-state like
+`homepage` is tracked separately as
+[Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22).
 
 `labels` and `milestones` are additive collections, consistent with the rest
 of the contract. Labels take a `name`, a `color` as six hexadecimal digits

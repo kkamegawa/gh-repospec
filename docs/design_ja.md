@@ -44,10 +44,11 @@ duration構文を使用します。
 `squashMergeCommitTitle`、`squashMergeCommitMessage`)、`releaseImmutability`です。
 アーカイブは可逆で、`archived: false`で解除します。
 
-`description`と`homepage`はどちらも任意で、キーが無い状態と空の値を区別します。省略すれば
-現在の値をそのままにし、空文字列を明示すれば値を消去します。この区別が必要なのは、import出力が
+`homepage`は任意で、キーが無い状態と空の値を区別します。省略すれば現在の値をそのままにし、
+空文字列を明示すれば値を消去します。`description`にも同じ理由で同じ区別が必要です。import出力が
 読み取り元のリポジトリに対して収束しなければならず、「管理しない」を表現できないフィールドは
-変更を報告し続けるためです。
+変更を報告し続けるためですが、現在のスキーマではまだ通常の文字列です。`homepage`と同じ三状態に
+することは、[Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22)で別途追跡しています。
 
 `labels`と`milestones`は、契約全体と同じく追加的なコレクションです。labelは`name`、
 先頭の`#`を含まない16進6桁の`color`、任意の`description`を取ります。milestoneは
