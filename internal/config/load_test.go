@@ -433,3 +433,57 @@ repository:
 		t.Fatalf("Description = %v, want \"hello\"", cfg.Repository.Description)
 	}
 }
+
+// TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck guards the refresh
+// contract: a refresh candidate must not fail merely because the machine
+// running it lacks the seed content locally, while Validate (used by Load,
+// and by apply before it stages anything) must still catch it.
+func TestValidateDeclaredSurfaceSkipsSeedFilesystemCheck(t *testing.T) {
+	t.Parallel()
+	cfg := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+		Seed:          &SeedConfig{Directory: &DirectorySeed{Path: filepath.Join(t.TempDir(), "does-not-exist")}},
+	}
+	if err := Validate(&cfg); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a seed directory that does not exist on disk")
+	}
+	if err := ValidateDeclaredSurface(&cfg); err != nil {
+		t.Fatalf("ValidateDeclaredSurface() error = %v, want the missing seed directory ignored", err)
+	}
+
+	empty := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+		Seed:          &SeedConfig{Directory: &DirectorySeed{Path: ""}},
+	}
+	if err := ValidateDeclaredSurface(&empty); err == nil {
+		t.Fatal("ValidateDeclaredSurface() unexpectedly accepted an empty seed.directory.path")
+	}
+}
+
+// TestRepositoryRoleActorIDRoundTrips guards the accessor pair that replaced
+// the previously exported, mutable RepositoryRoleActorIDs map: a caller can
+// only read a fixed role's ID or reverse an ID back to its role name, never
+// mutate the shared table itself.
+func TestRepositoryRoleActorIDRoundTrips(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"maintain", "write", "admin"} {
+		id, ok := RepositoryRoleActorID(role)
+		if !ok {
+			t.Fatalf("RepositoryRoleActorID(%q) ok = false, want true", role)
+		}
+		name, ok := RoleNameForActorID(id)
+		if !ok || name != role {
+			t.Fatalf("RoleNameForActorID(%d) = (%q, %v), want (%q, true)", id, name, ok, role)
+		}
+	}
+	if _, ok := RepositoryRoleActorID("owner"); ok {
+		t.Fatal("RepositoryRoleActorID(\"owner\") unexpectedly succeeded; owner is not one of the fixed roles")
+	}
+	// A custom repository role shares the RepositoryRole actor type but has
+	// a server-assigned ID outside the fixed set; it must not resolve here.
+	if _, ok := RoleNameForActorID(900); ok {
+		t.Fatal("RoleNameForActorID(900) unexpectedly resolved a role name for a non-fixed ID")
+	}
+}

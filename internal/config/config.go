@@ -169,6 +169,47 @@ type BypassActorConfig struct {
 	BypassMode string `json:"bypassMode,omitempty" yaml:"bypassMode,omitempty"`
 }
 
+// repositoryRoleActorIDs are GitHub's built-in repository role IDs for
+// ruleset bypass actors. They are stable but undocumented by GitHub, and
+// distinct from an organization custom repository role, whose ID is
+// assigned when the role is created and is always resolved through the API
+// instead. The planner resolves a declared role selector to its ID before a
+// write; import reverses a fetched actor ID to recognize one of these fixed
+// roles rather than a custom role. The map itself is unexported so neither
+// caller can mutate a value the other depends on; RepositoryRoleActorID and
+// RoleNameForActorID are the only way in or out.
+var repositoryRoleActorIDs = map[string]int64{
+	"maintain": 2,
+	"write":    4,
+	"admin":    5,
+}
+
+// RepositoryRoleActorID resolves a declared role selector (admin, write, or
+// maintain) to the fixed numeric ID the rulesets API requires. ok is false
+// for any other name.
+func RepositoryRoleActorID(role string) (id int64, ok bool) {
+	id, ok = repositoryRoleActorIDs[role]
+	return id, ok
+}
+
+// RoleNameForActorID reverses RepositoryRoleActorID: it recognizes a fetched
+// RepositoryRole actor ID as one of the fixed roles. ok is false for any
+// other ID, including a custom repository role's server-assigned one, which
+// shares the same RepositoryRole actor type on the wire.
+func RoleNameForActorID(id int64) (role string, ok bool) {
+	for name, roleID := range repositoryRoleActorIDs {
+		if roleID == id {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// OrganizationAdminActorID is the ruleset bypass actor ID GitHub expects for
+// the OrganizationAdmin actor type. GitHub ignores the value but rejects a
+// request that omits it.
+const OrganizationAdminActorID = 1
+
 // bypassActorIDPrefix marks a bypass actor selector as an already-resolved
 // numeric ID rather than a name to look up.
 const bypassActorIDPrefix = "id:"

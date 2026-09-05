@@ -9,20 +9,6 @@ import (
 	"github.com/kkamegawa/gh-repospec/internal/githubapi"
 )
 
-// repositoryRoleActorIDs are GitHub's built-in repository role IDs for
-// ruleset bypass actors. They are stable but undocumented by GitHub, and
-// distinct from an organization custom repository role, whose ID is assigned
-// when the role is created and is always resolved through the API instead.
-var repositoryRoleActorIDs = map[string]int64{
-	"maintain": 2,
-	"write":    4,
-	"admin":    5,
-}
-
-// organizationAdminActorID is sent for the OrganizationAdmin bypass actor
-// type. GitHub ignores the value but rejects a request that omits it.
-const organizationAdminActorID = 1
-
 // bypassFailure names the declaration index of one unresolvable bypass actor,
 // so a blocked plan entry can point at the same document position
 // config.Validate would (ruleset "<name>" bypassActors[<index>]).
@@ -132,7 +118,7 @@ func (r *bypassResolver) resolveAll(ctx context.Context, actors []config.BypassA
 func (r *bypassResolver) resolve(ctx context.Context, actor config.BypassActorConfig) (githubapi.BypassActor, error) {
 	switch {
 	case actor.Role != "":
-		id, ok := repositoryRoleActorIDs[actor.Role]
+		id, ok := config.RepositoryRoleActorID(actor.Role)
 		if !ok {
 			// Unreachable once config.Validate has run: role is restricted to
 			// admin, write, or maintain.
@@ -143,7 +129,7 @@ func (r *bypassResolver) resolve(ctx context.Context, actor config.BypassActorCo
 		if r.personal {
 			return githubapi.BypassActor{}, fmt.Errorf("bypass actor orgAdmin requires an organization-owned repository")
 		}
-		return githubapi.BypassActor{ActorID: organizationAdminActorID, ActorType: "OrganizationAdmin", BypassMode: actor.BypassMode}, nil
+		return githubapi.BypassActor{ActorID: config.OrganizationAdminActorID, ActorType: "OrganizationAdmin", BypassMode: actor.BypassMode}, nil
 	case actor.Team != "":
 		if r.personal {
 			return githubapi.BypassActor{}, fmt.Errorf("bypass actor team %q requires an organization-owned repository", actor.Team)
