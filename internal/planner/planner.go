@@ -1362,11 +1362,24 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 	})
 	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "", pushProtectionCurrent, exists && pushProtectionKnown)
 
-	// Only ask GitHub (or fall back to a blocked create-path assumption) when
-	// something downstream actually depends on the answer.
+	// alertsEnabled/alertsKnown answers "will alerts effectively be on once
+	// this run finishes" (declared value takes precedence, since this run may
+	// be about to change it) and only gates dependencyGraph and
+	// dependabotSecurityUpdates. security.dependabotAlerts itself must
+	// converge against GitHub's actual current state instead, fetched here
+	// as liveAlertsEnabled/liveAlertsKnown — using the effective value there
+	// would make it noop merely because the declared value equals itself,
+	// never actually checking GitHub.
 	var alertsEnabled, alertsKnown bool
 	if desired.DependencyGraph != nil || desired.DependabotAlerts != nil || desired.DependabotSecurityUpdates != nil {
 		alertsEnabled, alertsKnown = effectiveDependabotAlertsEnabled(ctx, service, repository, exists, desired)
+	}
+	var liveAlertsEnabled bool
+	liveAlertsKnown := false
+	if exists {
+		if current, err := service.GetVulnerabilityAlertsEnabled(ctx, repository); err == nil {
+			liveAlertsEnabled, liveAlertsKnown = current, true
+		}
 	}
 
 	// GitHub enables the dependency graph as part of enabling Dependabot alerts.
@@ -1377,7 +1390,7 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 		dependencyGraphReason = "only settable by enabling security.dependabotAlerts"
 	}
 	appendFeatureChange(plan, StageSecurity, "security.dependencyGraph", desired.DependencyGraph, dependencyGraphReason, false, false)
-	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, "", alertsEnabled, exists && alertsKnown && desired.DependabotAlerts != nil)
+	appendFeatureChange(plan, StageSecurity, "security.dependabotAlerts", desired.DependabotAlerts, "", liveAlertsEnabled, exists && liveAlertsKnown)
 
 	securityUpdatesReason := ""
 	if desired.DependabotSecurityUpdates != nil && (!alertsKnown || !alertsEnabled) {

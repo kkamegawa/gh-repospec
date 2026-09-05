@@ -28,15 +28,15 @@ type importOptions struct {
 	yes        bool
 }
 
-// importValueFlags and importBoolFlags name every flag import accepts, used
-// to separate flags from the positional repository regardless of which side
-// of it they appear on: the standard flag package stops parsing at the
-// first non-flag argument, which would otherwise make
-// "import OWNER/REPO --format json" treat --format as a second positional
-// argument.
+// importValueFlags and importBoolFlags name every flag import accepts, by
+// name with no leading dashes, used to separate flags from the positional
+// repository regardless of which side of it they appear on: the standard
+// flag package stops parsing at the first non-flag argument, which would
+// otherwise make "import OWNER/REPO --format json" treat --format as a
+// second positional argument.
 var (
-	importValueFlags = map[string]bool{"--repo": true, "-R": true, "--format": true, "--into": true}
-	importBoolFlags  = map[string]bool{"--yes": true}
+	importValueFlags = map[string]bool{"repo": true, "R": true, "format": true, "into": true}
+	importBoolFlags  = map[string]bool{"yes": true}
 )
 
 func parseImportFlags(args []string, stderr io.Writer) (importOptions, error) {
@@ -85,26 +85,38 @@ func parseImportFlags(args []string, stderr io.Writer) (importOptions, error) {
 // sees every flag regardless of whether it appeared before or after the
 // positional argument. An argument starting with "-" that is not a known
 // flag is rejected outright rather than silently treated as positional.
+//
+// valueFlags and boolFlags are keyed by bare flag name (no leading dashes),
+// since Go's flag package itself treats "-x" and "--x" as equivalent for any
+// flag; matching on the bare name here accepts both spellings the same way
+// flag.Parse would. "-h", "-help", and "--help" are always recognized and
+// passed through, matching flag.FlagSet's built-in help handling.
 func splitFlagsAndPositional(args []string, valueFlags, boolFlags map[string]bool) (flagArgs, positional []string, err error) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		name, value, hasEquals := strings.Cut(arg, "=")
+		trimmed := strings.TrimLeft(arg, "-")
+		if trimmed == arg || trimmed == "" {
+			// No leading dash (or the bare "-" stdin marker): positional.
+			positional = append(positional, arg)
+			continue
+		}
+		name, _, hasEquals := strings.Cut(trimmed, "=")
 		switch {
-		case boolFlags[arg]:
+		case name == "h" || name == "help":
 			flagArgs = append(flagArgs, arg)
-		case valueFlags[arg]:
+		case boolFlags[name]:
+			flagArgs = append(flagArgs, arg)
+		case valueFlags[name] && hasEquals:
+			flagArgs = append(flagArgs, arg)
+		case valueFlags[name]:
 			flagArgs = append(flagArgs, arg)
 			if i+1 >= len(args) {
 				return nil, nil, fmt.Errorf("flag %s requires a value", arg)
 			}
 			i++
 			flagArgs = append(flagArgs, args[i])
-		case hasEquals && valueFlags[name]:
-			flagArgs = append(flagArgs, name, value)
-		case strings.HasPrefix(arg, "-") && arg != "-":
-			return nil, nil, fmt.Errorf("unknown flag %q", arg)
 		default:
-			positional = append(positional, arg)
+			return nil, nil, fmt.Errorf("unknown flag %q", arg)
 		}
 	}
 	return flagArgs, positional, nil

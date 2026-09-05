@@ -851,6 +851,34 @@ func TestBuildSecurityFeaturesReportUpdateWhenLiveValueDiffers(t *testing.T) {
 	}
 }
 
+// TestBuildDependabotAlertsComparesAgainstLiveValueNotDeclaredValue guards
+// against a regression where security.dependabotAlerts compared the declared
+// value to itself instead of to GitHub's live state, which always reported a
+// noop whenever alerts were declared at all, even when the repository's
+// actual setting disagreed.
+func TestBuildDependabotAlertsComparesAgainstLiveValueNotDeclaredValue(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository:                 githubapi.RepositoryInfo{Visibility: "public"},
+		vulnerabilityAlertsEnabled: false,
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Security:      &config.SecurityConfig{DependabotAlerts: &config.FeatureSetting{Enabled: true}},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "security.dependabotAlerts", ChangeUpdate) {
+		t.Fatalf("plan.Changes = %#v, want security.dependabotAlerts as an update when the live value (false) disagrees with the declared value (true)", plan.Changes)
+	}
+}
+
 // TestBuildDependabotDependency guards docs/design.md's three-state
 // dependency: security.dependabotSecurityUpdates requires Dependabot alerts
 // to be effectively enabled, evaluated against configuration first and the

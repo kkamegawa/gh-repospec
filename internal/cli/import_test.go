@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"errors"
+	"flag"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,6 +67,49 @@ func TestParseImportFlagsAcceptsDashRSubstitute(t *testing.T) {
 	}
 	if options.repository != "octo/demo" {
 		t.Fatalf("repository = %q, want octo/demo", options.repository)
+	}
+}
+
+func TestParseImportFlagsAcceptsSingleDashLongFlags(t *testing.T) {
+	t.Parallel()
+	options, err := parseImportFlags([]string{"octo/demo", "-format", "json", "-into", "bootstrap.yaml", "-yes"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.format != "json" || options.into != "bootstrap.yaml" || !options.yes {
+		t.Fatalf("options = %#v", options)
+	}
+}
+
+func TestParseImportFlagsAcceptsSingleDashRepoSubstitute(t *testing.T) {
+	t.Parallel()
+	options, err := parseImportFlags([]string{"-repo", "octo/demo"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.repository != "octo/demo" {
+		t.Fatalf("repository = %q, want octo/demo", options.repository)
+	}
+}
+
+func TestParseImportFlagsAcceptsEqualsFormWithSingleDash(t *testing.T) {
+	t.Parallel()
+	options, err := parseImportFlags([]string{"octo/demo", "-format=json"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if options.format != "json" {
+		t.Fatalf("format = %q, want json", options.format)
+	}
+}
+
+func TestParseImportFlagsRecognizesHelpFlags(t *testing.T) {
+	t.Parallel()
+	for _, help := range []string{"-h", "-help", "--help"} {
+		_, err := parseImportFlags([]string{"octo/demo", help}, &bytes.Buffer{})
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Fatalf("parseImportFlags(%q) error = %v, want flag.ErrHelp", help, err)
+		}
 	}
 }
 
