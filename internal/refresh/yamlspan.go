@@ -317,15 +317,15 @@ func scalarValueSpan(source []byte, node ast.Node) (start, end int, err error) {
 	case token.LiteralType, token.FoldedType:
 		return 0, 0, fmt.Errorf("block scalar values are not supported for byte-range replacement")
 	default:
-		end, err = scanPlainScalarEnd(source, start)
+		end = scanPlainScalarEnd(source, start)
 	}
 	return start, end, err
 }
 
 func plainScalarSpan(source []byte, node ast.Node) (start, end int, err error) {
 	start = startOfNode(source, node)
-	end, err = scanPlainScalarEnd(source, start)
-	return start, end, err
+	end = scanPlainScalarEnd(source, start)
+	return start, end, nil
 }
 
 // scanSingleQuoted returns the offset just past the closing quote of a
@@ -369,21 +369,23 @@ func scanDoubleQuoted(source []byte, start int) (int, error) {
 
 // scanPlainScalarEnd returns the offset just past a plain (unquoted) scalar
 // starting at start, stopping at the first line break or the start of a
-// trailing " #" comment, then trimming trailing spaces and tabs.
-func scanPlainScalarEnd(source []byte, start int) (int, error) {
+// trailing " #" comment, then trimming trailing spaces and tabs. Unlike its
+// quoted-scalar siblings, a plain scalar has no malformed-input case to
+// report: it always ends somewhere, so this never fails.
+func scanPlainScalarEnd(source []byte, start int) int {
 	i := start
 	for i < len(source) {
 		switch source[i] {
 		case '\n', '\r':
-			return trimTrailingBlank(source, start, i), nil
+			return trimTrailingBlank(source, start, i)
 		case '#':
 			if i > start && (source[i-1] == ' ' || source[i-1] == '\t') {
-				return trimTrailingBlank(source, start, i), nil
+				return trimTrailingBlank(source, start, i)
 			}
 		}
 		i++
 	}
-	return trimTrailingBlank(source, start, i), nil
+	return trimTrailingBlank(source, start, i)
 }
 
 func trimTrailingBlank(source []byte, start, end int) int {
