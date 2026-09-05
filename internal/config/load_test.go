@@ -371,3 +371,65 @@ func TestValidateActionsForkPullRequestApproval(t *testing.T) {
 		t.Fatalf("Validate() error = %v, want a valid forkPullRequestApproval accepted", err)
 	}
 }
+
+// TestLoadDescriptionIsTriState guards the round-trip hazard that motivated
+// making repository.description a *string: an absent key must decode to nil
+// ("not managed"), distinct from an explicit empty string ("clear it"), the
+// same distinction homepage already makes.
+func TestLoadDescriptionIsTriState(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+
+	write := func(name, content string) string {
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	absent := write("absent.yaml", `schemaVersion: 1
+repository:
+  owner: octo-org
+  name: example
+  visibility: public
+`)
+	empty := write("empty.yaml", `schemaVersion: 1
+repository:
+  owner: octo-org
+  name: example
+  visibility: public
+  description: ""
+`)
+	set := write("set.yaml", `schemaVersion: 1
+repository:
+  owner: octo-org
+  name: example
+  visibility: public
+  description: hello
+`)
+
+	cfg, err := Load(absent)
+	if err != nil {
+		t.Fatalf("Load(absent) error = %v", err)
+	}
+	if cfg.Repository.Description != nil {
+		t.Fatalf("Description = %v, want nil for an absent key", *cfg.Repository.Description)
+	}
+
+	cfg, err = Load(empty)
+	if err != nil {
+		t.Fatalf("Load(empty) error = %v", err)
+	}
+	if cfg.Repository.Description == nil || *cfg.Repository.Description != "" {
+		t.Fatalf("Description = %v, want a non-nil empty string for an explicit empty value", cfg.Repository.Description)
+	}
+
+	cfg, err = Load(set)
+	if err != nil {
+		t.Fatalf("Load(set) error = %v", err)
+	}
+	if cfg.Repository.Description == nil || *cfg.Repository.Description != "hello" {
+		t.Fatalf("Description = %v, want \"hello\"", cfg.Repository.Description)
+	}
+}

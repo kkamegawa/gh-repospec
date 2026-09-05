@@ -27,13 +27,14 @@ func TestBuildReportsOnlyDeclaredDifferences(t *testing.T) {
 		t.Fatal(err)
 	}
 	enabled := true
+	description := "new description"
 	plan, err := engine.Build(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
 		Repository: config.RepositoryConfig{
 			Owner:       "octo",
 			Name:        "demo",
 			Visibility:  "public",
-			Description: "new description",
+			Description: &description,
 			Topics:      []string{"new"},
 		},
 		Actions: &config.ActionsConfig{Enabled: &enabled},
@@ -46,6 +47,58 @@ func TestBuildReportsOnlyDeclaredDifferences(t *testing.T) {
 	}
 	if !hasChange(plan, "repository.description", ChangeUpdate) || !hasChange(plan, "repository.topics", ChangeUpdate) || !hasChange(plan, "actions.permissions", ChangeUpdate) {
 		t.Fatalf("declared differences were not planned: %#v", plan.Changes)
+	}
+}
+
+// TestBuildOmitsDescriptionChangeWhenUnmanaged guards the round-trip hazard
+// that motivated making repository.description a *string: import output that
+// does not manage the description must not report a change against the
+// repository it was read from, matching how homepage already behaves.
+func TestBuildOmitsDescriptionChangeWhenUnmanaged(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{Description: "existing description", Visibility: "public"},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, change := range plan.Changes {
+		if change.Resource == "repository.description" {
+			t.Fatalf("unmanaged description reported a change: %#v", change)
+		}
+	}
+}
+
+// TestBuildReportsExplicitEmptyDescriptionAsClear guards the other half of the
+// tri-state contract: an explicit empty string is a declared value, not an
+// absence, and must still converge against a repository that has one set.
+func TestBuildReportsExplicitEmptyDescriptionAsClear(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{
+		repository: githubapi.RepositoryInfo{Description: "existing description", Visibility: "public"},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Description: &empty},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "repository.description", ChangeUpdate) {
+		t.Fatalf("explicit empty description did not report a clearing update: %#v", plan.Changes)
 	}
 }
 
@@ -130,13 +183,64 @@ func TestApplyConvergesSupportedSettings(t *testing.T) {
 	description := "configured"
 	_, err = engine.Apply(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
-		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Description: description},
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Description: &description},
 	}, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if service.updateRepositoryCalls != 1 {
 		t.Fatalf("repository update calls = %d, want 1", service.updateRepositoryCalls)
+	}
+}
+
+// TestApplyNeverSendsDescriptionWhenUnmanaged guards the apply-side half of
+// the tri-state contract: a configuration that does not manage the
+// description must not issue a repository update at all when nothing else
+// changed, and must never send an empty description it never declared.
+func TestApplyNeverSendsDescriptionWhenUnmanaged(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Description: "existing description", Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.updateRepositoryCalls != 0 {
+		t.Fatalf("repository update calls = %d, want 0 for an unmanaged description", service.updateRepositoryCalls)
+	}
+	if service.repository.Description != "existing description" {
+		t.Fatalf("description = %q, want the original value left untouched", service.repository.Description)
+	}
+}
+
+// TestApplyClearsExplicitEmptyDescription guards the other half: an explicit
+// empty string is a declared value and must still reach GitHub as a clear.
+func TestApplyClearsExplicitEmptyDescription(t *testing.T) {
+	t.Parallel()
+	service := &fakeService{repository: githubapi.RepositoryInfo{Description: "existing description", Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Description: &empty},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if service.updateRepositoryCalls != 1 {
+		t.Fatalf("repository update calls = %d, want 1 for an explicit clear", service.updateRepositoryCalls)
+	}
+	if service.repository.Description != "" {
+		t.Fatalf("description = %q, want cleared", service.repository.Description)
 	}
 }
 

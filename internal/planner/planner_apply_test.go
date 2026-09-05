@@ -29,10 +29,11 @@ func TestBuildIsReadOnlyOrdersChangesAndReportsBlockedState(t *testing.T) {
 	}
 
 	archived := true
+	description := "configured"
 	plan, err := engine.Build(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
 		Repository: config.RepositoryConfig{
-			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured", Archived: &archived,
+			Owner: "octo", Name: "demo", Visibility: "public", Description: &description, Archived: &archived,
 		},
 		Actions: &config.ActionsConfig{Enabled: &enabled},
 		Security: &config.SecurityConfig{
@@ -84,10 +85,11 @@ func TestApplyUpdatesSettingsBeforeRulesets(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	description := "configured"
 	_, err = engine.Apply(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
 		Repository: config.RepositoryConfig{
-			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured", Topics: []string{"configured"},
+			Owner: "octo", Name: "demo", Visibility: "public", Description: &description, Topics: []string{"configured"},
 		},
 		Actions:  &config.ActionsConfig{Enabled: &enabled},
 		Security: &config.SecurityConfig{SecretScanning: &config.FeatureSetting{Enabled: true}},
@@ -177,10 +179,11 @@ func TestApplyUnarchivesBeforeEveryOtherChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	description := "configured"
 	_, err = engine.Apply(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
 		Repository: config.RepositoryConfig{
-			Owner: "octo", Name: "demo", Visibility: "public", Description: "configured", Archived: &archived,
+			Owner: "octo", Name: "demo", Visibility: "public", Description: &description, Archived: &archived,
 		},
 	}, Options{})
 	if err != nil {

@@ -328,10 +328,14 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 
 func createRequest(desired config.RepositoryConfig, repository githubapi.Repository) githubapi.CreateRepositoryRequest {
 	private := desired.Visibility == "private"
+	var description string
+	if desired.Description != nil {
+		description = *desired.Description
+	}
 	return githubapi.CreateRepositoryRequest{
 		Owner:               repository.Owner,
 		Name:                repository.Name,
-		Description:         desired.Description,
+		Description:         description,
 		Private:             &private,
 		Visibility:          desired.Visibility,
 		AutoInit:            true,
@@ -366,9 +370,8 @@ func (e *Engine) applyRepository(ctx context.Context, repository githubapi.Repos
 		request.DeleteBranchOnMerge = desired.DeleteBranchOnMerge
 		changed = true
 	}
-	if desired.Description != actual.Description {
-		description := desired.Description
-		request.Description = &description
+	if desired.Description != nil && *desired.Description != actual.Description {
+		request.Description = desired.Description
 		changed = true
 	}
 	if desired.Homepage != nil && *desired.Homepage != actual.Homepage {
@@ -1132,7 +1135,7 @@ func appendRepositoryChanges(plan *Plan, desired config.RepositoryConfig, actual
 			plan.Changes = append(plan.Changes, Change{Stage: StageRepository, Resource: "repository.visibility", State: ChangeBlocked, Summary: "allowVisibilityChange is required"})
 		}
 	}
-	if desired.Description != actual.Description {
+	if desired.Description != nil && *desired.Description != actual.Description {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.description", State: ChangeUpdate, Summary: "update description"})
 	}
 	if desired.Homepage != nil && *desired.Homepage != actual.Homepage {
