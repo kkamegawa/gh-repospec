@@ -329,9 +329,9 @@ func plainScalarSpan(source []byte, node ast.Node) (start, end int, err error) {
 }
 
 // scanSingleQuoted returns the offset just past the closing quote of a
-// single-quoted scalar starting at start, which must be the opening "'". A
-// doubled quote ('') is YAML's escape for a literal quote and does not
-// terminate the scalar.
+// single-quoted scalar starting at start, which must be the opening "'".
+// Two consecutive single quotes are YAML's own escape for one literal
+// quote inside the scalar and do not terminate it.
 func scanSingleQuoted(source []byte, start int) (int, error) {
 	if start >= len(source) || source[start] != '\'' {
 		return 0, fmt.Errorf("expected a single-quoted scalar at offset %d", start)

@@ -1357,7 +1357,9 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 	secretScanningCurrent, secretScanningKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanning })
 	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, "", secretScanningCurrent, exists && secretScanningKnown)
 
-	pushProtectionCurrent, pushProtectionKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanningPushProtect })
+	pushProtectionCurrent, pushProtectionKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+		return s.SecretScanningPushProtect
+	})
 	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "", pushProtectionCurrent, exists && pushProtectionKnown)
 
 	// Only ask GitHub (or fall back to a blocked create-path assumption) when

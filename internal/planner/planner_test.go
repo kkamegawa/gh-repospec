@@ -784,10 +784,10 @@ func TestBuildSecurityFeaturesConvergeAgainstLiveState(t *testing.T) {
 				SecretScanningPushProtect: &githubapi.SecurityFeature{Status: "disabled"},
 			},
 		},
-		vulnerabilityAlertsEnabled:     true,
-		automatedSecurityFixesEnabled:  true,
-		codeQLDefaultSetup:             githubapi.CodeQLDefaultSetupStatus{State: "configured"},
-		privateVulnerabilityReporting:  true,
+		vulnerabilityAlertsEnabled:    true,
+		automatedSecurityFixesEnabled: true,
+		codeQLDefaultSetup:            githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+		privateVulnerabilityReporting: true,
 	}
 	engine, err := New(service)
 	if err != nil {
