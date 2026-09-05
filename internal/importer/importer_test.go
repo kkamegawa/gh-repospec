@@ -255,7 +255,7 @@ func TestImportNormalizesRuleParametersForByteStableOutput(t *testing.T) {
 		Rules: []map[string]any{{
 			"type": "required_status_checks",
 			"parameters": map[string]any{
-				"zebra_max_count": float64(5),  // whole number: must import as an int, not 5.0
+				"zebra_max_count": float64(5),   // whole number: must import as an int, not 5.0
 				"apple_ratio":     float64(1.5), // genuine fraction: must be preserved exactly
 				"mango_nested":    map[string]any{"count": float64(3)},
 			},
