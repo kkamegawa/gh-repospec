@@ -148,7 +148,9 @@ func computePlan(current, desired *config.Config) Plan {
 
 func repositoryScalarChanges(current, desired config.RepositoryConfig) []ScalarChange {
 	var changes []ScalarChange
-	add := func(path string, value ScalarValue) { changes = append(changes, ScalarChange{Path: path, Value: value}) }
+	add := func(path string, value ScalarValue) {
+		changes = append(changes, ScalarChange{Path: path, Value: value})
+	}
 
 	if current.Description != nil && (desired.Description == nil || *current.Description != *desired.Description) && desired.Description != nil {
 		add("repository.description", stringValue(*desired.Description))
@@ -216,7 +218,9 @@ func repositoryScalarChanges(current, desired config.RepositoryConfig) []ScalarC
 
 func actionsScalarChanges(current, desired *config.ActionsConfig) []ScalarChange {
 	var changes []ScalarChange
-	add := func(path string, value ScalarValue) { changes = append(changes, ScalarChange{Path: path, Value: value}) }
+	add := func(path string, value ScalarValue) {
+		changes = append(changes, ScalarChange{Path: path, Value: value})
+	}
 
 	if current.Enabled != nil && desired.Enabled != nil && *current.Enabled != *desired.Enabled {
 		add("actions.enabled", boolValue(*desired.Enabled))
