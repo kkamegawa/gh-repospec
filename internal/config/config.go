@@ -25,13 +25,14 @@ type Config struct {
 }
 
 type RepositoryConfig struct {
-	Owner       string `json:"owner" yaml:"owner"`
-	Name        string `json:"name" yaml:"name"`
-	Create      bool   `json:"create" yaml:"create"`
-	Description string `json:"description,omitempty" yaml:"description,omitempty"`
-	// Homepage is nil when unmanaged. Unlike Description, an undeclared value must
-	// never be treated as "clear the homepage" for a field this extension is only
-	// now beginning to manage on repositories that may already have one set.
+	Owner  string `json:"owner" yaml:"owner"`
+	Name   string `json:"name" yaml:"name"`
+	Create bool   `json:"create" yaml:"create"`
+	// Description and Homepage are both nil when unmanaged. An undeclared value
+	// must never be treated as "clear the field": import output that does not
+	// manage one of these must not report a change against the repository it
+	// was read from. An explicit empty string clears the live value.
+	Description           *string `json:"description,omitempty" yaml:"description,omitempty"`
 	Homepage              *string `json:"homepage,omitempty" yaml:"homepage,omitempty"`
 	Visibility            string  `json:"visibility" yaml:"visibility"`
 	AllowVisibilityChange bool    `json:"allowVisibilityChange,omitempty" yaml:"allowVisibilityChange,omitempty"`
