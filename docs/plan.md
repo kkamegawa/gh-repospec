@@ -53,4 +53,4 @@ The `listAll` helper decodes a bare JSON array, so it cannot page a wrapped list
 
 ## Scope boundary
 
-This plan does not include `plan --ci`, `apply --force-secrets`, or implementation code, and it does not change the README status until the import implementation ships. Exit code `2` is part of the `plan --ci` work: `cli.Run` returns only an error today, and the exit-code plumbing is tracked with that command, not here.
+This plan does not include `plan --ci`, `apply --force-secrets`, or implementation code, and it does not change the README status until the import implementation ships. Exit code `2` is part of the `plan --ci` work: `cli.Run` returns only an error today, and the exit-code plumbing is tracked with that command, not here. See [docs/plan-drift.md](plan-drift.md) for that plan, tracked under [Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12).

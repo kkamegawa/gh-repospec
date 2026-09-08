@@ -91,4 +91,6 @@ importできないローカルの意図です。そのため、import出力を*�
 
 `plan --ci`、`apply --force-secrets`、実装コード、import実装完了前のREADME status変更は対象外です。
 終了コード`2`は`plan --ci`側の作業です。現在`cli.Run`はerrorしか返さないため、終了コードの配線は
-本作業ではなくそのコマンドとともに追跡します。
+本作業ではなくそのコマンドとともに追跡します。その計画は
+[docs/plan-drift_ja.md](plan-drift_ja.md)を参照してください（
+[Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12)で追跡）。
