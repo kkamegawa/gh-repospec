@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,5 +98,107 @@ func TestParseApplyFlagsCollectsEveryExplicitCommandApproval(t *testing.T) {
 	}
 	if !options.yes || !options.approvedCommands["apm-init"] || !options.approvedCommands["configure-agent"] || len(options.approvedCommands) != 2 {
 		t.Fatalf("apply options = %#v", options)
+	}
+}
+
+func TestParsePlanFlagsAcceptsCI(t *testing.T) {
+	t.Parallel()
+	options, err := parseExecutionFlags("plan", []string{"-f", "bootstrap.yaml", "--ci"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.ci {
+		t.Fatalf("plan options = %#v, want ci = true", options)
+	}
+}
+
+func TestParseApplyFlagsRejectsCI(t *testing.T) {
+	t.Parallel()
+	if _, err := parseExecutionFlags("apply", []string{"-f", "bootstrap.yaml", "--ci"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("parseExecutionFlags(apply, --ci) = nil error, want a flag-parsing error")
+	}
+}
+
+func TestDriftErrorReportsExitCodeTwo(t *testing.T) {
+	t.Parallel()
+	err := &DriftError{Changes: 3}
+	if got := err.ExitCode(); got != 2 {
+		t.Fatalf("ExitCode() = %d, want 2", got)
+	}
+	if err.Error() == "" {
+		t.Fatal("Error() = empty string, want a non-empty message")
+	}
+}
+
+func TestPlanOutcomeSelectsExitCode(t *testing.T) {
+	t.Parallel()
+	noChange := planner.Plan{Changes: []planner.Change{{State: planner.ChangeNoop}}}
+	opaqueOnly := planner.Plan{Changes: []planner.Change{{State: planner.ChangeUpdate, Opaque: true}}}
+	manualOnly := planner.Plan{Changes: []planner.Change{{State: planner.ChangeManual}}}
+	withDrift := planner.Plan{Changes: []planner.Change{{State: planner.ChangeCreate}}}
+	blocked := planner.Plan{Changes: []planner.Change{{State: planner.ChangeBlocked}}}
+	blockedAndDrift := planner.Plan{Changes: []planner.Change{{State: planner.ChangeBlocked}, {State: planner.ChangeCreate}}}
+
+	tests := []struct {
+		name      string
+		plan      planner.Plan
+		wantDrift bool
+		wantErr   bool
+	}{
+		{"no changes", noChange, false, false},
+		{"secret updates only", opaqueOnly, false, false},
+		{"manual entries only", manualOnly, false, false},
+		{"create or update present", withDrift, true, false},
+		{"blocked present", blocked, false, true},
+		{"blocked and drift present", blockedAndDrift, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var stderr bytes.Buffer
+			err := planOutcome(&stderr, tt.plan, true)
+			var drift *DriftError
+			switch {
+			case tt.wantDrift:
+				if !errors.As(err, &drift) {
+					t.Fatalf("planOutcome() error = %v, want a *DriftError", err)
+				}
+				if stderr.Len() == 0 {
+					t.Fatal("planOutcome() wrote nothing to stderr, want a drift notice")
+				}
+			case tt.wantErr:
+				if err == nil || errors.As(err, &drift) {
+					t.Fatalf("planOutcome() error = %v, want a non-drift failure", err)
+				}
+			default:
+				if err != nil {
+					t.Fatalf("planOutcome() error = %v, want nil", err)
+				}
+				if stderr.Len() != 0 {
+					t.Fatalf("planOutcome() stderr = %q, want empty", stderr.String())
+				}
+			}
+		})
+	}
+}
+
+func TestPlanOutcomeWithoutCIAlwaysSucceeds(t *testing.T) {
+	t.Parallel()
+	blockedAndDrift := planner.Plan{Changes: []planner.Change{{State: planner.ChangeBlocked}, {State: planner.ChangeCreate}}}
+	var stderr bytes.Buffer
+	if err := planOutcome(&stderr, blockedAndDrift, false); err != nil {
+		t.Fatalf("planOutcome(ci=false) error = %v, want nil", err)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("planOutcome(ci=false) stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestPrintUsageDocumentsCI(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	printUsage(&buf)
+	if !strings.Contains(buf.String(), "--ci") {
+		t.Fatalf("usage text = %q, missing --ci", buf.String())
 	}
 }
