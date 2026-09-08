@@ -25,6 +25,6 @@ func exitCode(err error, stderr io.Writer) int {
 	if errors.As(err, &drift) {
 		return drift.ExitCode()
 	}
-	fmt.Fprintln(stderr, "error:", err)
+	_, _ = fmt.Fprintln(stderr, "error:", err)
 	return 1
 }
