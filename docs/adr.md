@@ -1,7 +1,9 @@
-# ADR: import and format-preserving refresh
+# ADR
 
-Every record below is dated 2026-09-05 and tracks
-[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11).
+Records 1–5 are dated 2026-09-05 and track
+[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11) (import and
+format-preserving refresh). Record 6 is dated 2026-09-08 and tracks
+[Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12) (drift detection).
 
 ## 1. Import manages only what the schema and the file already declare
 
@@ -95,3 +97,22 @@ has the distinction; the asymmetry was an oversight rather than a decision.
 `description` keeps its current meaning. The change touches the schema, the config
 types, the planner comparison, and the apply request, and is tracked separately as
 [Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22).
+
+## 6. Drift detection ignores secret updates
+
+**Decision.** `plan --ci` exits `2` only when the plan contains a create or update that
+is not a secret. `Plan.HasDrift()` replaces `Plan.HasChanges()`, and `Change` carries an
+`Opaque` flag set on secret entries. A blocked plan exits `1` and outranks drift. `plan`
+without `--ci` still exits `0` in every case.
+
+**Rationale.** Issue #12 says "at least one create or update change". Taken literally,
+any configuration that declares a secret would report drift on every scheduled run,
+because GitHub never returns a secret value and record 4 already excludes secret
+updates from "an empty plan". A drift check that always fails is not a drift check. The
+exclusion is carried by an explicit field rather than by matching the resource name, so
+a display-string change cannot silently break the exit code.
+
+**Consequences.** A secret rotated outside the tool is not detected — by construction,
+it cannot be; `apply --force-secrets` is the answer for rotation. `Change` gains an
+`omitempty` JSON field, so archived `plan.json` output is unchanged for every non-secret
+entry. `HasChanges` is removed; its only caller was a test.
