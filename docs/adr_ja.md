@@ -1,7 +1,9 @@
-# ADR: importと書式を保持するrefresh
+# ADR
 
-以下の記録はすべて日付2026-09-05、追跡は
-[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)です。
+record 1〜5は日付2026-09-05、追跡は
+[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)（importと書式を保持するrefresh）
+です。record 6は日付2026-09-08、追跡は
+[Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12)（ドリフト検出）です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
 
@@ -85,3 +87,21 @@ descriptionを持つリポジトリに対して変更を報告し続けます。
 **結果。** 宣言済みの`description`の意味は変わらないため、既存の設定ファイルはすべて有効なままです。
 変更はスキーマ、config型、plannerの比較、applyのリクエストに及び、
 [Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22)で個別に追跡します。
+
+## 6. ドリフト検出はsecret更新を除外する
+
+**決定。** `plan --ci`は、planにsecret以外のcreateまたはupdateが含まれる場合にのみ`2`で終了します。
+`Plan.HasDrift()`が`Plan.HasChanges()`を置き換え、`Change`はsecretエントリに設定される`Opaque`
+フラグを持ちます。blockedなplanは`1`で終了し、ドリフトより優先されます。`--ci`を付けない`plan`は
+引き続きすべてのケースで`0`で終了します。
+
+**理由。** issue #12は「createまたはupdateが1件以上」と述べています。文字どおり実装すると、
+secretを宣言したどの設定も定期実行のたびにドリフトを報告することになります。GitHubがsecretの値を
+返さないためで、record 4は既にこの理由でsecret更新を「空のplan」の定義から除外しています。
+常に失敗するドリフト検査は検査として機能しません。除外はリソース名の一致ではなく明示的なフィールド
+で運ぶため、表示文字列の変更が終了コードを静かに壊すことはありません。
+
+**結果。** ツール外でローテーションされたsecretは検出されません。構造上検出できないためで、
+ローテーションには`apply --force-secrets`を使います。`Change`は`omitempty`のJSONフィールドを
+得るため、secret以外のエントリについて保存済み`plan.json`の出力は変わりません。`HasChanges`は
+削除されます。唯一の呼び出し元はテストでした。

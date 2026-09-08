@@ -21,6 +21,18 @@ import (
 // git tag, matching gh CLI extension conventions.
 var Version = "dev"
 
+// DriftError reports that plan --ci found at least one convergeable
+// difference. It is a successful detection, not a failure: the process
+// exits 2 and the caller must not print it with an "error:" prefix. plan
+// writes the human-readable notice to standard error itself, so the report
+// on standard output stays a clean, valid document in both formats.
+type DriftError struct{ Changes int }
+
+func (e *DriftError) Error() string { return fmt.Sprintf("plan --ci found %d change(s)", e.Changes) }
+
+// ExitCode reports the process exit code a DriftError maps to.
+func (e *DriftError) ExitCode() int { return 2 }
+
 // Run executes a gh-repospec command using the supplied standard streams.
 func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
@@ -47,7 +59,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return executePlan(context.Background(), options, stdout)
+		return executePlan(context.Background(), options, stdout, stderr)
 	case "apply":
 		options, err := parseExecutionFlags("apply", args[1:], stderr)
 		if err != nil {
@@ -73,6 +85,7 @@ type executionOptions struct {
 	file             string
 	repository       string
 	format           string
+	ci               bool
 	yes              bool
 	forceSecrets     bool
 	approvedCommands stringSet
@@ -104,6 +117,9 @@ func parseExecutionFlags(command string, args []string, stderr io.Writer) (execu
 	flags.StringVar(&options.repository, "repo", "", "target repository in owner/name form")
 	flags.StringVar(&options.repository, "R", "", "target repository in owner/name form")
 	flags.StringVar(&options.format, "format", "text", "output format: text or json")
+	if command == "plan" {
+		flags.BoolVar(&options.ci, "ci", false, "exit 2 when the plan contains a difference, 1 when it is blocked")
+	}
 	if command == "apply" {
 		flags.BoolVar(&options.yes, "yes", false, "apply without the remote-change confirmation prompt")
 		flags.BoolVar(&options.forceSecrets, "force-secrets", false, "treat every configured secret as updatePolicy: always for this run")
@@ -124,7 +140,7 @@ func parseExecutionFlags(command string, args []string, stderr io.Writer) (execu
 	return options, nil
 }
 
-func executePlan(ctx context.Context, options executionOptions, stdout io.Writer) error {
+func executePlan(ctx context.Context, options executionOptions, stdout, stderr io.Writer) error {
 	cfg, engine, err := loadEngine(options.file)
 	if err != nil {
 		return err
@@ -133,7 +149,29 @@ func executePlan(ctx context.Context, options executionOptions, stdout io.Writer
 	if err != nil {
 		return err
 	}
-	return writePlan(stdout, plan, options.format)
+	if err := writePlan(stdout, plan, options.format); err != nil {
+		return err
+	}
+	return planOutcome(stderr, plan, options.ci)
+}
+
+// planOutcome maps a finished plan onto the exit-code contract. Order
+// matters: a blocked entry is a failure, so it outranks drift. plan without
+// --ci always returns nil, so its exit code is unchanged by this feature.
+func planOutcome(stderr io.Writer, plan planner.Plan, ci bool) error {
+	if !ci {
+		return nil
+	}
+	if plan.HasBlocked() {
+		return errors.New("plan is blocked; resolve blocked plan entries before retrying")
+	}
+	if count := plan.DriftCount(); count > 0 {
+		if _, err := fmt.Fprintf(stderr, "drift detected: %d change(s)\n", count); err != nil {
+			return err
+		}
+		return &DriftError{Changes: count}
+	}
+	return nil
 }
 
 func executeApply(ctx context.Context, options executionOptions, stdin io.Reader, stdout, stderr io.Writer) error {
@@ -261,7 +299,7 @@ func printUsage(w io.Writer) {
 
 Commands:
   validate --file <path>                          Validate a schemaVersion 1 YAML or JSON configuration.
-  plan --file <path> [-R owner/repository]        Preview changes without modifying GitHub.
+  plan --file <path> [-R owner/repository] [--ci] Preview changes without modifying GitHub.
   apply --file <path> [-R owner/repository]       Confirm and apply supported changes.
   import <owner/repository> [--into <path>]       Read a repository and write or refresh a configuration.
   version, --version, -v                          Print the gh-repospec version.
@@ -271,6 +309,11 @@ Common flags:
   -R, --repo <owner/name>  Override the repository declared in the configuration, or substitute for
                            import's positional repository (not both).
   --format <text|json>     Select plan output format (import instead uses --format <yaml|json>).
+
+Plan flags:
+  --ci                     Exit 2 when the plan contains a difference, 1 when it is blocked. Secret
+                           updates never count as a difference, because GitHub never returns their
+                           value. Without --ci, plan always exits 0.
 
 Apply flags:
   --yes                    Skip the remote-change confirmation prompt.

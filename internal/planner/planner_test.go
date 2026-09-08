@@ -125,6 +125,68 @@ func TestBuildReportsSelectedActionsChange(t *testing.T) {
 	}
 }
 
+// TestBuildMarksSecretChangesOpaque guards the drift-detection exclusion: a
+// secret's live value is never returned by GitHub, so its change is marked
+// Opaque and must not make plan --ci report drift by itself.
+func TestBuildMarksSecretChangesOpaque(t *testing.T) {
+	t.Setenv("ACTIONS_SECRET_SOURCE", "actions-value")
+	t.Setenv("AGENT_SECRET_SOURCE", "agent-value")
+	service := &fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "ACTIONS_SECRET_SOURCE"}},
+		},
+		Agents: &config.AgentsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "AGENT_SECRET_SOURCE"}},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, resource := range []string{"actions.secret.TOKEN", "agents.secret.TOKEN"} {
+		change, ok := findChange(plan, resource)
+		if !ok {
+			t.Fatalf("plan.Changes = %#v, want an entry for %s", plan.Changes, resource)
+		}
+		if change.State != ChangeUpdate {
+			t.Fatalf("%s state = %s, want %s", resource, change.State, ChangeUpdate)
+		}
+		if !change.Opaque {
+			t.Fatalf("%s Opaque = false, want true", resource)
+		}
+	}
+	if plan.HasDrift() {
+		t.Fatalf("plan.HasDrift() = true, want false when every create/update change is a secret: %#v", plan.Changes)
+	}
+}
+
+// TestPlanHasDriftExcludesSecretUpdates exercises the predicate directly
+// against Plan literals, independent of Build.
+func TestPlanHasDriftExcludesSecretUpdates(t *testing.T) {
+	t.Parallel()
+	opaqueOnly := Plan{Changes: []Change{{State: ChangeUpdate, Opaque: true}}}
+	if opaqueOnly.HasDrift() {
+		t.Fatalf("HasDrift() = true for an opaque-only plan, want false: %#v", opaqueOnly.Changes)
+	}
+	withNonOpaque := Plan{Changes: []Change{
+		{State: ChangeUpdate, Opaque: true},
+		{State: ChangeUpdate},
+	}}
+	if !withNonOpaque.HasDrift() {
+		t.Fatalf("HasDrift() = false once a non-opaque update is present, want true: %#v", withNonOpaque.Changes)
+	}
+	blockedOnly := Plan{Changes: []Change{{State: ChangeBlocked}}}
+	if blockedOnly.HasDrift() {
+		t.Fatalf("HasDrift() = true for a blocked-only plan, want false: %#v", blockedOnly.Changes)
+	}
+}
+
 // TestBuildActionsSettingsConvergeAgainstLiveState guards the same
 // round-trip hazard for actions.selectedActions, actions.workflowPermissions,
 // and actions.environment.<name>: each was previously reported as an update
@@ -816,8 +878,8 @@ func TestBuildSecurityFeaturesConvergeAgainstLiveState(t *testing.T) {
 			t.Fatalf("plan.Changes = %#v, want %s as noop when it already matches the live value", plan.Changes, resource)
 		}
 	}
-	if plan.HasChanges() {
-		t.Fatalf("plan.HasChanges() = true, want false when every declared security feature already matches: %#v", plan.Changes)
+	if plan.HasDrift() {
+		t.Fatalf("plan.HasDrift() = true, want false when every declared security feature already matches: %#v", plan.Changes)
 	}
 }
 
@@ -987,6 +1049,15 @@ func hasChange(plan Plan, resource string, state ChangeState) bool {
 		}
 	}
 	return false
+}
+
+func findChange(plan Plan, resource string) (Change, bool) {
+	for _, change := range plan.Changes {
+		if change.Resource == resource {
+			return change, true
+		}
+	}
+	return Change{}, false
 }
 
 type fakeService struct {

@@ -59,6 +59,10 @@ type Change struct {
 	Resource string      `json:"resource"`
 	State    ChangeState `json:"state"`
 	Summary  string      `json:"summary"`
+	// Opaque marks a resource whose live value GitHub does not return, so the
+	// change is reported unconditionally and can never converge. Drift
+	// detection ignores these. Secrets are the only such resource today.
+	Opaque bool `json:"opaque,omitempty"`
 }
 
 // Plan is a complete, read-only report. Blocked changes prevent apply;
@@ -74,11 +78,25 @@ func (p Plan) HasBlocked() bool {
 	return slices.ContainsFunc(p.Changes, func(change Change) bool { return change.State == ChangeBlocked })
 }
 
-// HasChanges reports whether any supported remote mutation is required.
-func (p Plan) HasChanges() bool {
-	return slices.ContainsFunc(p.Changes, func(change Change) bool {
-		return change.State == ChangeCreate || change.State == ChangeUpdate
-	})
+// HasDrift reports whether the plan contains a difference that could
+// converge. Secret updates are excluded: GitHub never returns a secret
+// value, so a declared secret whose source environment variable is set is
+// always reported as an update and can never converge. See docs/adr.md
+// records 4 and 6.
+func (p Plan) HasDrift() bool {
+	return p.DriftCount() > 0
+}
+
+// DriftCount reports how many changes HasDrift considers. It backs plan
+// --ci's drift notice, which reports how many differences were found.
+func (p Plan) DriftCount() int {
+	count := 0
+	for _, change := range p.Changes {
+		if !change.Opaque && (change.State == ChangeCreate || change.State == ChangeUpdate) {
+			count++
+		}
+	}
+	return count
 }
 
 // Service is the deliberately narrow GitHub dependency required by planner.
@@ -1603,10 +1621,10 @@ func appendAgentChanges(ctx context.Context, service Service, plan *Plan, desire
 
 func appendSecretChange(plan *Plan, resource string, secret config.SecretRef) {
 	if _, ok := os.LookupEnv(secret.SourceEnv); !ok {
-		plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: resource, State: ChangeBlocked, Summary: "source environment variable is not set: " + secret.SourceEnv})
+		plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: resource, State: ChangeBlocked, Summary: "source environment variable is not set: " + secret.SourceEnv, Opaque: true})
 		return
 	}
-	plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: resource, State: ChangeUpdate, Summary: "converge encrypted secret"})
+	plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: resource, State: ChangeUpdate, Summary: "converge encrypted secret", Opaque: true})
 }
 
 func appendSeedChanges(plan *Plan, cfg *config.Config) {
