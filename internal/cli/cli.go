@@ -74,6 +74,7 @@ type executionOptions struct {
 	repository       string
 	format           string
 	yes              bool
+	forceSecrets     bool
 	approvedCommands stringSet
 }
 
@@ -105,6 +106,7 @@ func parseExecutionFlags(command string, args []string, stderr io.Writer) (execu
 	flags.StringVar(&options.format, "format", "text", "output format: text or json")
 	if command == "apply" {
 		flags.BoolVar(&options.yes, "yes", false, "apply without the remote-change confirmation prompt")
+		flags.BoolVar(&options.forceSecrets, "force-secrets", false, "treat every configured secret as updatePolicy: always for this run")
 		flags.Var(&options.approvedCommands, "approve-command", "explicitly approve one configured command ID (repeatable)")
 	}
 	if err := flags.Parse(args); err != nil {
@@ -166,6 +168,7 @@ func executeApply(ctx context.Context, options executionOptions, stdin io.Reader
 	_, err = engine.Apply(ctx, cfg, planner.Options{
 		RepositoryOverride: options.repository,
 		ApprovedCommandIDs: options.approvedCommands,
+		ForceSecrets:       options.forceSecrets,
 	})
 	return err
 }
@@ -271,6 +274,9 @@ Common flags:
 
 Apply flags:
   --yes                    Skip the remote-change confirmation prompt.
+  --force-secrets          Treat every configured secret as updatePolicy: always for this run,
+                           re-setting existing secrets that would otherwise be skipped. Does not
+                           relax the required source environment variable.
   --approve-command <id>   Approve a configured command; repeat for each command.
 
 Import flags:

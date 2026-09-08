@@ -99,3 +99,30 @@ func TestParseApplyFlagsCollectsEveryExplicitCommandApproval(t *testing.T) {
 		t.Fatalf("apply options = %#v", options)
 	}
 }
+
+func TestParseApplyFlagsAcceptsForceSecrets(t *testing.T) {
+	t.Parallel()
+	options, err := parseExecutionFlags("apply", []string{"-f", "bootstrap.yaml", "--force-secrets"}, &bytes.Buffer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !options.forceSecrets {
+		t.Fatalf("apply options = %#v, want forceSecrets = true", options)
+	}
+}
+
+func TestParsePlanFlagsRejectsForceSecrets(t *testing.T) {
+	t.Parallel()
+	if _, err := parseExecutionFlags("plan", []string{"-f", "bootstrap.yaml", "--force-secrets"}, &bytes.Buffer{}); err == nil {
+		t.Fatal("parseExecutionFlags(plan, --force-secrets) = nil error, want a flag-parsing error")
+	}
+}
+
+func TestPrintUsageDocumentsForceSecrets(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	printUsage(&buf)
+	if !strings.Contains(buf.String(), "--force-secrets") {
+		t.Fatalf("usage text = %q, missing --force-secrets", buf.String())
+	}
+}
