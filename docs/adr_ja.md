@@ -4,6 +4,9 @@ record 1〜5は日付2026-09-05、追跡は
 [Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)（importと書式を保持するrefresh）
 です。record 6は日付2026-09-08、追跡は
 [Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12)（ドリフト検出）です。
+record 7は日付2026-09-10、追跡は
+[Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30)（ドリフト検出のドキュメント）
+です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
 
@@ -105,3 +108,22 @@ secretを宣言したどの設定も定期実行のたびにドリフトを報�
 ローテーションには`apply --force-secrets`を使います。`Change`は`omitempty`のJSONフィールドを
 得るため、secret以外のエントリについて保存済み`plan.json`の出力は変わりません。`HasChanges`は
 削除されます。唯一の呼び出し元はテストでした。
+
+## 7. ドリフト検出の仕様文をドキュメント作業と併せて訂正する
+
+**決定。** Issue #30では、スコープ上「既に正しい」とされていた`docs/design.md`と
+`docs/design_ja.md`のドリフト検出・終了コードの記述も書き換えます。訂正後の記述では、
+`plan --ci`はツールが収束できるcreateまたはupdateがある場合に`2`で終了すること、secretの
+更新は除外すること、blockedなplanは`1`で終了し検出に優先すること、`--ci`なしの`plan`は常に
+`0`で終了することを明示します。実装計画にあった終了コードの一覧表は、規範側の記録として
+`design_ja.md`へ移します。
+
+**理由。** `design_ja.md`は`plan --ci`を「変更が発生する場合に`2`で終了」と記述していました。
+secretについてはrecord 6が既に反対の結論を出しており、`planOutcome`はblockedなplanに`1`を
+返すため、確定済みの挙動が自身の仕様と矛盾していました。Issue #30はドリフト検出のworkflow例に
+secret除外を含む終了コード契約の正確な説明を求めています。仕様側が別のことを述べたままでは、
+例とその参照先の文書が食い違います。
+
+**結果。** 挙動の変更はありません。訂正はドキュメントのみで、record 4とrecord 6が既に決定した
+内容を反映するものです。実装計画のスコープ境界（「本計画は`docs/design.md`を変更しない」）は
+この理由により置き換えられ、wikiの計画ページにその旨の完了ノートを記載します。

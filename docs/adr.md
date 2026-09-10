@@ -4,6 +4,9 @@ Records 1–5 are dated 2026-09-05 and track
 [Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11) (import and
 format-preserving refresh). Record 6 is dated 2026-09-08 and tracks
 [Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12) (drift detection).
+Record 7 is dated 2026-09-10 and tracks
+[Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30) (documentation
+for drift detection).
 
 ## 1. Import manages only what the schema and the file already declare
 
@@ -116,3 +119,24 @@ a display-string change cannot silently break the exit code.
 it cannot be; `apply --force-secrets` is the answer for rotation. `Change` gains an
 `omitempty` JSON field, so archived `plan.json` output is unchanged for every non-secret
 entry. `HasChanges` is removed; its only caller was a test.
+
+## 7. The drift-detection specification text is corrected with the documentation
+
+**Decision.** Issue #30 also rewrites the drift-detection and exit-code prose in
+`docs/design.md` and `docs/design_ja.md`, which its scope described as already correct.
+The corrected text states that `plan --ci` exits `2` for a create or update the tool can
+converge, that secret updates are excluded, that a blocked plan exits `1` and outranks
+drift, and that `plan` without `--ci` always exits `0`. The outcome table from the
+implementation plan moves into `design.md` as the normative record.
+
+**Rationale.** `design.md` said `plan --ci` "exits `2` when any change would be made".
+Record 6 had already settled the opposite for secrets, and `planOutcome` gives a blocked
+plan exit `1`, so the settled behavior contradicted its own specification. Issue #30
+requires the drift-detection workflow example to describe the exit-code contract
+accurately, including the secret exclusion; leaving the specification saying something
+else would make the example and the document it points to disagree.
+
+**Consequences.** No behavior changes — the correction is documentation only, and it
+records what records 4 and 6 already decided. The implementation plan's scope boundary
+("this plan does not change `docs/design.md`") is superseded for that reason, and the
+wiki plan page carries a completion note saying so.

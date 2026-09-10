@@ -9,8 +9,8 @@
 
 本文書はその比較結果と、`gh-repospec` の仕様に取り込んだ機能、そして同じく
 重要な「意図的に取り込まなかった機能とその理由」を記録します。ロードマップではなく
-設計記録です。取り込む機能は [`design_ja.md`](design_ja.md) で仕様化し、実装は
-Issue で追跡します。
+設計記録です。取り込んだ機能はいずれも [`design_ja.md`](design_ja.md) で仕様化し、
+実装済みです。
 
 比較対象は 2026 年 8 月時点の gh-infra ドキュメント一式(`import`、`plan`、`apply`、
 `validate` と、`Repository`、`RepositorySet`、`File`、`FileSet` の各リソース)です。
@@ -19,13 +19,13 @@ Issue で追跡します。
 
 | gh-infra の機能 | 本拡張の現状 | 仕様 |
 |---|---|---|
-| `import` — ライブ状態を manifest として書き出す | 無し | [`import` コマンド](design_ja.md#import) |
-| `import --into` — 既存 manifest にライブ状態を取り込む | 無し | [`import` コマンド](design_ja.md#import) |
-| `plan --ci` — 差分があれば非 0 終了 | `plan` は常に 0 | [ドリフト検出と CI](design_ja.md#ドリフト検出と-ci) |
-| `--force-secrets` — 全 secret を 1 回の実行で再設定 | secret ごとの `updatePolicy: always` のみ | [ドリフト検出と CI](design_ja.md#ドリフト検出と-ci) |
-| labels | 無し | `labels` セクション |
-| milestones | 無し | `milestones` セクション |
-| `homepage`、`archived`、機能タブの切り替え、merge commit の題名/本文書式、release の不変化 | 無し | `repository` セクション |
+| `import` — ライブ状態を manifest として書き出す | 実装済み | [`import` コマンド](design_ja.md#import) |
+| `import --into` — 既存 manifest にライブ状態を取り込む | 実装済み | [`import` コマンド](design_ja.md#import) |
+| `plan --ci` — 差分があれば非 0 終了 | 実装済み(ドリフト時は `2`。secret の更新は除外) | [ドリフト検出と CI](design_ja.md#ドリフト検出と-ci) |
+| `--force-secrets` — 全 secret を 1 回の実行で再設定 | `apply --force-secrets` として実装済み(secret ごとの `updatePolicy: always` も引き続き利用可) | [ドリフト検出と CI](design_ja.md#ドリフト検出と-ci) |
+| labels | 実装済み | `labels` セクション |
+| milestones | 実装済み | `milestones` セクション |
+| `homepage`、`archived`、機能タブの切り替え、merge commit の題名/本文書式、release の不変化 | 実装済み | `repository` セクション |
 | ruleset の bypass actor(role / team / app / organization 管理者 / custom role) | 実装済み | `rulesets[].bypassActors` |
 | rulesetの`evaluate` enforcement(dry run) | 実装済み | `rulesets[].enforcement` |
 | Actions の fork pull request 承認ポリシー | 実装済み(public リポジトリのみ。GitHub は private リポジトリに対してこのエンドポイントを拒否します) | `actions.forkPullRequestApproval` |
