@@ -8,8 +8,6 @@
 
 Version 1 targets personal repositories and GitHub Free, Pro, and Team organizations on GitHub.com. GitHub Enterprise Server is rejected. Enterprise Cloud is outside the supported scope.
 
-Part of the contract below is specified but not yet implemented: `import`, `plan --ci`, and `apply --force-secrets`. They come from the [gh-infra feature review](docs/gh-infra-parity.md), are specified in [docs/design.md](docs/design.md), and are tracked as implementation issues. Everything else is implemented.
-
 ## Install
 
 Install a published release:
@@ -91,7 +89,7 @@ The `-R`/`--repo` flag overrides the repository declared in the configuration. `
 | --- | --- |
 | `0` | Success. For `plan --ci`, the repository already matches the configuration. |
 | `1` | The command failed. |
-| `2` | `plan --ci` found at least one difference. |
+| `2` | `plan --ci` found at least one difference. Secret updates are excluded from the comparison. |
 
 [`docs/examples/workflows`](docs/examples/workflows) contains an apply-on-merge workflow and a scheduled drift-detection workflow.
 

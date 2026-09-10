@@ -42,3 +42,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Environment variables named by `sourceEnv` must be present here.
           # EXAMPLE_TOKEN: ${{ secrets.EXAMPLE_TOKEN }}
+          #
+          # Do not add `--force-secrets` to this step. It writes every declared
+          # secret on every run, silently overrides the `updatePolicy` each
+          # secret declares, and widens secret exposure in a job that starts
+          # automatically. Credential rotation belongs in a separate
+          # workflow_dispatch workflow a person starts deliberately:
+          #   gh repospec apply --file bootstrap.yaml --yes --force-secrets

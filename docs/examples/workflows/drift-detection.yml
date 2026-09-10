@@ -1,7 +1,13 @@
 # Detect settings that were changed outside the bootstrap configuration.
-# The plan step writes plan.json; a non-empty diff section in that file
-# indicates drift. The step exits non-zero on failure (exit code 1) and
-# zero on success regardless of whether drift was detected.
+# `plan --ci` is the drift check: it exits 0 when the repository already
+# matches the configuration, 2 when a create or update would be made, and 1
+# when the command fails. A blocked plan is a failure and outranks drift, so
+# it exits 1 even when a difference is also present.
+#
+# Secret updates are excluded from the comparison. GitHub never returns a
+# secret value, so every declared secret is reported as an update and would
+# otherwise leave this check permanently red. Rotate credentials with a
+# separate workflow_dispatch run of `apply --force-secrets` instead.
 name: Bootstrap drift
 
 on:
@@ -26,9 +32,10 @@ jobs:
 
       # The report is written to a file rather than piped, so the step result
       # comes from the extension's exit code and not from the last command in
-      # a pipeline.
+      # a pipeline. The drift notice goes to standard error, so plan.json
+      # stays a valid document at every exit code.
       - name: Detect drift
-        run: gh repospec plan --file bootstrap.yaml --format json > plan.json
+        run: gh repospec plan --file bootstrap.yaml --format json --ci > plan.json
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
