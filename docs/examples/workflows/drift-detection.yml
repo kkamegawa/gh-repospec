@@ -1,13 +1,17 @@
 # Detect settings that were changed outside the bootstrap configuration.
-# `plan --ci` is the drift check: it exits 0 when the repository already
-# matches the configuration, 2 when a create or update would be made, and 1
-# when the command fails. A blocked plan is a failure and outranks drift, so
-# it exits 1 even when a difference is also present.
+# `plan --ci` is the drift check: it exits 0 when the plan has no blocked entry
+# and no difference the tool can converge, 2 when a create or update would be
+# made, and 1 when the command fails. A blocked plan is a failure and outranks
+# drift, so it exits 1 even when a difference is also present. Exit 0 is not
+# proof that every setting matches: secret updates and manual entries (seed,
+# commands, agent files) are excluded from the comparison.
 #
-# Secret updates are excluded from the comparison. GitHub never returns a
-# secret value, so every declared secret is reported as an update and would
-# otherwise leave this check permanently red. Rotate credentials with a
-# separate workflow_dispatch run of `apply --force-secrets` instead.
+# GitHub never returns a secret value, so a declared secret whose source
+# environment variable is set is reported as an update on every run, and
+# including those would leave this check permanently red. A secret whose source
+# environment variable is not set is reported as blocked instead, which exits
+# 1. Rotate credentials with a separate workflow_dispatch run of
+# `apply --force-secrets`.
 name: Bootstrap drift
 
 on:

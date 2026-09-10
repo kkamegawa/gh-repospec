@@ -87,9 +87,9 @@ The `-R`/`--repo` flag overrides the repository declared in the configuration. `
 
 | Exit code | Meaning |
 | --- | --- |
-| `0` | Success. For `plan --ci`, the repository already matches the configuration. |
-| `1` | The command failed. |
-| `2` | `plan --ci` found at least one difference. Secret updates are excluded from the comparison. |
+| `0` | Success. For `plan --ci`, the plan has no blocked entry and no difference the tool can converge. It is not proof that every setting matches: secret updates and manual entries are excluded from the comparison. |
+| `1` | The command failed. Under `--ci` this includes a blocked plan, which outranks drift. |
+| `2` | `plan --ci` found at least one difference it can converge. Secret updates are excluded from the comparison. |
 
 [`docs/examples/workflows`](docs/examples/workflows) contains an apply-on-merge workflow and a scheduled drift-detection workflow.
 
