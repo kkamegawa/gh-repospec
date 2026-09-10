@@ -153,6 +153,10 @@ type Service interface {
 type Options struct {
 	RepositoryOverride string
 	ApprovedCommandIDs map[string]bool
+	// ForceSecrets treats every configured secret as updatePolicy: always for
+	// this run, so a credential rotation is applied without editing the
+	// file. It does not relax the source environment variable requirement.
+	ForceSecrets bool
 }
 
 // Engine owns no mutable configuration and may be reused for repeated plans.
@@ -327,10 +331,10 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 	if err := e.applyMilestones(ctx, repository, cfg.Milestones); err != nil {
 		return plan, err
 	}
-	if err := e.applyActions(ctx, repository, cfg.Actions); err != nil {
+	if err := e.applyActions(ctx, repository, cfg.Actions, options); err != nil {
 		return plan, err
 	}
-	if err := e.applyAgentVariables(ctx, repository, cfg.Agents); err != nil {
+	if err := e.applyAgentVariables(ctx, repository, cfg.Agents, options); err != nil {
 		return plan, err
 	}
 	if err := e.applyRemainingSecurity(ctx, repository, cfg.Security); err != nil {
@@ -770,7 +774,7 @@ func filterAndValidateExistingFiles(ctx context.Context, service Service, reposi
 	return filtered, nil
 }
 
-func (e *Engine) applyActions(ctx context.Context, repository githubapi.Repository, desired *config.ActionsConfig) error {
+func (e *Engine) applyActions(ctx context.Context, repository githubapi.Repository, desired *config.ActionsConfig, options Options) error {
 	if desired == nil {
 		return nil
 	}
@@ -833,7 +837,7 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 		}
 	}
 	if len(desired.Secrets) > 0 {
-		if err := e.applySecrets(ctx, repository, desired.Secrets, false); err != nil {
+		if err := e.applySecrets(ctx, repository, desired.Secrets, secretTargetActions, options); err != nil {
 			return err
 		}
 	}
@@ -950,7 +954,7 @@ func securityFeature(feature *config.FeatureSetting) *githubapi.SecurityFeature 
 	return &githubapi.SecurityFeature{Status: status}
 }
 
-func (e *Engine) applyAgentVariables(ctx context.Context, repository githubapi.Repository, desired *config.AgentsConfig) error {
+func (e *Engine) applyAgentVariables(ctx context.Context, repository githubapi.Repository, desired *config.AgentsConfig, options Options) error {
 	if desired == nil {
 		return nil
 	}
@@ -979,21 +983,31 @@ func (e *Engine) applyAgentVariables(ctx context.Context, repository githubapi.R
 		}
 	}
 	if len(desired.Secrets) > 0 {
-		if err := e.applySecrets(ctx, repository, desired.Secrets, true); err != nil {
+		if err := e.applySecrets(ctx, repository, desired.Secrets, secretTargetAgents, options); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (e *Engine) applySecrets(ctx context.Context, repository githubapi.Repository, desired []config.SecretRef, agents bool) error {
+// secretTarget selects which secret store applySecrets operates on. A named
+// type reads at the call site (applySecrets(..., secretTargetAgents, ...))
+// where a second bare bool would not.
+type secretTarget string
+
+const (
+	secretTargetActions secretTarget = "actions"
+	secretTargetAgents  secretTarget = "agents"
+)
+
+func (e *Engine) applySecrets(ctx context.Context, repository githubapi.Repository, desired []config.SecretRef, target secretTarget, options Options) error {
 	secrets, ok := e.service.(secretService)
 	if !ok {
 		return errors.New("secret operations are unavailable from the configured GitHub service")
 	}
 	var current githubapi.SecretList
 	var err error
-	if agents {
+	if target == secretTargetAgents {
 		current, err = secrets.ListAgentSecrets(ctx, repository)
 	} else {
 		current, err = secrets.ListActionsSecrets(ctx, repository)
@@ -1007,7 +1021,7 @@ func (e *Engine) applySecrets(ctx context.Context, repository githubapi.Reposito
 	}
 	var publicKey githubapi.PublicKey
 	for _, secret := range desired {
-		if existing[secret.Name] && defaultSecretPolicy(secret.UpdatePolicy) == "createOnly" {
+		if !options.ForceSecrets && existing[secret.Name] && defaultSecretPolicy(secret.UpdatePolicy) == "createOnly" {
 			continue
 		}
 		value, exists := os.LookupEnv(secret.SourceEnv)
@@ -1015,7 +1029,7 @@ func (e *Engine) applySecrets(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("secret source environment variable is not set: %s", secret.SourceEnv)
 		}
 		if publicKey.KeyID == "" {
-			if agents {
+			if target == secretTargetAgents {
 				publicKey, err = secrets.GetAgentSecretPublicKey(ctx, repository)
 			} else {
 				publicKey, err = secrets.GetActionsSecretPublicKey(ctx, repository)
@@ -1028,7 +1042,7 @@ func (e *Engine) applySecrets(ctx context.Context, repository githubapi.Reposito
 		if err != nil {
 			return err
 		}
-		if agents {
+		if target == secretTargetAgents {
 			err = secrets.PutAgentSecret(ctx, repository, secret.Name, encrypted)
 		} else {
 			err = secrets.PutActionsSecret(ctx, repository, secret.Name, encrypted)
