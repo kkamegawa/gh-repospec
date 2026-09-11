@@ -983,15 +983,16 @@ func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubap
 				codeQLEnabled = false
 			}
 		}
-		if aiScanReason != "" {
+		switch {
+		case aiScanReason != "":
 			if !desired.AIPullRequestScan.Optional {
 				return fmt.Errorf("set AI Scan for pull requests for %s: %s", repository, aiScanReason)
 			}
-		} else if !codeQLDependencyKnown || !codeQLEnabled {
+		case !codeQLDependencyKnown || !codeQLEnabled:
 			if !desired.AIPullRequestScan.Optional {
 				return fmt.Errorf("set AI Scan for pull requests for %s: requires security.codeqlDefaultSetup to be enabled", repository)
 			}
-		} else {
+		default:
 			setting := githubapi.AIScanSetting{PRScan: "disabled"}
 			if desired.AIPullRequestScan.Enabled {
 				setting.PRScan = "enabled"
