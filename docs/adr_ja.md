@@ -1,8 +1,14 @@
-# ADR: gh-repospec
+# ADR
 
-記録1から5は日付2026-09-05、追跡は
-[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)です。記録6は日付2026-09-11、
-追跡は[Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)です。
+record 1〜5は日付2026-09-05、追跡は
+[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)（importと書式を保持するrefresh）
+です。record 6は日付2026-09-08、追跡は
+[Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12)（ドリフト検出）です。
+record 7は日付2026-09-10、追跡は
+[Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30)（ドリフト検出のドキュメント）
+です。record 8は日付2026-09-11、追跡は
+[Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)（AI Scan for pull requests）
+です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
 
@@ -87,7 +93,44 @@ descriptionを持つリポジトリに対して変更を報告し続けます。
 変更はスキーマ、config型、plannerの比較、applyのリクエストに及び、
 [Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22)で個別に追跡します。
 
-## 6. AI Scan for pull requestsはリポジトリ単位のセキュリティ機能とする
+## 6. ドリフト検出はsecret更新を除外する
+
+**決定。** `plan --ci`は、planにsecret以外のcreateまたはupdateが含まれる場合にのみ`2`で終了します。
+`Plan.HasDrift()`が`Plan.HasChanges()`を置き換え、`Change`はsecretエントリに設定される`Opaque`
+フラグを持ちます。blockedなplanは`1`で終了し、ドリフトより優先されます。`--ci`を付けない`plan`は
+引き続きすべてのケースで`0`で終了します。
+
+**理由。** issue #12は「createまたはupdateが1件以上」と述べています。文字どおり実装すると、
+secretを宣言したどの設定も定期実行のたびにドリフトを報告することになります。GitHubがsecretの値を
+返さないためで、record 4は既にこの理由でsecret更新を「空のplan」の定義から除外しています。
+常に失敗するドリフト検査は検査として機能しません。除外はリソース名の一致ではなく明示的なフィールド
+で運ぶため、表示文字列の変更が終了コードを静かに壊すことはありません。
+
+**結果。** ツール外でローテーションされたsecretは検出されません。構造上検出できないためで、
+ローテーションには`apply --force-secrets`を使います。`Change`は`omitempty`のJSONフィールドを
+得るため、secret以外のエントリについて保存済み`plan.json`の出力は変わりません。`HasChanges`は
+削除されます。唯一の呼び出し元はテストでした。
+
+## 7. ドリフト検出の仕様文をドキュメント作業と併せて訂正する
+
+**決定。** Issue #30では、スコープ上「既に正しい」とされていた`docs/design.md`と
+`docs/design_ja.md`のドリフト検出・終了コードの記述も書き換えます。訂正後の記述では、
+`plan --ci`はツールが収束できるcreateまたはupdateがある場合に`2`で終了すること、secretの
+更新は除外すること、blockedなplanは`1`で終了し検出に優先すること、`--ci`なしの`plan`は常に
+`0`で終了することを明示します。実装計画にあった終了コードの一覧表は、規範側の記録として
+`design_ja.md`へ移します。
+
+**理由。** `design_ja.md`は`plan --ci`を「変更が発生する場合に`2`で終了」と記述していました。
+secretについてはrecord 6が既に反対の結論を出しており、`planOutcome`はblockedなplanに`1`を
+返すため、確定済みの挙動が自身の仕様と矛盾していました。Issue #30はドリフト検出のworkflow例に
+secret除外を含む終了コード契約の正確な説明を求めています。仕様側が別のことを述べたままでは、
+例とその参照先の文書が食い違います。
+
+**結果。** 挙動の変更はありません。訂正はドキュメントのみで、record 4とrecord 6が既に決定した
+内容を反映するものです。実装計画のスコープ境界（「本計画は`docs/design.md`を変更しない」）は
+この理由により置き換えられ、wikiの計画ページにその旨の完了ノートを記載します。
+
+## 8. AI Scan for pull requestsはリポジトリ単位のセキュリティ機能とする
 
 **決定。** `security.aiPullRequestScan`は`FeatureSetting`(`enabled`、`optional`)とし、
 `GET`/`PATCH /repos/{owner}/{repo}/code-scanning/ai-scan`だけで管理します。組織の
@@ -102,7 +145,7 @@ APIバージョン`2026-03-10`で提供されるため、オプトインのフ�
 手動作業として報告しています。`FeatureSetting`を再利用すれば、スキーマ、planner、refresh
 経路が他のセキュリティ機能と揃います。GitHubはAI ScanにCodeQL default setupを要求するため、
 依存を`plan`で確認すれば、`apply`の途中で失敗させずにblockedとして報告できます。403を`false`と
-書くと記録1と矛盾し、しかも毎回のplanで同じ読み取りが失敗するため収束しません。
+書くとrecord 1と矛盾し、しかも毎回のplanで同じ読み取りが失敗するため収束しません。
 
 **結果。** 組織でAI Scanが無効になっているリポジトリでは、宣言が`optional: true`でない限り
 `apply`が失敗します。Advanced Security、Copilotライセンス、Enterpriseと組織による有効化、

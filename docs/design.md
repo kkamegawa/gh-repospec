@@ -128,11 +128,14 @@ repository and writes configuration; it performs no repository writes.
 time with `-ldflags`, following GitHub CLI extension convention.
 
 Exit codes are part of the contract, because CI branches on them. `0` means
-success — for `plan`, that the requested state is already converged when
-`--ci` is set. `1` means the command failed. `2` means `plan --ci` found at
-least one difference. `apply --force-secrets` treats every configured secret
-as `updatePolicy: always` for that run, which is how a credential rotation is
-applied without editing the file.
+success — for `plan --ci`, that the plan has no blocked entry and no
+difference the tool can converge. It is not a claim that every setting matches,
+because secret updates and manual entries are excluded from that judgement.
+`1` means the command failed, which includes a blocked plan under `--ci`: a
+blocked plan is a failure and outranks drift. `2` means `plan --ci` found at
+least one difference it can converge. `apply --force-secrets` treats every
+configured secret as `updatePolicy: always` for that run, which is how a
+credential rotation is applied without editing the file.
 
 Before writes, preflight checks the GitHub.com host, authenticated permissions,
 repository state, feature availability, organization policy, seed source, and
@@ -228,10 +231,33 @@ unchanged. An input format and an explicit `--format` value must agree when
 
 ## Drift detection and CI
 
-`plan --ci` is the drift check. It exits `2` when any change would be made,
-which turns a scheduled workflow into a pass/fail signal for settings that were
-altered through the GitHub UI. `--format json` produces the same exit code, so
-the report can be archived or posted while the exit code drives the job result.
+`plan --ci` is the drift check. It exits `2` when the plan contains a create or
+update the tool can converge, which turns a scheduled workflow into a pass/fail
+signal for settings that were altered through the GitHub UI. A blocked plan
+exits `1`, because a blocked plan is a failure and outranks detection. `plan`
+without `--ci` exits `0` in every case.
+
+Secret updates are excluded from the comparison. GitHub never returns a secret
+value, so a declared secret whose source environment variable is set is
+reported as an update on every run and would otherwise leave a scheduled check
+permanently red; a secret rotated outside the tool is undetectable by
+construction, and `apply --force-secrets` is the answer for rotation. A secret
+whose source environment variable is not set is a different case: it is
+reported as blocked rather than as an update, the exclusion does not reach it,
+and `plan --ci` exits `1`.
+
+| Situation | `plan` | `plan --ci` |
+|---|---|---|
+| No changes | 0 | 0 |
+| Only secret updates, with their source environment variables set | 0 | 0 |
+| Only manual entries (seed, commands, agent files) | 0 | 0 |
+| Create or update present | 0 | 2 |
+| Blocked present | 0 | 1 |
+| Blocked and drift present | 0 | 1 |
+
+`--format json` produces the same exit code, and the drift notice is written to
+standard error, so a redirected report stays a valid document at every exit
+code and can be archived or posted while the exit code drives the job result.
 
 Two workflows cover the common setup, and
 [`examples/workflows`](examples/workflows) contains both. Applying on merge to

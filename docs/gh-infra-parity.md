@@ -11,8 +11,8 @@ gaps in this extension's contract.
 This document records the comparison, the features adopted into the
 `gh-repospec` specification, and — just as importantly — the features
 deliberately not adopted, with the reason for each. It is a design record, not
-a roadmap: adopted items are specified in [`design.md`](design.md) and tracked
-as implementation issues.
+a roadmap: every adopted item is specified in [`design.md`](design.md) and has
+since shipped.
 
 The comparison was made against the gh-infra documentation set (`import`,
 `plan`, `apply`, `validate`; the `Repository`, `RepositorySet`, `File`, and
@@ -22,13 +22,13 @@ The comparison was made against the gh-infra documentation set (`import`,
 
 | gh-infra capability | State in this extension | Specification |
 |---|---|---|
-| `import` — export live repository state as a manifest | Absent | [`import` command](design.md#import) |
-| `import --into` — pull live state into an existing manifest | Absent | [`import` command](design.md#import) |
-| `plan --ci` — non-zero exit when a difference exists | `plan` always exits 0 | [Drift detection](design.md#drift-detection-and-ci) |
-| `--force-secrets` — re-set every secret in one run | Only per-secret `updatePolicy: always` | [Drift detection](design.md#drift-detection-and-ci) |
-| Labels | Absent | `labels` section |
-| Milestones | Absent | `milestones` section |
-| `homepage`, `archived`, feature toggles, merge commit title/message formats, release immutability | Absent | `repository` section |
+| `import` — export live repository state as a manifest | Implemented | [`import` command](design.md#import) |
+| `import --into` — pull live state into an existing manifest | Implemented | [`import` command](design.md#import) |
+| `plan --ci` — non-zero exit when a difference exists | Implemented (exits `2` on drift; secret updates are excluded) | [Drift detection](design.md#drift-detection-and-ci) |
+| `--force-secrets` — re-set every secret in one run | Implemented as `apply --force-secrets` (per-secret `updatePolicy: always` also remains) | [Drift detection](design.md#drift-detection-and-ci) |
+| Labels | Implemented | `labels` section |
+| Milestones | Implemented | `milestones` section |
+| `homepage`, `archived`, feature toggles, merge commit title/message formats, release immutability | Implemented | `repository` section |
 | Ruleset bypass actors (role / team / app / organization admin / custom role) | Implemented | `rulesets[].bypassActors` |
 | Ruleset `evaluate` enforcement (dry run) | Implemented | `rulesets[].enforcement` |
 | Actions fork pull request approval policy | Implemented (public repositories only; GitHub rejects the endpoint on private repositories) | `actions.forkPullRequestApproval` |

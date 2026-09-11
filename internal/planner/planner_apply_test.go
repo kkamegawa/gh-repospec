@@ -3,6 +3,7 @@ package planner
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -691,5 +692,220 @@ func TestApplyRechecksAIPullRequestScanCodeQLDependency(t *testing.T) {
 				t.Fatalf("mutations = %#v, lastAIScan = %#v, want AI Scan written as %q", service.mutations, service.lastAIScan, tc.wantWrite)
 			}
 		})
+	}
+}
+
+// secretRecordingService adds an in-memory secret store to recordingService.
+// No fake in this package implements secretService without it, so
+// apply --force-secrets could not be exercised before this type existed.
+type secretRecordingService struct {
+	recordingService
+	actionsSecrets map[string]bool
+	agentSecrets   map[string]bool
+	puts           []string // "actions:<name>" or "agents:<name>"
+}
+
+func (s *secretRecordingService) ListActionsSecrets(context.Context, githubapi.Repository) (githubapi.SecretList, error) {
+	return secretListFor(s.actionsSecrets), nil
+}
+
+func (s *secretRecordingService) ListAgentSecrets(context.Context, githubapi.Repository) (githubapi.SecretList, error) {
+	return secretListFor(s.agentSecrets), nil
+}
+
+func (s *secretRecordingService) GetActionsSecretPublicKey(context.Context, githubapi.Repository) (githubapi.PublicKey, error) {
+	return fakeSecretPublicKey(), nil
+}
+
+func (s *secretRecordingService) GetAgentSecretPublicKey(context.Context, githubapi.Repository) (githubapi.PublicKey, error) {
+	return fakeSecretPublicKey(), nil
+}
+
+func (s *secretRecordingService) PutActionsSecret(_ context.Context, _ githubapi.Repository, name string, _ githubapi.EncryptedSecret) error {
+	s.puts = append(s.puts, "actions:"+name)
+	if s.actionsSecrets == nil {
+		s.actionsSecrets = map[string]bool{}
+	}
+	s.actionsSecrets[name] = true
+	return nil
+}
+
+func (s *secretRecordingService) PutAgentSecret(_ context.Context, _ githubapi.Repository, name string, _ githubapi.EncryptedSecret) error {
+	s.puts = append(s.puts, "agents:"+name)
+	if s.agentSecrets == nil {
+		s.agentSecrets = map[string]bool{}
+	}
+	s.agentSecrets[name] = true
+	return nil
+}
+
+func secretListFor(names map[string]bool) githubapi.SecretList {
+	list := githubapi.SecretList{}
+	for name := range names {
+		list.Secrets = append(list.Secrets, githubapi.SecretMetadata{Name: name})
+	}
+	list.TotalCount = len(list.Secrets)
+	return list
+}
+
+// fakeSecretPublicKey is a syntactically valid (32-byte, base64-encoded)
+// NaCl box public key. Tests never decrypt the resulting ciphertext, so its
+// cryptographic weight does not matter.
+func fakeSecretPublicKey() githubapi.PublicKey {
+	return githubapi.PublicKey{KeyID: "test-key", Key: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+}
+
+// TestBuildIgnoresForceSecrets guards that ForceSecrets has no effect on
+// Build: appendSecretChange never consults Options, so a secret is already
+// always reported as an update (or blocked), whether or not ForceSecrets is
+// later passed to Apply.
+func TestBuildIgnoresForceSecrets(t *testing.T) {
+	t.Setenv("ACTIONS_TOKEN_SOURCE", "value")
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "ACTIONS_TOKEN_SOURCE"}},
+		},
+	}
+	without, err := New(&fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutPlan, err := without.Build(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	with, err := New(&fakeService{repository: githubapi.RepositoryInfo{Visibility: "public"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withPlan, err := with.Build(context.Background(), cfg, Options{ForceSecrets: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutJSON, err := json.Marshal(withoutPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withJSON, err := json.Marshal(withPlan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(withoutJSON) != string(withJSON) {
+		t.Fatalf("plan with ForceSecrets = %s, want identical to plan without it: %s", withJSON, withoutJSON)
+	}
+}
+
+// TestApplySkipsExistingSecretUnderCreateOnlyPolicy is the baseline for the
+// createOnly gate that --force-secrets overrides.
+func TestApplySkipsExistingSecretUnderCreateOnlyPolicy(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids parallel execution.
+	t.Setenv("ACTIONS_TOKEN_SOURCE", "value")
+	service := &secretRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"}}},
+		actionsSecrets:   map[string]bool{"TOKEN": true},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "ACTIONS_TOKEN_SOURCE"}},
+		},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(service.puts) != 0 {
+		t.Fatalf("Apply() wrote %#v, want the existing createOnly secret left alone", service.puts)
+	}
+}
+
+// TestApplyForceSecretsRewritesExistingCreateOnlySecrets covers apply
+// --force-secrets against Actions secrets: an existing createOnly secret is
+// re-written when ForceSecrets is set.
+func TestApplyForceSecretsRewritesExistingCreateOnlySecrets(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids parallel execution.
+	t.Setenv("ACTIONS_TOKEN_SOURCE", "value")
+	service := &secretRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"}}},
+		actionsSecrets:   map[string]bool{"TOKEN": true},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "ACTIONS_TOKEN_SOURCE"}},
+		},
+	}, Options{ForceSecrets: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(service.puts, "actions:TOKEN") {
+		t.Fatalf("Apply(ForceSecrets: true) puts = %#v, want actions:TOKEN rewritten", service.puts)
+	}
+}
+
+// TestApplyForceSecretsCoversAgentSecrets guards that secretTarget is
+// threaded through applyAgentVariables, not just applyActions.
+func TestApplyForceSecretsCoversAgentSecrets(t *testing.T) {
+	// Not t.Parallel(): t.Setenv forbids parallel execution.
+	t.Setenv("AGENT_TOKEN_SOURCE", "value")
+	service := &secretRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"}}},
+		agentSecrets:     map[string]bool{"TOKEN": true},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Agents: &config.AgentsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "AGENT_TOKEN_SOURCE"}},
+		},
+	}, Options{ForceSecrets: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(service.puts, "agents:TOKEN") {
+		t.Fatalf("Apply(ForceSecrets: true) puts = %#v, want agents:TOKEN rewritten", service.puts)
+	}
+}
+
+// TestApplyForceSecretsStillRequiresSourceEnvironmentVariable guards that
+// ForceSecrets does not relax the sourceEnv requirement: a missing variable
+// still blocks the plan, and Apply refuses a blocked plan before writing.
+func TestApplyForceSecretsStillRequiresSourceEnvironmentVariable(t *testing.T) {
+	t.Parallel()
+	service := &secretRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"}}},
+		actionsSecrets:   map[string]bool{"TOKEN": true},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = engine.Apply(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions: &config.ActionsConfig{
+			Secrets: []config.SecretRef{{Name: "TOKEN", SourceEnv: "ACTIONS_TOKEN_SOURCE_UNSET"}},
+		},
+	}, Options{ForceSecrets: true})
+	if err == nil {
+		t.Fatal("Apply(ForceSecrets: true) unexpectedly succeeded with an unset source environment variable")
+	}
+	if len(service.puts) != 0 {
+		t.Fatalf("Apply() wrote %#v despite a blocked plan", service.puts)
 	}
 }

@@ -8,8 +8,6 @@
 
 Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team の組織を対象にします。GitHub Enterprise Server は拒否し、Enterprise Cloud はサポート対象外です。
 
-以下の契約のうち一部は仕様として定義済みで、実装はこれからです。`import`、`plan --ci`、`apply --force-secrets` が該当します。いずれも [gh-infra との機能比較](docs/gh-infra-parity_ja.md) に基づき、[docs/design_ja.md](docs/design_ja.md) で仕様化し、Issue で追跡します。それ以外は実装済みです。
-
 ## インストール
 
 公開済みリリースをインストールします。
@@ -88,9 +86,9 @@ gh repospec version
 
 | 終了コード | 意味 |
 | --- | --- |
-| `0` | 成功。`plan --ci` では、リポジトリが既に設定と一致していることを表します。 |
-| `1` | コマンドが失敗しました。 |
-| `2` | `plan --ci` が 1 件以上の差分を検出しました。 |
+| `0` | 成功。`plan --ci` では、blocked な項目がなく、ツールが収束できる差分もないことを表します。secret の更新と手動項目は比較対象から除外するため、すべての設定が一致している証明にはなりません。 |
+| `1` | コマンドが失敗しました。`--ci` では blocked な plan も含み、blocked はドリフト検出に優先します。 |
+| `2` | `plan --ci` が収束できる差分を 1 件以上検出しました。secret の更新は比較対象から除外します。 |
 
 [`docs/examples/workflows`](docs/examples/workflows) に、マージ時に apply する workflow と、スケジュール実行でドリフトを検出する workflow があります。
 
