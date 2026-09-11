@@ -1089,8 +1089,8 @@ func TestBuildAIPullRequestScanConvergesAgainstLiveState(t *testing.T) {
 			if !hasChange(plan, "security.aiPullRequestScan", tc.wantState) {
 				t.Fatalf("plan.Changes = %#v, want security.aiPullRequestScan as %s", plan.Changes, tc.wantState)
 			}
-			if tc.wantState == ChangeNoop && plan.HasChanges() {
-				t.Fatalf("plan.HasChanges() = true, want false when AI Scan and CodeQL already match: %#v", plan.Changes)
+			if tc.wantState == ChangeNoop && plan.HasDrift() {
+				t.Fatalf("plan.HasDrift() = true, want false when AI Scan and CodeQL already match: %#v", plan.Changes)
 			}
 		})
 	}
