@@ -11,10 +11,13 @@ import (
 // importSecurity fetches the state of every security feature the schema can
 // represent. dependencyGraph has no dedicated read endpoint at all,
 // secretScanning/pushProtection depend on the security_and_analysis block
-// GetRepository already fetched, and aiPullRequestScan is answered with 403
-// when Advanced Security is not enabled (or 404 when GitHub has no setting
-// to report); each is reported as a diagnostic rather than written as a
-// false it was never observed to be, which would never converge.
+// GetRepository already fetched, codeqlDefaultSetup is answered with 403 when
+// code scanning is not enabled for the repository, and aiPullRequestScan is
+// answered with 403 when Advanced Security is not enabled (or 404 when GitHub
+// has no setting to report); each is reported as a diagnostic rather than
+// written as a false it was never observed to be, which would never converge.
+// A CodeQL default setup 404, by contrast, means not configured and is
+// imported as disabled.
 func importSecurity(ctx context.Context, reader Reader, repository githubapi.Repository, info githubapi.RepositoryInfo) (*config.SecurityConfig, []Diagnostic, error) {
 	cfg := &config.SecurityConfig{}
 	var diagnostics []Diagnostic
@@ -50,16 +53,25 @@ func importSecurity(ctx context.Context, reader Reader, repository githubapi.Rep
 	}
 
 	codeQL, err := reader.GetCodeQLDefaultSetup(ctx, repository)
-	if err != nil {
-		if !githubapi.IsNotFound(err) {
-			return nil, nil, fmt.Errorf("get CodeQL default setup for %s: %w", repository, err)
-		}
-		// A 404 means CodeQL default setup is unavailable or unconfigured for
-		// this repository, the same "absent means disabled" shape as
+	switch {
+	case err == nil:
+		cfg.CodeQLDefaultSetup = &config.FeatureSetting{Enabled: codeQL.State == "configured"}
+	case githubapi.IsNotFound(err):
+		// A 404 means CodeQL default setup is unconfigured for this
+		// repository, the same "absent means disabled" shape as
 		// vulnerability alerts and automated security fixes.
-		codeQL = githubapi.CodeQLDefaultSetupStatus{State: "not-configured"}
+		cfg.CodeQLDefaultSetup = &config.FeatureSetting{Enabled: false}
+	case githubapi.IsForbidden(err):
+		// A 403 means code scanning is not enabled for this repository (see
+		// docs/adr.md record 9), which says nothing about what a declaration
+		// should be, so the field is left unset.
+		diagnostics = append(diagnostics, Diagnostic{
+			Resource: "security.codeqlDefaultSetup",
+			Message:  "GitHub did not report CodeQL default setup status (code scanning may not be enabled for this repository); declare it to manage it going forward",
+		})
+	default:
+		return nil, nil, fmt.Errorf("get CodeQL default setup for %s: %w", repository, err)
 	}
-	cfg.CodeQLDefaultSetup = &config.FeatureSetting{Enabled: codeQL.State == "configured"}
 
 	aiScan, err := reader.GetAIScan(ctx, repository)
 	switch {

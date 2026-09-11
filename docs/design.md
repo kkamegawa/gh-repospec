@@ -110,6 +110,18 @@ Advanced Security, a Copilot license, and enablement by the enterprise and
 organization, none of which the tool can verify before writing, so it is best
 declared with `optional: true` wherever those may be missing.
 
+Code scanning itself can be unavailable: a private repository without GitHub
+Advanced Security, such as an empty personal repository about to be
+bootstrapped, answers the CodeQL default setup and AI Scan reads with 403. `plan`
+treats that answer as the feature being unavailable rather than its state being
+unknown, so `codeqlDefaultSetup` and `aiPullRequestScan` are reported as
+blocked, or as manual when `optional: true`, with GitHub's message as the
+reason, and `apply` does not attempt the write. Reporting them as updates would
+make an optional declaration drift forever, because no `apply` can change it.
+A 403 caused by missing permissions takes the same path; a required declaration
+is still blocked and stops the run. Once code scanning is enabled for the
+repository, the next plan reads the state normally.
+
 `actions.allowedActions: selected` requires `actions.selectedActions`
 (`githubOwnedAllowed`, `verifiedAllowed`, and an optional `patternsAllowed`
 list). GitHub's selected-actions allowlist otherwise defaults to empty, which

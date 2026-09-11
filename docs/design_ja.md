@@ -95,6 +95,15 @@ GitHubのAIによるセキュリティ検出、AI Scan for pull requestsを制�
 ライセンス、Enterpriseと組織による有効化も必要ですが、ツールは書き込み前にこれらを確認できない
 ため、欠けている可能性がある場合は`optional: true`を付けて宣言することを推奨します。
 
+コードスキャン自体が利用できない場合もあります。GitHub Advanced Securityのないprivate
+リポジトリ、たとえば初期構築しようとしている空の個人リポジトリでは、CodeQL default setupと
+AI Scanの読み取りに403が返ります。`plan`はこの応答を「状態が不明」ではなく「機能が利用できない」
+と扱い、`codeqlDefaultSetup`と`aiPullRequestScan`をGitHubのメッセージを理由としてblocked、
+`optional: true`ならmanualとして報告し、`apply`は書き込みを試みません。updateとして報告すると、
+どの`apply`でも変えられないため、optionalの宣言が永久にドリフトし続けます。権限不足による403も
+同じ経路をたどりますが、必須の宣言は引き続きblockedとなり実行を止めます。リポジトリでコード
+スキャンが有効になれば、次のplanは通常どおり状態を読み取ります。
+
 `actions.allowedActions: selected`を指定する場合は`actions.selectedActions`
 (`githubOwnedAllowed`、`verifiedAllowed`、任意の`patternsAllowed`)が必須です。
 未指定のままだとGitHubのselected-actions allowlistは既定で空になり、Actionを使う

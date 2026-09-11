@@ -595,6 +595,44 @@ func TestImportTreatsCodeQL404AsNotConfigured(t *testing.T) {
 	if result.Config.Security.CodeQLDefaultSetup == nil || result.Config.Security.CodeQLDefaultSetup.Enabled {
 		t.Fatalf("CodeQLDefaultSetup = %#v, want disabled on a 404", result.Config.Security.CodeQLDefaultSetup)
 	}
+	if hasDiagnostic(result.Diagnostics, "security.codeqlDefaultSetup") {
+		t.Fatalf("Diagnostics = %#v, want none for security.codeqlDefaultSetup on a 404", result.Diagnostics)
+	}
+}
+
+// TestImportReportsCodeQL403AsDiagnostic guards docs/adr.md record 9: GitHub
+// answers the CodeQL default setup read with 403 when code scanning is not
+// enabled for the repository (a private repository without Advanced
+// Security), which must not fail the import or be written as disabled.
+func TestImportReportsCodeQL403AsDiagnostic(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.getCodeQLErr = &githubapi.APIError{StatusCode: 403, Message: "Code scanning is not enabled for this repository. Please enable code scanning in the repository settings."}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatalf("Import() error = %v, want HTTP 403 reported as a diagnostic", err)
+	}
+	if result.Config.Security.CodeQLDefaultSetup != nil {
+		t.Fatalf("CodeQLDefaultSetup = %#v, want nil when GitHub answered HTTP 403", result.Config.Security.CodeQLDefaultSetup)
+	}
+	if !hasDiagnostic(result.Diagnostics, "security.codeqlDefaultSetup") {
+		t.Fatalf("Diagnostics = %#v, want one for security.codeqlDefaultSetup", result.Diagnostics)
+	}
+}
+
+func TestImportCodeQLServerErrorIsAnError(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.getCodeQLErr = &githubapi.APIError{StatusCode: 500}
+
+	_, err := Import(context.Background(), reader, testRepo())
+	if err == nil {
+		t.Fatal("Import() unexpectedly succeeded despite an HTTP 500 from the CodeQL default setup read")
+	}
+	if !strings.Contains(err.Error(), "CodeQL default setup") {
+		t.Fatalf("Import() error = %v, want it to name the CodeQL default setup read", err)
+	}
 }
 
 func TestImportReportsSecurityFieldsAbsentFromSecurityAndAnalysis(t *testing.T) {

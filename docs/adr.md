@@ -168,3 +168,28 @@ licensing, enterprise and organization enablement, and AI credit consumption can
 checked before writing, so documentation recommends `optional: true`. If GitHub changes
 the preview API's shape, only the client types and this field need revising. Binaries
 older than this change reject the new key as an unknown field.
+
+## 9. A code-scanning read refused with 403 means the feature is unavailable
+
+**Decision.** When GitHub answers the CodeQL default setup or AI Scan read with 403,
+`plan` treats the feature as unavailable on that repository: the declaration is
+reported as blocked, or as manual when `optional: true`, with GitHub's message as the
+reason, and `apply` skips the write. `import` reports a CodeQL default setup 403 as a
+diagnostic and omits the key, as record 8 already does for AI Scan.
+
+This extends record 8, under which `plan` reported an unreadable AI Scan state as an
+update.
+
+**Rationale.** The extension's primary use is bootstrapping an empty repository, and a
+private personal repository has no GitHub Advanced Security, so code scanning is not
+enabled there. Reporting such a feature as an update makes an optional declaration
+drift forever — no `apply` can change it, so `plan --ci` exits `2` on every run — which
+defeats the purpose of `optional: true`. `import` previously failed outright on the
+CodeQL 403, which contradicts record 1.
+
+**Consequences.** A 403 caused by insufficient permissions cannot be told apart from an
+unavailable feature and takes the same path. A required declaration is blocked, so
+authorization failures still stop the run; an optional one is reported as manual, and
+its reason carries GitHub's message so the user can tell the two apart. If code scanning
+is later enabled for the repository, the next plan reads the state normally and
+converges.
