@@ -1042,6 +1042,281 @@ func TestBuildBlocksDependabotSecurityUpdatesOnNewRepository(t *testing.T) {
 	}
 }
 
+// TestBuildAIPullRequestScanConvergesAgainstLiveState guards convergence for
+// security.aiPullRequestScan: a declaration that already matches the live
+// AI Scan setting plans a noop, a failed read is reported as an update rather
+// than guessed to be a noop, and a read refused with 403 while CodeQL default
+// setup is readable means AI Scan is unavailable (docs/adr.md record 9), so it
+// is blocked, or manual when optional, instead of drifting forever.
+func TestBuildAIPullRequestScanConvergesAgainstLiveState(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		declared  bool
+		optional  bool
+		live      string
+		liveErr   error
+		wantState ChangeState
+	}{
+		{name: "enabled matches live", declared: true, live: "enabled", wantState: ChangeNoop},
+		{name: "disabled matches live", declared: false, live: "disabled", wantState: ChangeNoop},
+		{name: "enabled differs from live", declared: true, live: "disabled", wantState: ChangeUpdate},
+		{name: "disabled differs from live", declared: false, live: "enabled", wantState: ChangeUpdate},
+		{name: "live read fails", declared: true, liveErr: &githubapi.APIError{StatusCode: 500}, wantState: ChangeUpdate},
+		{name: "live read not found", declared: true, liveErr: &githubapi.APIError{StatusCode: 404}, wantState: ChangeUpdate},
+		{name: "live read refused", declared: true, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeBlocked},
+		{name: "live read refused, optional", declared: true, optional: true, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeManual},
+		{name: "live read refused, disabled", declared: false, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeBlocked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{
+				repository:         githubapi.RepositoryInfo{Visibility: "public"},
+				codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+				aiScan:             githubapi.AIScanSetting{PRScan: tc.live},
+				aiScanErr:          tc.liveErr,
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+				Security: &config.SecurityConfig{
+					CodeQLDefaultSetup: &config.FeatureSetting{Enabled: true},
+					AIPullRequestScan:  &config.FeatureSetting{Enabled: tc.declared, Optional: tc.optional},
+				},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasChange(plan, "security.aiPullRequestScan", tc.wantState) {
+				t.Fatalf("plan.Changes = %#v, want security.aiPullRequestScan as %s", plan.Changes, tc.wantState)
+			}
+			if tc.wantState == ChangeNoop && plan.HasDrift() {
+				t.Fatalf("plan.HasDrift() = true, want false when AI Scan and CodeQL already match: %#v", plan.Changes)
+			}
+			if tc.wantState == ChangeBlocked || tc.wantState == ChangeManual {
+				change, _ := findChange(plan, "security.aiPullRequestScan")
+				if !strings.Contains(change.Summary, "code scanning is not available for this repository: Advanced Security must be enabled") {
+					t.Fatalf("security.aiPullRequestScan summary = %q, want the unavailable reason with GitHub's message", change.Summary)
+				}
+				// CodeQL default setup itself was readable, so it still
+				// converges normally.
+				if !hasChange(plan, "security.codeqlDefaultSetup", ChangeNoop) {
+					t.Fatalf("plan.Changes = %#v, want security.codeqlDefaultSetup as noop", plan.Changes)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildCodeScanningUnavailable guards docs/adr.md record 9: when GitHub
+// refuses the CodeQL default setup read with 403, code scanning is unavailable
+// on the repository, so codeqlDefaultSetup and aiPullRequestScan are both
+// blocked, or manual when optional, with GitHub's message as the reason. An
+// all-optional declaration must not drift, or plan --ci would exit 2 forever.
+// Any other failed read keeps reporting an update.
+func TestBuildCodeScanningUnavailable(t *testing.T) {
+	t.Parallel()
+	const message = "Code scanning is not enabled for this repository. Please enable code scanning in the repository settings."
+	refused := &githubapi.APIError{StatusCode: 403, Message: message}
+	cases := []struct {
+		name       string
+		codeQLErr  error
+		codeQL     *config.FeatureSetting
+		aiScan     *config.FeatureSetting
+		wantCodeQL ChangeState
+		wantAIScan ChangeState
+	}{
+		{name: "both optional", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeManual},
+		{name: "both required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeBlocked, wantAIScan: ChangeBlocked},
+		{name: "codeql optional, ai scan required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeBlocked},
+		{name: "codeql disabled, optional", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, wantCodeQL: ChangeManual},
+		{name: "ai scan only, optional", codeQLErr: refused, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantAIScan: ChangeManual},
+		{name: "ai scan disabled only, optional", codeQLErr: refused, aiScan: &config.FeatureSetting{Enabled: false, Optional: true}, wantAIScan: ChangeManual},
+		// The dependency on a declared-disabled CodeQL default setup would
+		// also block AI Scan; unavailability is reported instead.
+		{name: "unavailable takes precedence over the dependency", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeManual},
+		{name: "other read error, optional", codeQLErr: &githubapi.APIError{StatusCode: 500}, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeUpdate, wantAIScan: ChangeUpdate},
+		{name: "other read error, ai scan only", codeQLErr: &githubapi.APIError{StatusCode: 500}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantAIScan: ChangeManual},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{
+				repository:            githubapi.RepositoryInfo{Visibility: "private"},
+				codeQLDefaultSetupErr: tc.codeQLErr,
+				aiScan:                githubapi.AIScanSetting{PRScan: "disabled"},
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "private"},
+				Security: &config.SecurityConfig{
+					CodeQLDefaultSetup: tc.codeQL,
+					AIPullRequestScan:  tc.aiScan,
+				},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range []struct {
+				resource string
+				declared *config.FeatureSetting
+				want     ChangeState
+			}{
+				{resource: "security.codeqlDefaultSetup", declared: tc.codeQL, want: tc.wantCodeQL},
+				{resource: "security.aiPullRequestScan", declared: tc.aiScan, want: tc.wantAIScan},
+			} {
+				if check.declared == nil {
+					if _, ok := findChange(plan, check.resource); ok {
+						t.Fatalf("plan.Changes = %#v, want no %s when it is not declared", plan.Changes, check.resource)
+					}
+					continue
+				}
+				if !hasChange(plan, check.resource, check.want) {
+					t.Fatalf("plan.Changes = %#v, want %s as %s", plan.Changes, check.resource, check.want)
+				}
+				if tc.codeQLErr == refused {
+					change, _ := findChange(plan, check.resource)
+					if want := "code scanning is not available for this repository: " + message; change.Summary != want {
+						t.Fatalf("%s summary = %q, want %q", check.resource, change.Summary, want)
+					}
+				}
+			}
+			allOptional := (tc.codeQL == nil || tc.codeQL.Optional) && (tc.aiScan == nil || tc.aiScan.Optional)
+			if tc.codeQLErr == refused && allOptional {
+				if plan.HasDrift() {
+					t.Fatalf("plan.HasDrift() = true, want false when every unavailable declaration is optional: %#v", plan.Changes)
+				}
+				if plan.HasBlocked() {
+					t.Fatalf("plan.HasBlocked() = true, want false when every unavailable declaration is optional: %#v", plan.Changes)
+				}
+			}
+		})
+	}
+}
+
+// TestBuildAIPullRequestScanCodeQLDependency guards docs/design.md's
+// dependency: enabling AI Scan requires CodeQL default setup to be
+// effectively enabled, with a declared codeqlDefaultSetup taking precedence
+// over the live state, and disabling AI Scan having no dependency at all.
+func TestBuildAIPullRequestScanCodeQLDependency(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		codeQL     *config.FeatureSetting
+		liveCodeQL string
+		liveErr    error
+		aiScan     config.FeatureSetting
+		wantState  ChangeState
+	}{
+		{name: "codeql declared true, live not configured", codeQL: &config.FeatureSetting{Enabled: true}, liveCodeQL: "not-configured", aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeUpdate},
+		{name: "codeql declared false", codeQL: &config.FeatureSetting{Enabled: false}, liveCodeQL: "configured", aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeBlocked},
+		{name: "codeql declared false, optional", codeQL: &config.FeatureSetting{Enabled: false}, liveCodeQL: "configured", aiScan: config.FeatureSetting{Enabled: true, Optional: true}, wantState: ChangeManual},
+		{name: "codeql omitted, live not configured", liveCodeQL: "not-configured", aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeBlocked},
+		{name: "codeql omitted, live not configured, optional", liveCodeQL: "not-configured", aiScan: config.FeatureSetting{Enabled: true, Optional: true}, wantState: ChangeManual},
+		{name: "codeql omitted, live read fails", liveErr: &githubapi.APIError{StatusCode: 403}, aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeBlocked},
+		{name: "codeql omitted, live configured", liveCodeQL: "configured", aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeUpdate},
+		{name: "disabled with codeql declared false", codeQL: &config.FeatureSetting{Enabled: false}, liveCodeQL: "not-configured", aiScan: config.FeatureSetting{Enabled: false}, wantState: ChangeNoop},
+		{name: "disabled with codeql omitted and not configured", liveCodeQL: "not-configured", aiScan: config.FeatureSetting{Enabled: false}, wantState: ChangeNoop},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{
+				repository:            githubapi.RepositoryInfo{Visibility: "public"},
+				codeQLDefaultSetup:    githubapi.CodeQLDefaultSetupStatus{State: tc.liveCodeQL},
+				codeQLDefaultSetupErr: tc.liveErr,
+				aiScan:                githubapi.AIScanSetting{PRScan: "disabled"},
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aiScan := tc.aiScan
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+				Security: &config.SecurityConfig{
+					CodeQLDefaultSetup: tc.codeQL,
+					AIPullRequestScan:  &aiScan,
+				},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasChange(plan, "security.aiPullRequestScan", tc.wantState) {
+				t.Fatalf("plan.Changes = %#v, want security.aiPullRequestScan as %s", plan.Changes, tc.wantState)
+			}
+			if tc.wantState == ChangeManual && plan.HasBlocked() {
+				t.Fatalf("optional dependency violation unexpectedly blocked the plan: %#v", plan.Changes)
+			}
+		})
+	}
+}
+
+// TestBuildAIPullRequestScanOnNewRepository guards the create path: before the
+// repository exists only a declared codeqlDefaultSetup can satisfy the
+// dependency, and an omitted one is treated as unsatisfied. Nothing is read
+// from a repository that does not exist yet, so the code-scanning reads
+// failing with 403 must not change the outcome.
+func TestBuildAIPullRequestScanOnNewRepository(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		codeQL     *config.FeatureSetting
+		aiScan     config.FeatureSetting
+		wantState  ChangeState
+		wantCodeQL ChangeState
+	}{
+		{name: "codeql declared true", codeQL: &config.FeatureSetting{Enabled: true}, aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeUpdate, wantCodeQL: ChangeUpdate},
+		{name: "codeql declared true, optional", codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: config.FeatureSetting{Enabled: true, Optional: true}, wantState: ChangeUpdate, wantCodeQL: ChangeUpdate},
+		{name: "codeql omitted", aiScan: config.FeatureSetting{Enabled: true}, wantState: ChangeBlocked},
+		{name: "codeql omitted, optional", aiScan: config.FeatureSetting{Enabled: true, Optional: true}, wantState: ChangeManual},
+		{name: "disabled", aiScan: config.FeatureSetting{Enabled: false}, wantState: ChangeUpdate},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			refused := &githubapi.APIError{StatusCode: 403, Message: "Code scanning is not enabled for this repository."}
+			service := &fakeService{
+				getRepositoryErr:      &githubapi.APIError{StatusCode: 404},
+				codeQLDefaultSetupErr: refused,
+				aiScanErr:             refused,
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aiScan := tc.aiScan
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Create: true},
+				Security: &config.SecurityConfig{
+					CodeQLDefaultSetup: tc.codeQL,
+					AIPullRequestScan:  &aiScan,
+				},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hasChange(plan, "security.aiPullRequestScan", tc.wantState) {
+				t.Fatalf("plan.Changes = %#v, want security.aiPullRequestScan as %s on the create path", plan.Changes, tc.wantState)
+			}
+			if tc.codeQL != nil && !hasChange(plan, "security.codeqlDefaultSetup", tc.wantCodeQL) {
+				t.Fatalf("plan.Changes = %#v, want security.codeqlDefaultSetup as %s on the create path", plan.Changes, tc.wantCodeQL)
+			}
+		})
+	}
+}
+
 func hasChange(plan Plan, resource string, state ChangeState) bool {
 	for _, change := range plan.Changes {
 		if change.Resource == resource && change.State == state {
@@ -1080,6 +1355,8 @@ type fakeService struct {
 	privateVulnerabilityReportErr  error
 	codeQLDefaultSetup             githubapi.CodeQLDefaultSetupStatus
 	codeQLDefaultSetupErr          error
+	aiScan                         githubapi.AIScanSetting
+	aiScanErr                      error
 	selectedActions                githubapi.SelectedActions
 	defaultWorkflowPermissions     githubapi.DefaultWorkflowPermissions
 	environments                   []githubapi.Environment
@@ -1268,6 +1545,14 @@ func (f *fakeService) GetCodeQLDefaultSetup(context.Context, githubapi.Repositor
 }
 
 func (*fakeService) ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error {
+	return nil
+}
+
+func (f *fakeService) GetAIScan(context.Context, githubapi.Repository) (githubapi.AIScanSetting, error) {
+	return f.aiScan, f.aiScanErr
+}
+
+func (*fakeService) UpdateAIScan(context.Context, githubapi.Repository, githubapi.AIScanSetting) error {
 	return nil
 }
 

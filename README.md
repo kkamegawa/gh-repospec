@@ -63,7 +63,7 @@ Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, an
 | `seed` | Exactly one `template`, `directory`, or `zip` source. Differing existing files require a path in `overwrite`. |
 | `actions` | GitHub Actions permissions, variables, secrets, and environments. `allowedActions: selected` requires `selectedActions`, or every Action is blocked. |
 | `rulesets` | Repository rulesets, identified by name. Branch protection is not managed through the legacy API. |
-| `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, and private vulnerability reporting. |
+| `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, AI Scan for pull requests (`aiPullRequestScan`), and private vulnerability reporting. `aiPullRequestScan` is a GitHub public preview that requires GitHub Advanced Security, Copilot, and CodeQL default setup; mark it `optional: true`. |
 | `agents` | Agent variables/secrets and repository-relative locations of MCP, instruction, agent, and skill files supplied by the seed. |
 | `labels` | Issue and pull request labels. Additive: labels absent from configuration are never deleted. |
 | `milestones` | Milestones. Additive: retire one with `state: closed` rather than removing it. |

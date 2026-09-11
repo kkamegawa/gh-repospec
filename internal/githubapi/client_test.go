@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -918,6 +919,107 @@ func TestGetCodeQLDefaultSetup(t *testing.T) {
 	}
 	if status.State != "configured" || len(status.Languages) != 1 || status.Languages[0] != "go" {
 		t.Fatalf("GetCodeQLDefaultSetup() = %#v", status)
+	}
+}
+
+func TestGetAIScan(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			assertions.Errorf("method = %q, want %q", r.Method, http.MethodGet)
+		}
+		if got, want := r.URL.Path, "/repos/octo/demo/code-scanning/ai-scan"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("X-GitHub-Api-Version"), APIVersion; got != want {
+			assertions.Errorf("API version = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"pr_scan":"enabled"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setting, err := client.GetAIScan(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if setting.PRScan != "enabled" {
+		t.Fatalf("GetAIScan() = %#v, want pr_scan enabled", setting)
+	}
+}
+
+func TestGetAIScanReturnsForbiddenAsError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"Advanced Security must be enabled for this repository"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.GetAIScan(context.Background(), Repository{Owner: "octo", Name: "demo"})
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusForbidden {
+		t.Fatalf("GetAIScan() error = %v, want HTTP 403 APIError", err)
+	}
+}
+
+func TestUpdateAIScan(t *testing.T) {
+	t.Parallel()
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPatch {
+			assertions.Errorf("method = %q, want %q", r.Method, http.MethodPatch)
+		}
+		if got, want := r.URL.Path, "/repos/octo/demo/code-scanning/ai-scan"; got != want {
+			assertions.Errorf("path = %q, want %q", got, want)
+		}
+		if got, want := r.Header.Get("X-GitHub-Api-Version"), APIVersion; got != want {
+			assertions.Errorf("API version = %q, want %q", got, want)
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			assertions.Errorf("read body: %v", err)
+		}
+		if got, want := strings.TrimSpace(string(body)), `{"pr_scan":"enabled"}`; got != want {
+			assertions.Errorf("body = %s, want %s", got, want)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UpdateAIScan(context.Background(), Repository{Owner: "octo", Name: "demo"}, AIScanSetting{PRScan: "enabled"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestUpdateAIScanReturnsForbiddenAsError(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"AI Scan is disabled by the organization"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = client.UpdateAIScan(context.Background(), Repository{Owner: "octo", Name: "demo"}, AIScanSetting{PRScan: "enabled"})
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusForbidden {
+		t.Fatalf("UpdateAIScan() error = %v, want HTTP 403 APIError", err)
 	}
 }
 
