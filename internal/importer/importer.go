@@ -48,6 +48,7 @@ type Reader interface {
 	GetAutomatedSecurityFixesEnabled(context.Context, githubapi.Repository) (bool, error)
 	GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error)
 	GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error)
+	GetAIScan(context.Context, githubapi.Repository) (githubapi.AIScanSetting, error)
 	ListAgentVariables(context.Context, githubapi.Repository) (githubapi.AgentVariableList, error)
 	ListAgentSecrets(context.Context, githubapi.Repository) (githubapi.SecretList, error)
 }

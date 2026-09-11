@@ -1,7 +1,8 @@
-# ADR: importと書式を保持するrefresh
+# ADR: gh-repospec
 
-以下の記録はすべて日付2026-09-05、追跡は
-[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)です。
+記録1から5は日付2026-09-05、追跡は
+[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11)です。記録6は日付2026-09-11、
+追跡は[Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
 
@@ -85,3 +86,26 @@ descriptionを持つリポジトリに対して変更を報告し続けます。
 **結果。** 宣言済みの`description`の意味は変わらないため、既存の設定ファイルはすべて有効なままです。
 変更はスキーマ、config型、plannerの比較、applyのリクエストに及び、
 [Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22)で個別に追跡します。
+
+## 6. AI Scan for pull requestsはリポジトリ単位のセキュリティ機能とする
+
+**決定。** `security.aiPullRequestScan`は`FeatureSetting`(`enabled`、`optional`)とし、
+`GET`/`PATCH /repos/{owner}/{repo}/code-scanning/ai-scan`だけで管理します。組織の
+エンドポイントは管理しません。有効化はCodeQL default setupに依存し、この依存は
+`dependabotSecurityUpdates`と`dependabotAlerts`の関係と同じ方法で評価し、同じstageの中で
+CodeQLを先に適用します。`import`は403または404の読み取りを`enabled: false`とは書かず、
+診断として報告します。APIはパブリックプレビューですが、クライアントが既に固定している
+APIバージョン`2026-03-10`で提供されるため、オプトインのフラグや別のリクエストヘッダーは
+不要です。`schemaVersion`は`1`のままです。
+
+**理由。** この拡張は1つのリポジトリを収束させるものであり、組織ポリシーは既に自動化せず
+手動作業として報告しています。`FeatureSetting`を再利用すれば、スキーマ、planner、refresh
+経路が他のセキュリティ機能と揃います。GitHubはAI ScanにCodeQL default setupを要求するため、
+依存を`plan`で確認すれば、`apply`の途中で失敗させずにblockedとして報告できます。403を`false`と
+書くと記録1と矛盾し、しかも毎回のplanで同じ読み取りが失敗するため収束しません。
+
+**結果。** 組織でAI Scanが無効になっているリポジトリでは、宣言が`optional: true`でない限り
+`apply`が失敗します。Advanced Security、Copilotライセンス、Enterpriseと組織による有効化、
+AI creditsの消費は書き込み前に確認できないため、ドキュメントでは`optional: true`を推奨します。
+GitHubがプレビューAPIの形を変えた場合に見直すのは、クライアントの型とこのフィールドだけです。
+この変更より古いバイナリは、新しいキーを未知のフィールドとして拒否します。

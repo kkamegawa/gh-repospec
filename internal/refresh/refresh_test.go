@@ -173,6 +173,63 @@ func TestRefreshJSONReformatsAndPreservesLocalIntent(t *testing.T) {
 	}
 }
 
+func TestRefreshYAMLKeepsAIPullRequestScanWhenLiveStateUnreadable(t *testing.T) {
+	t.Parallel()
+	original := "schemaVersion: 1\n" +
+		"repository:\n  owner: octo\n  name: demo\n  visibility: public\n" +
+		"security:\n" +
+		"  aiPullRequestScan: # needs Advanced Security\n" +
+		"    enabled: true\n" +
+		"    optional: true\n"
+	current := decodeYAML(t, original)
+	// Import leaves aiPullRequestScan nil when GitHub answers 403 or 404.
+	desired := decodeYAML(t, "schemaVersion: 1\n"+
+		"repository:\n  owner: octo\n  name: demo\n  visibility: public\n"+
+		"security: {}\n")
+
+	result, err := Refresh([]byte(original), FormatYAML, current, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Changed {
+		t.Fatalf("Changed = true, want the declaration kept: %#v", result.Plan)
+	}
+	if string(result.Updated) != original {
+		t.Fatalf("Updated = %q, want the original bytes unchanged", result.Updated)
+	}
+}
+
+func TestRefreshYAMLUpdatesDeclaredAIPullRequestScan(t *testing.T) {
+	t.Parallel()
+	original := "schemaVersion: 1\n" +
+		"repository:\n  owner: octo\n  name: demo\n  visibility: public\n" +
+		"security:\n" +
+		"  codeqlDefaultSetup:\n    enabled: true\n" +
+		"  aiPullRequestScan:\n    enabled: false # preview\n    optional: true\n"
+	current := decodeYAML(t, original)
+	desired := decodeYAML(t, "schemaVersion: 1\n"+
+		"repository:\n  owner: octo\n  name: demo\n  visibility: public\n"+
+		"security:\n"+
+		"  codeqlDefaultSetup:\n    enabled: true\n"+
+		"  aiPullRequestScan:\n    enabled: true\n")
+
+	result, err := Refresh([]byte(original), FormatYAML, current, desired)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Replace(original, "enabled: false # preview", "enabled: true # preview", 1)
+	if string(result.Updated) != want {
+		t.Fatalf("Updated = %q, want %q", result.Updated, want)
+	}
+	refreshed, err := decodeStrict(string(result.Updated))
+	if err != nil {
+		t.Fatalf("refreshed document did not decode: %v\n%s", err, result.Updated)
+	}
+	if got := refreshed.Security.AIPullRequestScan; got == nil || !got.Enabled || !got.Optional {
+		t.Fatalf("AIPullRequestScan = %#v, want enabled with optional preserved", got)
+	}
+}
+
 func decodeStrict(data string) (*config.Config, error) {
 	decoder := yamlv3.NewDecoder(strings.NewReader(data))
 	decoder.KnownFields(true)

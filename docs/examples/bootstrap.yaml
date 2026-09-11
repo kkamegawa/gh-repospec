@@ -67,6 +67,11 @@ security:
   codeqlDefaultSetup:
     enabled: true
     optional: true
+  # AI Scan for pull requests is a public preview. It requires GitHub Advanced
+  # Security, Copilot, and CodeQL default setup, so keep it optional.
+  aiPullRequestScan:
+    enabled: true
+    optional: true
   privateVulnerabilityReporting:
     enabled: true
     optional: true

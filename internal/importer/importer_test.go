@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,6 +39,8 @@ type fakeReader struct {
 	privateVR          bool
 	codeQL             githubapi.CodeQLDefaultSetupStatus
 	getCodeQLErr       error
+	aiScan             githubapi.AIScanSetting
+	getAIScanErr       error
 	agentVariables     githubapi.AgentVariableList
 	agentSecrets       githubapi.SecretList
 }
@@ -96,6 +99,9 @@ func (f *fakeReader) GetPrivateVulnerabilityReportingEnabled(context.Context, gi
 func (f *fakeReader) GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error) {
 	return f.codeQL, f.getCodeQLErr
 }
+func (f *fakeReader) GetAIScan(context.Context, githubapi.Repository) (githubapi.AIScanSetting, error) {
+	return f.aiScan, f.getAIScanErr
+}
 func (f *fakeReader) ListAgentVariables(context.Context, githubapi.Repository) (githubapi.AgentVariableList, error) {
 	return f.agentVariables, nil
 }
@@ -110,6 +116,7 @@ func newFakeReader() *fakeReader {
 		repository:    githubapi.RepositoryInfo{Visibility: "public"},
 		rulesetDetail: map[int64]githubapi.Ruleset{},
 		codeQL:        githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
+		aiScan:        githubapi.AIScanSetting{PRScan: "disabled"},
 	}
 }
 
@@ -464,6 +471,7 @@ func TestImportSecurityFeatures(t *testing.T) {
 	reader.securityFixes = false
 	reader.privateVR = true
 	reader.codeQL = githubapi.CodeQLDefaultSetupStatus{State: "configured"}
+	reader.aiScan = githubapi.AIScanSetting{PRScan: "enabled"}
 	reader.repository = githubapi.RepositoryInfo{
 		Visibility: "public",
 		SecurityAndAnalysis: &githubapi.SecurityAndAnalysisStatus{
@@ -495,8 +503,83 @@ func TestImportSecurityFeatures(t *testing.T) {
 	if security.PrivateVulnerabilityReporting == nil || !security.PrivateVulnerabilityReporting.Enabled {
 		t.Fatalf("PrivateVulnerabilityReporting = %#v", security.PrivateVulnerabilityReporting)
 	}
+	if security.AIPullRequestScan == nil || !security.AIPullRequestScan.Enabled {
+		t.Fatalf("AIPullRequestScan = %#v", security.AIPullRequestScan)
+	}
 	if !hasDiagnostic(result.Diagnostics, "security.dependencyGraph") {
 		t.Fatalf("Diagnostics = %#v, want security.dependencyGraph (no read endpoint exists)", result.Diagnostics)
+	}
+	if hasDiagnostic(result.Diagnostics, "security.aiPullRequestScan") {
+		t.Fatalf("Diagnostics = %#v, want no security.aiPullRequestScan diagnostic when its state was read", result.Diagnostics)
+	}
+}
+
+func TestImportMapsAIPullRequestScanStatus(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		prScan string
+		want   bool
+	}{
+		{prScan: "enabled", want: true},
+		{prScan: "disabled", want: false},
+	} {
+		t.Run(tc.prScan, func(t *testing.T) {
+			t.Parallel()
+			reader := newFakeReader()
+			reader.aiScan = githubapi.AIScanSetting{PRScan: tc.prScan}
+
+			result, err := Import(context.Background(), reader, testRepo())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := result.Config.Security.AIPullRequestScan
+			if got == nil || got.Enabled != tc.want || got.Optional {
+				t.Fatalf("AIPullRequestScan = %#v, want enabled=%t with optional left unset (local intent)", got, tc.want)
+			}
+			if hasDiagnostic(result.Diagnostics, "security.aiPullRequestScan") {
+				t.Fatalf("Diagnostics = %#v, want none for security.aiPullRequestScan", result.Diagnostics)
+			}
+		})
+	}
+}
+
+// TestImportReportsUnreadableAIPullRequestScanInsteadOfWritingFalse guards
+// the design rule that a feature whose state cannot be read is reported,
+// not written as disabled: GitHub answers 403 when Advanced Security is not
+// enabled, and an imported enabled: false would never converge.
+func TestImportReportsUnreadableAIPullRequestScanInsteadOfWritingFalse(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{403, 404} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+			reader := newFakeReader()
+			reader.getAIScanErr = &githubapi.APIError{StatusCode: status}
+
+			result, err := Import(context.Background(), reader, testRepo())
+			if err != nil {
+				t.Fatalf("Import() error = %v, want HTTP %d reported as a diagnostic", err, status)
+			}
+			if result.Config.Security.AIPullRequestScan != nil {
+				t.Fatalf("AIPullRequestScan = %#v, want nil when GitHub answered HTTP %d", result.Config.Security.AIPullRequestScan, status)
+			}
+			if !hasDiagnostic(result.Diagnostics, "security.aiPullRequestScan") {
+				t.Fatalf("Diagnostics = %#v, want one for security.aiPullRequestScan", result.Diagnostics)
+			}
+		})
+	}
+}
+
+func TestImportAIPullRequestScanServerErrorIsAnError(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.getAIScanErr = &githubapi.APIError{StatusCode: 500}
+
+	_, err := Import(context.Background(), reader, testRepo())
+	if err == nil {
+		t.Fatal("Import() unexpectedly succeeded despite an HTTP 500 from the AI Scan read")
+	}
+	if !strings.Contains(err.Error(), "AI Scan for pull requests") {
+		t.Fatalf("Import() error = %v, want it to name the AI Scan read", err)
 	}
 }
 
@@ -585,6 +668,7 @@ func TestImportOutputReloadsThroughConfigLoad(t *testing.T) {
 	reader.actionVariables = githubapi.ActionVariableList{Variables: []githubapi.ActionVariable{{Name: "V", Value: "1"}}}
 	reader.environments = []githubapi.Environment{{Name: "production"}}
 	reader.agentVariables = githubapi.AgentVariableList{Variables: []githubapi.AgentVariable{{Name: "A", Value: "1"}}}
+	reader.aiScan = githubapi.AIScanSetting{PRScan: "enabled"}
 
 	result, err := Import(context.Background(), reader, testRepo())
 	if err != nil {

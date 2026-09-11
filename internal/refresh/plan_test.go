@@ -73,6 +73,48 @@ func TestComputePlanFeaturesAndSecurity(t *testing.T) {
 	}
 }
 
+func TestComputePlanRefreshesDeclaredAIPullRequestScan(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Security: &config.SecurityConfig{
+		AIPullRequestScan: &config.FeatureSetting{Enabled: false, Optional: true},
+	}}
+	desired := &config.Config{Security: &config.SecurityConfig{
+		AIPullRequestScan: &config.FeatureSetting{Enabled: true},
+	}}
+	plan := computePlan(current, desired)
+	if len(plan.Scalars) != 1 || !hasScalar(plan.Scalars, "security.aiPullRequestScan.enabled", boolValue(true)) {
+		t.Fatalf("Scalars = %#v, want only security.aiPullRequestScan.enabled=true", plan.Scalars)
+	}
+}
+
+// TestComputePlanKeepsAIPullRequestScanWhenLiveStateUnreadable guards the
+// design rule that a declared security feature whose live state could not
+// be read (import leaves it nil after a 403 or 404) keeps its declaration:
+// no change is planned, so the file is left untouched.
+func TestComputePlanKeepsAIPullRequestScanWhenLiveStateUnreadable(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Security: &config.SecurityConfig{
+		AIPullRequestScan: &config.FeatureSetting{Enabled: true},
+	}}
+	desired := &config.Config{Security: &config.SecurityConfig{}}
+	plan := computePlan(current, desired)
+	if plan.Changed() {
+		t.Fatalf("plan = %#v, want no change for an unreadable live AI Scan state", plan)
+	}
+}
+
+func TestComputePlanNeverIntroducesUndeclaredAIPullRequestScan(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Security: &config.SecurityConfig{}}
+	desired := &config.Config{Security: &config.SecurityConfig{
+		AIPullRequestScan: &config.FeatureSetting{Enabled: true},
+	}}
+	plan := computePlan(current, desired)
+	if hasScalarPath(plan.Scalars, "security.aiPullRequestScan.enabled") {
+		t.Fatalf("Scalars = %#v, want an undeclared aiPullRequestScan left undeclared", plan.Scalars)
+	}
+}
+
 func TestComputePlanLabelsAddsUpdatesAndKeepsNotApplied(t *testing.T) {
 	t.Parallel()
 	current := &config.Config{

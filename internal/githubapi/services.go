@@ -37,6 +37,7 @@ type API interface {
 	ListCustomRepositoryRoles(context.Context, string) ([]CustomRepositoryRole, error)
 	UpdateSecurityAndAnalysis(context.Context, Repository, SecurityAndAnalysisRequest) (RepositoryInfo, error)
 	ConfigureCodeQLDefaultSetup(context.Context, Repository, CodeQLDefaultSetupRequest) error
+	UpdateAIScan(context.Context, Repository, AIScanSetting) error
 	SetPrivateVulnerabilityReporting(context.Context, Repository, bool) error
 	GetVulnerabilityAlertsEnabled(context.Context, Repository) (bool, error)
 	SetVulnerabilityAlerts(context.Context, Repository, bool) error
@@ -249,6 +250,20 @@ func (c *Client) GetCodeQLDefaultSetup(ctx context.Context, repo Repository) (Co
 	var result CodeQLDefaultSetupStatus
 	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/code-scanning/default-setup", nil, &result)
 	return result, err
+}
+
+// GetAIScan retrieves whether AI Scan for pull requests is enabled. GitHub
+// answers 403 when Advanced Security is not enabled for the repository.
+func (c *Client) GetAIScan(ctx context.Context, repo Repository) (AIScanSetting, error) {
+	var result AIScanSetting
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/code-scanning/ai-scan", nil, &result)
+	return result, err
+}
+
+// UpdateAIScan enables or disables AI Scan for pull requests. An organization
+// that has disabled AI Scan prevents a repository from enabling it.
+func (c *Client) UpdateAIScan(ctx context.Context, repo Repository, settings AIScanSetting) error {
+	return c.do(ctx, http.MethodPatch, repoPath(repo)+"/code-scanning/ai-scan", settings, nil)
 }
 
 func (c *Client) SetPrivateVulnerabilityReporting(ctx context.Context, repo Repository, enabled bool) error {

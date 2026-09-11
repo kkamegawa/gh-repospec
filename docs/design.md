@@ -95,6 +95,21 @@ applied first, omitting `dependabotAlerts` falls back to the current state on
 GitHub, and an explicit `dependabotAlerts.enabled: false` alongside enabled
 security updates is reported as blocked.
 
+`security.aiPullRequestScan` controls AI Scan for pull requests, GitHub's
+AI-powered security detection for the languages and frameworks CodeQL does not
+cover. Its API is in public preview and may change. The setting is
+repository-scoped: the organization-level setting, which can prevent a
+repository from enabling AI Scan, is not managed, and a write GitHub rejects
+because of it fails like any other write. Enabling it requires CodeQL default
+setup to be effectively enabled, evaluated the same way as the Dependabot
+dependency above: a declared `codeqlDefaultSetup` takes precedence and is
+applied first, an omitted one falls back to the current state on GitHub, and
+an explicit `codeqlDefaultSetup.enabled: false` alongside an enabled AI Scan is
+reported as blocked. Disabling it has no dependency. AI Scan also needs GitHub
+Advanced Security, a Copilot license, and enablement by the enterprise and
+organization, none of which the tool can verify before writing, so it is best
+declared with `optional: true` wherever those may be missing.
+
 `actions.allowedActions: selected` requires `actions.selectedActions`
 (`githubOwnedAllowed`, `verifiedAllowed`, and an optional `patternsAllowed`
 list). GitHub's selected-actions allowlist otherwise defaults to empty, which
@@ -158,7 +173,9 @@ endpoint returns only identity, target, and enforcement, so each ruleset is
 fetched individually to obtain its rules, conditions, and bypass actors.
 Security state comes from `security_and_analysis` on the repository plus the
 per-feature endpoints; a feature whose state cannot be read is reported rather
-than written as `false`.
+than written as `false`. AI Scan is the case where this matters most: GitHub
+answers its read with 403 when Advanced Security is not enabled, and writing
+that as `enabled: false` would produce a file that never converges.
 
 Server-generated ruleset IDs and timestamps are omitted, because the ruleset
 name is the stable identity. Bypass actors are reversed by actor type:

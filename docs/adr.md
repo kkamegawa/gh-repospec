@@ -1,7 +1,8 @@
-# ADR: import and format-preserving refresh
+# ADR: gh-repospec
 
-Every record below is dated 2026-09-05 and tracks
-[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11).
+Records 1 to 5 are dated 2026-09-05 and track
+[Issue #11](https://github.com/kkamegawa/gh-repospec/issues/11). Record 6 is dated
+2026-09-11 and tracks [Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35).
 
 ## 1. Import manages only what the schema and the file already declare
 
@@ -95,3 +96,29 @@ has the distinction; the asymmetry was an oversight rather than a decision.
 `description` keeps its current meaning. The change touches the schema, the config
 types, the planner comparison, and the apply request, and is tracked separately as
 [Issue #22](https://github.com/kkamegawa/gh-repospec/issues/22).
+
+## 6. AI Scan for pull requests is a repository-scoped security feature
+
+**Decision.** `security.aiPullRequestScan` is a `FeatureSetting` (`enabled`, `optional`)
+managed only through `GET`/`PATCH /repos/{owner}/{repo}/code-scanning/ai-scan`. The
+organization endpoint is not managed. Enabling it depends on CodeQL default setup, which
+is evaluated like `dependabotSecurityUpdates` on `dependabotAlerts` and applied first in
+the same stage. `import` reports a 403 or 404 read as a diagnostic instead of writing
+`enabled: false`. The API is a public preview, but it needs no opt-in flag or separate
+request header, because it is served under the `2026-03-10` API version the client
+already pins. `schemaVersion` stays `1`.
+
+**Rationale.** The extension converges one repository, and organization policy is
+already reported as manual work rather than automated. Reusing `FeatureSetting` keeps
+the schema, the planner, and the refresh paths uniform with the other security
+features. GitHub requires CodeQL default setup for AI Scan, so checking the dependency
+in `plan` reports it as blocked instead of failing partway through `apply`. Writing a
+403 as `false` would contradict record 1 and never converge, because the same read fails
+on every plan.
+
+**Consequences.** A repository whose organization has disabled AI Scan fails at
+`apply` unless the declaration is `optional: true`. Advanced Security, Copilot
+licensing, enterprise and organization enablement, and AI credit consumption cannot be
+checked before writing, so documentation recommends `optional: true`. If GitHub changes
+the preview API's shape, only the client types and this field need revising. Binaries
+older than this change reject the new key as an unknown field.

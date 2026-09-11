@@ -112,6 +112,8 @@ type Service interface {
 	UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error)
 	GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error)
 	ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error
+	GetAIScan(context.Context, githubapi.Repository) (githubapi.AIScanSetting, error)
+	UpdateAIScan(context.Context, githubapi.Repository, githubapi.AIScanSetting) error
 	GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error)
 	SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error
 	GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error)
@@ -871,9 +873,11 @@ func (e *Engine) applyPreContentSecurity(ctx context.Context, repository githuba
 	return nil
 }
 
-// applyRemainingSecurity configures Dependabot, CodeQL default setup, and private
-// vulnerability reporting after repository content, settings, and automation are in
-// place, since these features act on the repository's actual content and workflows.
+// applyRemainingSecurity configures Dependabot, CodeQL default setup, AI Scan for
+// pull requests, and private vulnerability reporting after repository content,
+// settings, and automation are in place, since these features act on the
+// repository's actual content and workflows. CodeQL default setup is applied
+// before AI Scan, which depends on it.
 func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig) error {
 	if desired == nil {
 		return nil
@@ -908,6 +912,30 @@ func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubap
 		if err := e.service.ConfigureCodeQLDefaultSetup(ctx, repository, githubapi.CodeQLDefaultSetupRequest{State: state}); err != nil {
 			if !desired.CodeQLDefaultSetup.Optional {
 				return fmt.Errorf("configure CodeQL default setup for %s: %w", repository, err)
+			}
+		}
+	}
+	if desired.AIPullRequestScan != nil {
+		// Build already blocks enabling AI Scan without CodeQL default setup;
+		// re-checking here keeps a stale plan from reaching a write GitHub is
+		// known to reject. Disabling has no dependency.
+		codeQLEnabled, codeQLKnown := true, true
+		if desired.AIPullRequestScan.Enabled {
+			codeQLEnabled, codeQLKnown = effectiveCodeQLDefaultSetupEnabled(ctx, e.service, repository, true, desired)
+		}
+		if !codeQLKnown || !codeQLEnabled {
+			if !desired.AIPullRequestScan.Optional {
+				return fmt.Errorf("set AI Scan for pull requests for %s: requires security.codeqlDefaultSetup to be enabled", repository)
+			}
+		} else {
+			setting := githubapi.AIScanSetting{PRScan: "disabled"}
+			if desired.AIPullRequestScan.Enabled {
+				setting.PRScan = "enabled"
+			}
+			if err := e.service.UpdateAIScan(ctx, repository, setting); err != nil {
+				if !desired.AIPullRequestScan.Optional {
+					return fmt.Errorf("set AI Scan for pull requests for %s: %w", repository, err)
+				}
 			}
 		}
 	}
@@ -1404,13 +1432,34 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 	}
 	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, securityUpdatesReason, securityUpdatesCurrent, securityUpdatesKnown)
 
+	// The live CodeQL read is only needed when codeqlDefaultSetup is declared;
+	// an undeclared one is read by effectiveCodeQLDefaultSetupEnabled below
+	// instead, so the endpoint is never queried twice in one plan.
 	codeQLCurrent, codeQLKnown := false, false
-	if exists {
+	if exists && desired.CodeQLDefaultSetup != nil {
 		if status, err := service.GetCodeQLDefaultSetup(ctx, repository); err == nil {
 			codeQLCurrent, codeQLKnown = status.State == "configured", true
 		}
 	}
 	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, "", codeQLCurrent, codeQLKnown)
+
+	// AI Scan for pull requests requires CodeQL default setup, which is
+	// applied first in this same stage. Disabling AI Scan has no dependency.
+	aiScanReason := ""
+	if desired.AIPullRequestScan != nil && desired.AIPullRequestScan.Enabled {
+		if codeQLEnabled, known := effectiveCodeQLDefaultSetupEnabled(ctx, service, repository, exists, desired); !known || !codeQLEnabled {
+			aiScanReason = "requires security.codeqlDefaultSetup to be enabled"
+		}
+	}
+	aiScanCurrent, aiScanKnown := false, false
+	if desired.AIPullRequestScan != nil && aiScanReason == "" && exists {
+		// GitHub answers 403 when Advanced Security is not enabled; any
+		// failed read stays unknown and is reported as an update.
+		if setting, err := service.GetAIScan(ctx, repository); err == nil {
+			aiScanCurrent, aiScanKnown = setting.PRScan == "enabled", true
+		}
+	}
+	appendFeatureChange(plan, StageSecurity, "security.aiPullRequestScan", desired.AIPullRequestScan, aiScanReason, aiScanCurrent, aiScanKnown)
 
 	privateVRCurrent, privateVRKnown := false, false
 	if exists {
@@ -1452,6 +1501,26 @@ func effectiveDependabotAlertsEnabled(ctx context.Context, service Service, repo
 		return false, false
 	}
 	return current, true
+}
+
+// effectiveCodeQLDefaultSetupEnabled reports whether CodeQL default setup will
+// be enabled once this run finishes, following the same precedence as
+// effectiveDependabotAlertsEnabled: the declared value first, otherwise the
+// repository's current state on GitHub. known is false when neither source
+// could determine the answer, and callers must then treat a dependency on
+// CodeQL default setup as unsatisfied.
+func effectiveCodeQLDefaultSetupEnabled(ctx context.Context, service Service, repository githubapi.Repository, exists bool, desired *config.SecurityConfig) (enabled, known bool) {
+	if desired.CodeQLDefaultSetup != nil {
+		return desired.CodeQLDefaultSetup.Enabled, true
+	}
+	if !exists {
+		return false, false
+	}
+	status, err := service.GetCodeQLDefaultSetup(ctx, repository)
+	if err != nil {
+		return false, false
+	}
+	return status.State == "configured", true
 }
 
 // appendFeatureChange records one security feature. An empty reason means the

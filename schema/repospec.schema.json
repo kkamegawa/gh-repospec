@@ -128,7 +128,7 @@
     "security": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "dependencyGraph": { "$ref": "#/$defs/feature" }, "dependabotAlerts": { "$ref": "#/$defs/feature" }, "dependabotSecurityUpdates": { "$ref": "#/$defs/feature" }, "secretScanning": { "$ref": "#/$defs/feature" }, "pushProtection": { "$ref": "#/$defs/feature" }, "codeqlDefaultSetup": { "$ref": "#/$defs/feature" }, "privateVulnerabilityReporting": { "$ref": "#/$defs/feature" }
+        "dependencyGraph": { "$ref": "#/$defs/feature" }, "dependabotAlerts": { "$ref": "#/$defs/feature" }, "dependabotSecurityUpdates": { "$ref": "#/$defs/feature" }, "secretScanning": { "$ref": "#/$defs/feature" }, "pushProtection": { "$ref": "#/$defs/feature" }, "codeqlDefaultSetup": { "$ref": "#/$defs/feature" }, "aiPullRequestScan": { "$ref": "#/$defs/feature" }, "privateVulnerabilityReporting": { "$ref": "#/$defs/feature" }
       }
     },
     "agents": {

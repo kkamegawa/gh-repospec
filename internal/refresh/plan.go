@@ -265,6 +265,7 @@ func securityScalarChanges(current, desired *config.SecurityConfig) []ScalarChan
 	feature("security.secretScanning.enabled", current.SecretScanning, desired.SecretScanning)
 	feature("security.pushProtection.enabled", current.PushProtection, desired.PushProtection)
 	feature("security.codeqlDefaultSetup.enabled", current.CodeQLDefaultSetup, desired.CodeQLDefaultSetup)
+	feature("security.aiPullRequestScan.enabled", current.AIPullRequestScan, desired.AIPullRequestScan)
 	feature("security.privateVulnerabilityReporting.enabled", current.PrivateVulnerabilityReporting, desired.PrivateVulnerabilityReporting)
 	return changes
 }
