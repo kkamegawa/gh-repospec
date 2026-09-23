@@ -16,18 +16,16 @@ Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team
 gh extension install kkamegawa/gh-repospec
 ```
 
-ローカル開発では、`bin` 配下へ実行ファイルをビルドしてから、そのディレクトリを拡張機能としてインストールします。
+ローカル開発では、リポジトリルートへ実行ファイルをビルドしてから、ルートを拡張機能としてインストールします。`gh extension install` はディレクトリ名を拡張機能名として扱うため、チェックアウト先のディレクトリ名は `gh-repospec` で、同名の実行ファイルが直下に必要です。
 
 ```bash
-mkdir -p bin
-go build -o bin/gh-repospec ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec ./cmd/gh-repospec
+gh extension install .
 ```
 
 ```powershell
-New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repospec.exe ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec.exe ./cmd/gh-repospec
+gh extension install .
 ```
 
 `plan` または `apply` の前に、GitHub.com に対して GitHub CLI へログインしてください。

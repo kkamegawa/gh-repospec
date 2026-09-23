@@ -16,18 +16,16 @@ Install a published release:
 gh extension install kkamegawa/gh-repospec
 ```
 
-For local development, build the executable under `bin`, then install that directory as an extension.
+For local development, build the executable into the repository root, then install the root as an extension. `gh extension install` uses the directory name as the extension name, so the checkout directory must be named `gh-repospec` and contain an executable of the same name.
 
 ```bash
-mkdir -p bin
-go build -o bin/gh-repospec ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec ./cmd/gh-repospec
+gh extension install .
 ```
 
 ```powershell
-New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repospec.exe ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec.exe ./cmd/gh-repospec
+gh extension install .
 ```
 
 Authenticate GitHub CLI against GitHub.com before using `plan` or `apply`.

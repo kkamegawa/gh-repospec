@@ -14,6 +14,7 @@ wiki-staging/
 
 # Go build, test, and coverage artifacts
 /bin/
+/gh-repospec
 /dist/
 *.exe
 *.test
