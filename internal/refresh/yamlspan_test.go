@@ -15,7 +15,7 @@ func TestScalarValueSpanPlainScalar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, ok := findField(mappingFieldSpans(src, top, len(src)), "repository")
+	repo, ok := findField(mappingFieldSpans(src, top, 0, len(src)), "repository")
 	if !ok {
 		t.Fatal("repository field not found")
 	}
@@ -23,7 +23,7 @@ func TestScalarValueSpanPlainScalar(t *testing.T) {
 	if !ok {
 		t.Fatal("repository value is not a block mapping")
 	}
-	name, ok := findField(mappingFieldSpans(src, nested, repo.end), "name")
+	name, ok := findField(mappingFieldSpans(src, nested, repo.bodyStart(), repo.end), "name")
 	if !ok {
 		t.Fatal("name field not found")
 	}
@@ -47,7 +47,7 @@ func TestScalarValueSpanQuotedScalarsPreserveStyle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 
 	a, _ := findField(spans, "a")
 	start, end, err := fieldValueSpan(src, a)
@@ -79,7 +79,7 @@ func TestScalarValueSpanStopsBeforeTrailingComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, _ := findField(mappingFieldSpans(src, top, len(src)), "owner")
+	owner, _ := findField(mappingFieldSpans(src, top, 0, len(src)), "owner")
 	start, end, err := fieldValueSpan(src, owner)
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +100,7 @@ func TestScalarValueSpanRejectsBlockScalar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	field, _ := findField(mappingFieldSpans(src, top, len(src)), "description")
+	field, _ := findField(mappingFieldSpans(src, top, 0, len(src)), "description")
 	if _, _, err := fieldValueSpan(src, field); err == nil {
 		t.Fatal("fieldValueSpan() unexpectedly accepted a block scalar")
 	}
@@ -117,7 +117,7 @@ func TestMappingFieldSpansPreservesNonAlphabeticalOrderAndComputesEndsFromSiblin
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 	if len(spans) != 3 || spans[0].key != "zebra" || spans[1].key != "apple" || spans[2].key != "mango" {
 		t.Fatalf("spans = %#v, want file order preserved regardless of alphabetical order", spans)
 	}
@@ -152,7 +152,7 @@ func TestSequenceEntrySpansComputeCorrectBoundariesAroundBlockScalar(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 	labels, ok := findField(spans, "labels")
 	if !ok {
 		t.Fatal("labels field not found")
@@ -161,7 +161,7 @@ func TestSequenceEntrySpansComputeCorrectBoundariesAroundBlockScalar(t *testing.
 	if !ok {
 		t.Fatalf("labels value is not a sequence: %T", labels.valueNode)
 	}
-	entries := sequenceEntrySpans(src, seqNode, labels.end)
+	entries := sequenceEntrySpans(src, seqNode, labels.bodyStart(), labels.end)
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2", len(entries))
 	}

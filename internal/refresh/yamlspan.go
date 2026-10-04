@@ -87,21 +87,30 @@ type fieldSpan struct {
 	end int
 }
 
+// bodyStart returns the first offset past this field's own key, where a
+// nested mapping or sequence declared as its value begins to be searched
+// for. Anything before it belongs to an earlier part of the document.
+func (f fieldSpan) bodyStart() int {
+	return f.keyStart + len(f.key)
+}
+
 // mappingFieldSpans returns every field of mapping in document order.
-// sectionEnd is the already-known end of the enclosing construct (the
-// document's length at the top level, or the parent field's own end one
-// level down), needed only for the last field's end.
-func mappingFieldSpans(source []byte, mapping *ast.MappingNode, sectionEnd int) []fieldSpan {
+// [sectionStart, sectionEnd) is the already-known extent of the enclosing
+// construct (the whole document at the top level, the parent field's
+// bodyStart and end one level down, or a sequence entry's own span). It
+// bounds the fallback key search so a key is never located outside the
+// mapping it belongs to, and sectionEnd is also the last field's end.
+func mappingFieldSpans(source []byte, mapping *ast.MappingNode, sectionStart, sectionEnd int) []fieldSpan {
 	entries := mapping.Values
 	spans := make([]fieldSpan, 0, len(entries))
-	cursor := 0
+	cursor := sectionStart
 	for i, entry := range entries {
 		name := mappingKeyName(entry.Key)
-		start := verifiedKeyStart(source, startOfNode(source, entry.Key), name, cursor)
+		start := verifiedKeyStart(source, startOfNode(source, entry.Key), name, cursor, sectionEnd)
 		end := sectionEnd
 		if i+1 < len(entries) {
 			nextName := mappingKeyName(entries[i+1].Key)
-			end = verifiedKeyStart(source, startOfNode(source, entries[i+1].Key), nextName, start)
+			end = verifiedKeyStart(source, startOfNode(source, entries[i+1].Key), nextName, start, sectionEnd)
 		}
 		spans = append(spans, fieldSpan{
 			key:       name,
@@ -116,7 +125,7 @@ func mappingFieldSpans(source []byte, mapping *ast.MappingNode, sectionEnd int) 
 
 // verifiedKeyStart returns computed unless the source bytes at that offset
 // do not actually begin with name, in which case it falls back to a literal
-// search for "name:" at the start of a line at or after searchFrom.
+// search for "name:" at the start of a line within [searchFrom, searchTo).
 //
 // go-yaml's scanner is observed to skew a token's Position.Offset by a small
 // amount for the token immediately following a block scalar (a
@@ -124,11 +133,11 @@ func mappingFieldSpans(source []byte, mapping *ast.MappingNode, sectionEnd int) 
 // this package but still present in the byte stream this package must
 // navigate around correctly). This verification catches that skew, and any
 // other cause of it, before it can turn into a wrong-location edit.
-func verifiedKeyStart(source []byte, computed int, name string, searchFrom int) int {
+func verifiedKeyStart(source []byte, computed int, name string, searchFrom, searchTo int) int {
 	if matchesKeyAt(source, computed, name) {
 		return computed
 	}
-	if found, ok := findKeyLine(source, searchFrom, name); ok {
+	if found, ok := findKeyLine(source, searchFrom, searchTo, name); ok {
 		return found
 	}
 	return computed
@@ -139,31 +148,32 @@ func matchesKeyAt(source []byte, offset int, name string) bool {
 }
 
 // findKeyLine finds "<name>:" (or "<name>" ending a line, unquoted mapping
-// key form) at the first character of a line at or after from. It never
+// key form) at the first character of a line within [from, to). It never
 // matches inside a longer identifier.
-func findKeyLine(source []byte, from int, name string) (int, bool) {
+func findKeyLine(source []byte, from, to int, name string) (int, bool) {
+	to = min(to, len(source))
 	needle := []byte(name)
-	for i := from; i+len(needle) <= len(source); i++ {
+	for i := from; i+len(needle) <= to; i++ {
 		if i > from && source[i-1] != '\n' {
 			continue
 		}
 		// Skip this line's own leading indentation and, for a sequence
 		// entry, its "- " marker.
 		j := i
-		for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+		for j < to && (source[j] == ' ' || source[j] == '\t') {
 			j++
 		}
-		if j < len(source) && source[j] == '-' {
+		if j < to && source[j] == '-' {
 			j++
-			for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+			for j < to && (source[j] == ' ' || source[j] == '\t') {
 				j++
 			}
 		}
-		if j+len(needle) > len(source) || string(source[j:j+len(needle)]) != name {
+		if j+len(needle) > to || string(source[j:j+len(needle)]) != name {
 			continue
 		}
 		after := j + len(needle)
-		if after < len(source) && source[after] != ':' {
+		if after < to && source[after] != ':' {
 			continue
 		}
 		return j, true
@@ -193,9 +203,9 @@ func findField(spans []fieldSpan, name string) (fieldSpan, bool) {
 
 // sequenceEntryStart returns the byte offset of a block sequence entry's "-"
 // marker, given the entry's own value node (the mapping or scalar the "-"
-// introduces). searchFrom bounds a fallback scan the same way
+// introduces). [searchFrom, searchTo) bounds a fallback scan the same way
 // verifiedKeyStart's does, and guards against the same rare offset skew.
-func sequenceEntryStart(source []byte, entry ast.Node, searchFrom int) int {
+func sequenceEntryStart(source []byte, entry ast.Node, searchFrom, searchTo int) int {
 	start := startOfNode(source, entry)
 	lineStart := bytes.LastIndexByte(source[:start], '\n') + 1
 	computed := start
@@ -205,24 +215,25 @@ func sequenceEntryStart(source []byte, entry ast.Node, searchFrom int) int {
 	if computed < len(source) && source[computed] == '-' {
 		return computed
 	}
-	if found, ok := findDashLine(source, searchFrom); ok {
+	if found, ok := findDashLine(source, searchFrom, searchTo); ok {
 		return found
 	}
 	return computed
 }
 
-// findDashLine finds the first line at or after from whose first
+// findDashLine finds the first line within [from, to) whose first
 // non-whitespace character is "-".
-func findDashLine(source []byte, from int) (int, bool) {
-	for i := from; i < len(source); i++ {
+func findDashLine(source []byte, from, to int) (int, bool) {
+	to = min(to, len(source))
+	for i := from; i < to; i++ {
 		if i > from && source[i-1] != '\n' {
 			continue
 		}
 		j := i
-		for j < len(source) && (source[j] == ' ' || source[j] == '\t') {
+		for j < to && (source[j] == ' ' || source[j] == '\t') {
 			j++
 		}
-		if j < len(source) && source[j] == '-' {
+		if j < to && source[j] == '-' {
 			return j, true
 		}
 	}
@@ -230,16 +241,17 @@ func findDashLine(source []byte, from int) (int, bool) {
 }
 
 // sequenceEntrySpans returns every entry of a block sequence, in document
-// order, with the same end-via-next-sibling convention as mappingFieldSpans.
-func sequenceEntrySpans(source []byte, seq *ast.SequenceNode, sectionEnd int) []entrySpan {
+// order, with the same [sectionStart, sectionEnd) bounding and
+// end-via-next-sibling convention as mappingFieldSpans.
+func sequenceEntrySpans(source []byte, seq *ast.SequenceNode, sectionStart, sectionEnd int) []entrySpan {
 	entries := seq.Values
 	spans := make([]entrySpan, 0, len(entries))
-	cursor := 0
+	cursor := sectionStart
 	for i, entry := range entries {
-		start := sequenceEntryStart(source, entry, cursor)
+		start := sequenceEntryStart(source, entry, cursor, sectionEnd)
 		end := sectionEnd
 		if i+1 < len(entries) {
-			end = sequenceEntryStart(source, entries[i+1], start)
+			end = sequenceEntryStart(source, entries[i+1], start, sectionEnd)
 		}
 		spans = append(spans, entrySpan{node: entry, start: start, end: end})
 		cursor = start
@@ -320,9 +332,14 @@ func fieldValueSpan(source []byte, field fieldSpan) (start, end int, err error) 
 // onto the key's own ": " when a full-line comment sits above an enclosing
 // mapping key and the sibling line just before this field carries a
 // trailing comment — the same class of skew verifiedKeyStart guards against
-// for keys. The token offset is used only when the key text cannot be
-// matched at keyStart (a quoted key, "key :") or the value does not begin on
-// the key's own line (an empty value, or one on the following line).
+// for keys. That skew is a small backwards shift within the value's own
+// line, so a derived start on any other line means keyStart itself was not
+// this field's key (a quoted key falls back to a literal search that can
+// land on a same-named key elsewhere in the section). The token offset is
+// therefore used whenever the key text cannot be matched at keyStart (a
+// quoted key, "key :"), the value does not begin on the key's own line (an
+// empty value, or one on the following line), or the derived start is not
+// on the same line as the token offset.
 func fieldValueStart(source []byte, field fieldSpan) int {
 	computed := startOfNode(source, field.valueNode)
 	if !matchesKeyAt(source, field.keyStart, field.key) {
@@ -337,6 +354,9 @@ func fieldValueStart(source []byte, field fieldSpan) int {
 		i++
 	}
 	if i >= len(source) || source[i] == '\n' || source[i] == '\r' || source[i] == '#' {
+		return computed
+	}
+	if bytes.IndexByte(source[min(i, computed):max(i, computed)], '\n') >= 0 {
 		return computed
 	}
 	return i

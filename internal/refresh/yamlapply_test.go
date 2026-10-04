@@ -119,18 +119,89 @@ func TestApplyYAMLValueStartSurvivesCommentOffsetSkew(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			for _, ending := range []string{"\n", "\r\n"} {
-				src := strings.ReplaceAll(tt.src, "\n", ending)
-				want := strings.ReplaceAll(tt.want, "\n", ending)
-				out, err := ApplyYAML([]byte(src), tt.plan)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if string(out) != want {
-					t.Fatalf("out = %q, want %q", out, want)
-				}
-			}
+			assertApplyYAMLBothLineEndings(t, tt.src, tt.plan, tt.want)
 		})
+	}
+}
+
+// A quoted key never matches at its own token offset, so its start falls
+// back to a literal search for the bare name. That search must stay inside
+// the target mapping, and a same-named key it can still reach there (in a
+// deeper child mapping) must never become the edit location.
+func TestApplyYAMLQuotedKeyNeverRedirectsTheEdit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		plan Plan
+		want string
+	}{
+		{
+			name: "same-named key in an earlier sibling mapping",
+			src: "security:\n" +
+				"  codeqlDefaultSetup:\n" +
+				"    enabled: false\n" +
+				"  aiPullRequestScan:\n" +
+				"    \"enabled\": false\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "security.aiPullRequestScan.enabled", Value: boolValue(true)}}},
+			want: "security:\n" +
+				"  codeqlDefaultSetup:\n" +
+				"    enabled: false\n" +
+				"  aiPullRequestScan:\n" +
+				"    \"enabled\": true\n",
+		},
+		{
+			name: "same-named field in an earlier sequence entry",
+			src: "labels:\n" +
+				"  - name: bug\n" +
+				"    color: d73a4a\n" +
+				"  - name: stale\n" +
+				"    \"color\": cccccc\n",
+			plan: Plan{Collections: []CollectionChange{{
+				Path:    "labels",
+				Updated: []EntryUpdate{{Key: "stale", Scalars: []ScalarChange{{Path: "color", Value: stringValue("ff0000")}}}},
+			}}},
+			want: "labels:\n" +
+				"  - name: bug\n" +
+				"    color: d73a4a\n" +
+				"  - name: stale\n" +
+				"    \"color\": ff0000\n",
+		},
+		{
+			name: "same-named key in a deeper child mapping",
+			src: "repository:\n" +
+				"  nested:\n" +
+				"    description: inner\n" +
+				"  \"description\": old\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "repository.description", Value: stringValue("new")}}},
+			want: "repository:\n" +
+				"  nested:\n" +
+				"    description: inner\n" +
+				"  \"description\": new\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertApplyYAMLBothLineEndings(t, tt.src, tt.plan, tt.want)
+		})
+	}
+}
+
+// assertApplyYAMLBothLineEndings applies plan to src and checks the result
+// against want byte for byte, once with LF and once with CRLF line endings.
+func assertApplyYAMLBothLineEndings(t *testing.T, src string, plan Plan, want string) {
+	t.Helper()
+	for _, ending := range []string{"\n", "\r\n"} {
+		src := strings.ReplaceAll(src, "\n", ending)
+		want := strings.ReplaceAll(want, "\n", ending)
+		out, err := ApplyYAML([]byte(src), plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != want {
+			t.Fatalf("out = %q, want %q", out, want)
+		}
 	}
 }
 
