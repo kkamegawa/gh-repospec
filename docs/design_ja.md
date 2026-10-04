@@ -83,6 +83,27 @@ private リポジトリに対してこのエンドポイントを拒否するた
 `dependabotAlerts.enabled: false`を明示したままsecurity updateを有効にした場合は
 blockedとして報告します。
 
+`security.aiPullRequestScan`は、CodeQLが対応していない言語やフレームワークを対象とする
+GitHubのAIによるセキュリティ検出、AI Scan for pull requestsを制御します。このAPIは
+パブリックプレビューであり、仕様が変わる可能性があります。設定はリポジトリ単位です。
+リポジトリでのAI Scanの有効化を妨げ得る組織単位の設定は管理せず、それを理由にGitHubが
+拒否した書き込みは、他の書き込みと同様に失敗します。有効にするにはCodeQL default setupが
+実質的に有効である必要があり、上記のDependabotの依存関係と同じ方法で評価します。
+宣言された`codeqlDefaultSetup`を優先して先に適用し、省略した場合はGitHub上の現在の状態を使い、
+`codeqlDefaultSetup.enabled: false`を明示したままAI Scanを有効にした場合はblockedとして
+報告します。無効化には依存関係はありません。AI ScanにはGitHub Advanced Security、Copilot
+ライセンス、Enterpriseと組織による有効化も必要ですが、ツールは書き込み前にこれらを確認できない
+ため、欠けている可能性がある場合は`optional: true`を付けて宣言することを推奨します。
+
+コードスキャン自体が利用できない場合もあります。GitHub Advanced Securityのないprivate
+リポジトリ、たとえば初期構築しようとしている空の個人リポジトリでは、CodeQL default setupと
+AI Scanの読み取りに403が返ります。`plan`はこの応答を「状態が不明」ではなく「機能が利用できない」
+と扱い、`codeqlDefaultSetup`と`aiPullRequestScan`をGitHubのメッセージを理由としてblocked、
+`optional: true`ならmanualとして報告し、`apply`は書き込みを試みません。updateとして報告すると、
+どの`apply`でも変えられないため、optionalの宣言が永久にドリフトし続けます。権限不足による403も
+同じ経路をたどりますが、必須の宣言は引き続きblockedとなり実行を止めます。リポジトリでコード
+スキャンが有効になれば、次のplanは通常どおり状態を読み取ります。
+
 `actions.allowedActions: selected`を指定する場合は`actions.selectedActions`
 (`githubOwnedAllowed`、`verifiedAllowed`、任意の`patternsAllowed`)が必須です。
 未指定のままだとGitHubのselected-actions allowlistは既定で空になり、Actionを使う
@@ -137,7 +158,9 @@ variableを取り込みます。これらのうち本拡張にまだ存在しな
 [`plan_ja.md`](plan_ja.md)に一覧を示します。うち2つは契約そのものに影響します。rulesetの
 list APIは識別情報・target・enforcementしか返さないため、rules、conditions、bypass actorは
 ruleset単位の詳細取得で得ます。securityの状態はリポジトリの`security_and_analysis`と機能別
-エンドポイントから取得し、状態を取得できない機能は`false`とせず報告します。
+エンドポイントから取得し、状態を取得できない機能は`false`とせず報告します。これが最も
+効くのはAI Scanです。Advanced Securityが無効なリポジトリでは読み取りに403が返り、それを
+`enabled: false`と書くと収束しないファイルになります。
 
 rulesetのIDやtimestampなどサーバー生成値は除外します。ruleset nameが安定した識別子だからです。
 bypass actorはactor typeで逆変換します。`Integration`は`app`、actor IDの1は`orgAdmin`、

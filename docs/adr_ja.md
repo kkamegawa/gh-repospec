@@ -6,6 +6,8 @@ record 1〜5は日付2026-09-05、追跡は
 [Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12)（ドリフト検出）です。
 record 7は日付2026-09-10、追跡は
 [Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30)（ドリフト検出のドキュメント）
+です。record 8は日付2026-09-11、追跡は
+[Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)（AI Scan for pull requests）
 です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
@@ -127,3 +129,48 @@ secret除外を含む終了コード契約の正確な説明を求めていま�
 **結果。** 挙動の変更はありません。訂正はドキュメントのみで、record 4とrecord 6が既に決定した
 内容を反映するものです。実装計画のスコープ境界（「本計画は`docs/design.md`を変更しない」）は
 この理由により置き換えられ、wikiの計画ページにその旨の完了ノートを記載します。
+
+## 8. AI Scan for pull requestsはリポジトリ単位のセキュリティ機能とする
+
+**決定。** `security.aiPullRequestScan`は`FeatureSetting`(`enabled`、`optional`)とし、
+`GET`/`PATCH /repos/{owner}/{repo}/code-scanning/ai-scan`だけで管理します。組織の
+エンドポイントは管理しません。有効化はCodeQL default setupに依存し、この依存は
+`dependabotSecurityUpdates`と`dependabotAlerts`の関係と同じ方法で評価し、同じstageの中で
+CodeQLを先に適用します。`import`は403または404の読み取りを`enabled: false`とは書かず、
+診断として報告します。APIはパブリックプレビューですが、クライアントが既に固定している
+APIバージョン`2026-03-10`で提供されるため、オプトインのフラグや別のリクエストヘッダーは
+不要です。`schemaVersion`は`1`のままです。
+
+**理由。** この拡張は1つのリポジトリを収束させるものであり、組織ポリシーは既に自動化せず
+手動作業として報告しています。`FeatureSetting`を再利用すれば、スキーマ、planner、refresh
+経路が他のセキュリティ機能と揃います。GitHubはAI ScanにCodeQL default setupを要求するため、
+依存を`plan`で確認すれば、`apply`の途中で失敗させずにblockedとして報告できます。403を`false`と
+書くとrecord 1と矛盾し、しかも毎回のplanで同じ読み取りが失敗するため収束しません。
+
+**結果。** 組織でAI Scanが無効になっているリポジトリでは、宣言が`optional: true`でない限り
+`apply`が失敗します。Advanced Security、Copilotライセンス、Enterpriseと組織による有効化、
+AI creditsの消費は書き込み前に確認できないため、ドキュメントでは`optional: true`を推奨します。
+GitHubがプレビューAPIの形を変えた場合に見直すのは、クライアントの型とこのフィールドだけです。
+この変更より古いバイナリは、新しいキーを未知のフィールドとして拒否します。
+
+## 9. 403で拒否されたコードスキャンの読み取りは機能が利用できないことを表す
+
+**決定。** CodeQL default setupまたはAI Scanの読み取りにGitHubが403を返した場合、`plan`は
+そのリポジトリでは機能が利用できないものとして扱います。宣言はGitHubのメッセージを理由として
+blocked、`optional: true`ならmanualとして報告し、`apply`は書き込みを行いません。`import`は
+CodeQL default setupの403を診断として報告してキーを省略します。AI Scanについてはrecord 8が
+既にそうしています。
+
+これはrecord 8を拡張するものです。record 8では、`plan`は読み取れないAI Scanの状態を
+updateとして報告していました。
+
+**理由。** この拡張の主な用途は空のリポジトリの初期構築であり、個人のprivateリポジトリには
+GitHub Advanced Securityがないため、コードスキャンは有効になっていません。このような機能を
+updateとして報告すると、optionalの宣言が永久にドリフトし続けます。どの`apply`でも変えられない
+ため`plan --ci`は毎回`2`で終了し、`optional: true`の目的が損なわれます。また`import`は従来
+CodeQLの403でそのまま失敗しており、record 1と矛盾していました。
+
+**結果。** 権限不足による403は、機能が利用できない場合と区別できず、同じ経路をたどります。
+必須の宣言はblockedとなるため、権限不足で実行が止まるという規則は保たれます。optionalの宣言は
+manualとして報告され、理由にGitHubのメッセージが入るため、利用者は両者を見分けられます。後で
+リポジトリのコードスキャンが有効になれば、次のplanは通常どおり状態を読み取って収束します。

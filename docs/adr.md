@@ -6,7 +6,9 @@ format-preserving refresh). Record 6 is dated 2026-09-08 and tracks
 [Issue #12](https://github.com/kkamegawa/gh-repospec/issues/12) (drift detection).
 Record 7 is dated 2026-09-10 and tracks
 [Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30) (documentation
-for drift detection).
+for drift detection). Record 8 is dated 2026-09-11 and tracks
+[Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35) (AI Scan for pull
+requests).
 
 ## 1. Import manages only what the schema and the file already declare
 
@@ -140,3 +142,54 @@ else would make the example and the document it points to disagree.
 records what records 4 and 6 already decided. The implementation plan's scope boundary
 ("this plan does not change `docs/design.md`") is superseded for that reason, and the
 wiki plan page carries a completion note saying so.
+
+## 8. AI Scan for pull requests is a repository-scoped security feature
+
+**Decision.** `security.aiPullRequestScan` is a `FeatureSetting` (`enabled`, `optional`)
+managed only through `GET`/`PATCH /repos/{owner}/{repo}/code-scanning/ai-scan`. The
+organization endpoint is not managed. Enabling it depends on CodeQL default setup, which
+is evaluated like `dependabotSecurityUpdates` on `dependabotAlerts` and applied first in
+the same stage. `import` reports a 403 or 404 read as a diagnostic instead of writing
+`enabled: false`. The API is a public preview, but it needs no opt-in flag or separate
+request header, because it is served under the `2026-03-10` API version the client
+already pins. `schemaVersion` stays `1`.
+
+**Rationale.** The extension converges one repository, and organization policy is
+already reported as manual work rather than automated. Reusing `FeatureSetting` keeps
+the schema, the planner, and the refresh paths uniform with the other security
+features. GitHub requires CodeQL default setup for AI Scan, so checking the dependency
+in `plan` reports it as blocked instead of failing partway through `apply`. Writing a
+403 as `false` would contradict record 1 and never converge, because the same read fails
+on every plan.
+
+**Consequences.** A repository whose organization has disabled AI Scan fails at
+`apply` unless the declaration is `optional: true`. Advanced Security, Copilot
+licensing, enterprise and organization enablement, and AI credit consumption cannot be
+checked before writing, so documentation recommends `optional: true`. If GitHub changes
+the preview API's shape, only the client types and this field need revising. Binaries
+older than this change reject the new key as an unknown field.
+
+## 9. A code-scanning read refused with 403 means the feature is unavailable
+
+**Decision.** When GitHub answers the CodeQL default setup or AI Scan read with 403,
+`plan` treats the feature as unavailable on that repository: the declaration is
+reported as blocked, or as manual when `optional: true`, with GitHub's message as the
+reason, and `apply` skips the write. `import` reports a CodeQL default setup 403 as a
+diagnostic and omits the key, as record 8 already does for AI Scan.
+
+This extends record 8, under which `plan` reported an unreadable AI Scan state as an
+update.
+
+**Rationale.** The extension's primary use is bootstrapping an empty repository, and a
+private personal repository has no GitHub Advanced Security, so code scanning is not
+enabled there. Reporting such a feature as an update makes an optional declaration
+drift forever — no `apply` can change it, so `plan --ci` exits `2` on every run — which
+defeats the purpose of `optional: true`. `import` previously failed outright on the
+CodeQL 403, which contradicts record 1.
+
+**Consequences.** A 403 caused by insufficient permissions cannot be told apart from an
+unavailable feature and takes the same path. A required declaration is blocked, so
+authorization failures still stop the run; an optional one is reported as manual, and
+its reason carries GitHub's message so the user can tell the two apart. If code scanning
+is later enabled for the repository, the next plan reads the state normally and
+converges.

@@ -16,18 +16,16 @@ Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team
 gh extension install kkamegawa/gh-repospec
 ```
 
-ローカル開発では、`bin` 配下へ実行ファイルをビルドしてから、そのディレクトリを拡張機能としてインストールします。
+ローカル開発では、リポジトリルートへ実行ファイルをビルドしてから、ルートを拡張機能としてインストールします。`gh extension install` はディレクトリ名を拡張機能名として扱うため、チェックアウト先のディレクトリ名は `gh-repospec` で、同名の実行ファイルが直下に必要です。
 
 ```bash
-mkdir -p bin
-go build -o bin/gh-repospec ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec ./cmd/gh-repospec
+gh extension install .
 ```
 
 ```powershell
-New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repospec.exe ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec.exe ./cmd/gh-repospec
+gh extension install .
 ```
 
 `plan` または `apply` の前に、GitHub.com に対して GitHub CLI へログインしてください。
@@ -62,7 +60,7 @@ gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 | `seed` | `template`、`directory`、`zip` のいずれか 1 つ。異なる既存ファイルは `overwrite` への明示が必要。 |
 | `actions` | GitHub Actions の権限、variables、secrets、environments。`allowedActions: selected` には `selectedActions` が必須(未設定だと全Actionがブロックされる)。 |
 | `rulesets` | 名前で識別する repository ruleset。旧 branch protection API は使用しない。 |
-| `security` | dependency graph、Dependabot、secret scanning、push protection、CodeQL default setup、private vulnerability reporting。 |
+| `security` | dependency graph、Dependabot、secret scanning、push protection、CodeQL default setup、AI Scan for pull requests(`aiPullRequestScan`)、private vulnerability reporting。`aiPullRequestScan` は GitHub のパブリックプレビューで、GitHub Advanced Security、Copilot、CodeQL default setup が必要なため `optional: true` を推奨。 |
 | `agents` | seed が提供する MCP、instructions、agents、skills の repository-relative path と agent variables / secrets。 |
 | `labels` | issue と pull request の label。追加的で、設定にない label は削除しません。 |
 | `milestones` | milestone。追加的で、廃止は削除ではなく `state: closed` で表します。 |

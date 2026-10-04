@@ -134,6 +134,33 @@ func TestApplyYAMLValueStartSurvivesCommentOffsetSkew(t *testing.T) {
 	}
 }
 
+func TestApplyYAMLUpdatesSecurityAIPullRequestScanPreservingComments(t *testing.T) {
+	t.Parallel()
+	src := "security:\n" +
+		"  codeqlDefaultSetup:\n" +
+		"    enabled: true\n" +
+		"  # Public preview; needs Advanced Security.\n" +
+		"  aiPullRequestScan:\n" +
+		"    optional: true\n" +
+		"    enabled: false # flip once licensed\n"
+	out, err := ApplyYAML([]byte(src), Plan{Scalars: []ScalarChange{
+		{Path: "security.aiPullRequestScan.enabled", Value: boolValue(true)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "security:\n" +
+		"  codeqlDefaultSetup:\n" +
+		"    enabled: true\n" +
+		"  # Public preview; needs Advanced Security.\n" +
+		"  aiPullRequestScan:\n" +
+		"    optional: true\n" +
+		"    enabled: true # flip once licensed\n"
+	if string(out) != want {
+		t.Fatalf("out = %q, want %q", out, want)
+	}
+}
+
 func TestApplyYAMLUpdatesLabelEntryLeavesOthersUntouched(t *testing.T) {
 	t.Parallel()
 	src := "labels:\n" +

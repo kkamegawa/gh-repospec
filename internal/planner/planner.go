@@ -34,9 +34,9 @@ const (
 // settings so they cannot prevent repository initialization. Security settings
 // are split in two: StageSecurityPre (secret scanning, push protection) runs
 // before files so the initial commit is protected; StageSecurity (dependency
-// graph, Dependabot, CodeQL default setup, private vulnerability reporting)
-// runs after settings and automation, once there is repository content for
-// those features to act on. StageArchive is last of all: archiving a
+// graph, Dependabot, CodeQL default setup, AI Scan for pull requests, private
+// vulnerability reporting) runs after settings and automation, once there is
+// repository content for those features to act on. StageArchive is last of all: archiving a
 // repository makes it read-only, so every other stage must already be applied.
 // Unarchiving happens in StageRepository instead, before anything else, since
 // GitHub rejects writes to an archived repository.
@@ -130,6 +130,8 @@ type Service interface {
 	UpdateSecurityAndAnalysis(context.Context, githubapi.Repository, githubapi.SecurityAndAnalysisRequest) (githubapi.RepositoryInfo, error)
 	GetCodeQLDefaultSetup(context.Context, githubapi.Repository) (githubapi.CodeQLDefaultSetupStatus, error)
 	ConfigureCodeQLDefaultSetup(context.Context, githubapi.Repository, githubapi.CodeQLDefaultSetupRequest) error
+	GetAIScan(context.Context, githubapi.Repository) (githubapi.AIScanSetting, error)
+	UpdateAIScan(context.Context, githubapi.Repository, githubapi.AIScanSetting) error
 	GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error)
 	SetPrivateVulnerabilityReporting(context.Context, githubapi.Repository, bool) error
 	GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error)
@@ -893,9 +895,15 @@ func (e *Engine) applyPreContentSecurity(ctx context.Context, repository githuba
 	return nil
 }
 
-// applyRemainingSecurity configures Dependabot, CodeQL default setup, and private
-// vulnerability reporting after repository content, settings, and automation are in
-// place, since these features act on the repository's actual content and workflows.
+// applyRemainingSecurity configures Dependabot, CodeQL default setup, AI Scan for
+// pull requests, and private vulnerability reporting after repository content,
+// settings, and automation are in place, since these features act on the
+// repository's actual content and workflows. CodeQL default setup is applied
+// before AI Scan, which depends on it. Neither is written when GitHub refuses
+// the code-scanning read with 403: Apply already refuses a plan in which a
+// required declaration is blocked for that reason, so here an optional one
+// is skipped and a required one — reachable only when the repository was
+// created in this run, before its state could be read — stops the run.
 func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig) error {
 	if desired == nil {
 		return nil
@@ -922,14 +930,77 @@ func (e *Engine) applyRemainingSecurity(ctx context.Context, repository githubap
 			}
 		}
 	}
+	// The CodeQL read both detects unavailable code scanning and, when
+	// codeqlDefaultSetup is not declared, answers AI Scan's dependency re-check
+	// below. CodeQL default setup is only written when it is declared, so the
+	// state read here still holds when that re-check uses it.
+	var codeQLStatus githubapi.CodeQLDefaultSetupStatus
+	codeQLKnown, codeScanningReason := false, ""
+	if desired.CodeQLDefaultSetup != nil || desired.AIPullRequestScan != nil {
+		codeQLStatus, codeQLKnown, codeScanningReason = readCodeQLDefaultSetup(ctx, e.service, repository)
+	}
+	// codeQLWriteFailed records an optional CodeQL default setup write that
+	// failed in this run, so the declared value cannot be taken as effective
+	// by AI Scan's dependency re-check below.
+	codeQLWriteFailed := false
 	if desired.CodeQLDefaultSetup != nil {
-		state := "not-configured"
-		if desired.CodeQLDefaultSetup.Enabled {
-			state = "configured"
-		}
-		if err := e.service.ConfigureCodeQLDefaultSetup(ctx, repository, githubapi.CodeQLDefaultSetupRequest{State: state}); err != nil {
+		if codeScanningReason != "" {
 			if !desired.CodeQLDefaultSetup.Optional {
-				return fmt.Errorf("configure CodeQL default setup for %s: %w", repository, err)
+				return fmt.Errorf("configure CodeQL default setup for %s: %s", repository, codeScanningReason)
+			}
+		} else {
+			state := "not-configured"
+			if desired.CodeQLDefaultSetup.Enabled {
+				state = "configured"
+			}
+			if err := e.service.ConfigureCodeQLDefaultSetup(ctx, repository, githubapi.CodeQLDefaultSetupRequest{State: state}); err != nil {
+				if !desired.CodeQLDefaultSetup.Optional {
+					return fmt.Errorf("configure CodeQL default setup for %s: %w", repository, err)
+				}
+				codeQLWriteFailed = true
+			}
+		}
+	}
+	if desired.AIPullRequestScan != nil {
+		// As in Build, unavailability takes precedence over the dependency,
+		// and a 403 from the AI Scan read itself also means the feature is
+		// unavailable. Any other failed read does not prevent the write.
+		aiScanReason := codeScanningReason
+		if aiScanReason == "" {
+			if _, err := e.service.GetAIScan(ctx, repository); err != nil {
+				aiScanReason = codeScanningUnavailableReason(err)
+			}
+		}
+		// Build already blocks enabling AI Scan without CodeQL default setup;
+		// re-checking here keeps a stale plan from reaching a write GitHub is
+		// known to reject. A CodeQL default setup write that failed in this run
+		// leaves the dependency unsatisfied whatever was declared. Disabling
+		// has no dependency.
+		codeQLEnabled, codeQLDependencyKnown := true, true
+		if aiScanReason == "" && desired.AIPullRequestScan.Enabled {
+			codeQLEnabled, codeQLDependencyKnown = effectiveCodeQLDefaultSetupEnabled(desired, codeQLStatus, codeQLKnown)
+			if codeQLWriteFailed {
+				codeQLEnabled = false
+			}
+		}
+		switch {
+		case aiScanReason != "":
+			if !desired.AIPullRequestScan.Optional {
+				return fmt.Errorf("set AI Scan for pull requests for %s: %s", repository, aiScanReason)
+			}
+		case !codeQLDependencyKnown || !codeQLEnabled:
+			if !desired.AIPullRequestScan.Optional {
+				return fmt.Errorf("set AI Scan for pull requests for %s: requires security.codeqlDefaultSetup to be enabled", repository)
+			}
+		default:
+			setting := githubapi.AIScanSetting{PRScan: "disabled"}
+			if desired.AIPullRequestScan.Enabled {
+				setting.PRScan = "enabled"
+			}
+			if err := e.service.UpdateAIScan(ctx, repository, setting); err != nil {
+				if !desired.AIPullRequestScan.Optional {
+					return fmt.Errorf("set AI Scan for pull requests for %s: %w", repository, err)
+				}
 			}
 		}
 	}
@@ -1436,13 +1507,42 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 	}
 	appendFeatureChange(plan, StageSecurity, "security.dependabotSecurityUpdates", desired.DependabotSecurityUpdates, securityUpdatesReason, securityUpdatesCurrent, securityUpdatesKnown)
 
-	codeQLCurrent, codeQLKnown := false, false
-	if exists {
-		if status, err := service.GetCodeQLDefaultSetup(ctx, repository); err == nil {
-			codeQLCurrent, codeQLKnown = status.State == "configured", true
+	// CodeQL default setup is read once, and only when a feature that depends
+	// on code scanning is declared: codeqlDefaultSetup converges against it,
+	// and aiPullRequestScan both depends on it and shares its availability.
+	// A 403 means code scanning is unavailable on this repository (see
+	// docs/adr.md record 9), so both declarations carry that reason instead
+	// of being reported as updates no apply could ever converge.
+	var codeQLStatus githubapi.CodeQLDefaultSetupStatus
+	codeQLKnown, codeScanningReason := false, ""
+	if exists && (desired.CodeQLDefaultSetup != nil || desired.AIPullRequestScan != nil) {
+		codeQLStatus, codeQLKnown, codeScanningReason = readCodeQLDefaultSetup(ctx, service, repository)
+	}
+	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, codeScanningReason, codeQLStatus.State == "configured", codeQLKnown)
+
+	// AI Scan for pull requests requires CodeQL default setup, which is
+	// applied first in this same stage. Disabling AI Scan has no dependency.
+	// Unavailability takes precedence over the dependency: when code scanning
+	// is refused, satisfying the dependency would not make AI Scan settable.
+	aiScanReason := codeScanningReason
+	aiScanCurrent, aiScanKnown := false, false
+	if desired.AIPullRequestScan != nil && aiScanReason == "" && exists {
+		// A 403 here means AI Scan is unavailable even though CodeQL default
+		// setup is readable; any other failed read stays unknown and is
+		// reported as an update.
+		setting, err := service.GetAIScan(ctx, repository)
+		if err == nil {
+			aiScanCurrent, aiScanKnown = setting.PRScan == "enabled", true
+		} else {
+			aiScanReason = codeScanningUnavailableReason(err)
 		}
 	}
-	appendFeatureChange(plan, StageSecurity, "security.codeqlDefaultSetup", desired.CodeQLDefaultSetup, "", codeQLCurrent, codeQLKnown)
+	if desired.AIPullRequestScan != nil && desired.AIPullRequestScan.Enabled && aiScanReason == "" {
+		if codeQLEnabled, known := effectiveCodeQLDefaultSetupEnabled(desired, codeQLStatus, codeQLKnown); !known || !codeQLEnabled {
+			aiScanReason = "requires security.codeqlDefaultSetup to be enabled"
+		}
+	}
+	appendFeatureChange(plan, StageSecurity, "security.aiPullRequestScan", desired.AIPullRequestScan, aiScanReason, aiScanCurrent, aiScanKnown)
 
 	privateVRCurrent, privateVRKnown := false, false
 	if exists {
@@ -1484,6 +1584,54 @@ func effectiveDependabotAlertsEnabled(ctx context.Context, service Service, repo
 		return false, false
 	}
 	return current, true
+}
+
+// effectiveCodeQLDefaultSetupEnabled reports whether CodeQL default setup will
+// be enabled once this run finishes, following the same precedence as
+// effectiveDependabotAlertsEnabled: the declared value first, otherwise the
+// repository's current state on GitHub, as already read by
+// readCodeQLDefaultSetup. liveKnown is false when that state was not read —
+// the repository does not exist yet or the read failed — and known is then
+// false too, so callers must treat a dependency on CodeQL default setup as
+// unsatisfied.
+func effectiveCodeQLDefaultSetupEnabled(desired *config.SecurityConfig, live githubapi.CodeQLDefaultSetupStatus, liveKnown bool) (enabled, known bool) {
+	if desired.CodeQLDefaultSetup != nil {
+		return desired.CodeQLDefaultSetup.Enabled, true
+	}
+	if !liveKnown {
+		return false, false
+	}
+	return live.State == "configured", true
+}
+
+// readCodeQLDefaultSetup reads the repository's CodeQL default setup state.
+// known is true only when the read succeeded. unavailable is non-empty when
+// GitHub refused the read with 403, meaning code scanning is not available
+// for the repository; any other failure leaves both known false and
+// unavailable empty, so the state is merely unknown.
+func readCodeQLDefaultSetup(ctx context.Context, service Service, repository githubapi.Repository) (status githubapi.CodeQLDefaultSetupStatus, known bool, unavailable string) {
+	status, err := service.GetCodeQLDefaultSetup(ctx, repository)
+	if err != nil {
+		return githubapi.CodeQLDefaultSetupStatus{}, false, codeScanningUnavailableReason(err)
+	}
+	return status, true, ""
+}
+
+// codeScanningUnavailableReason turns a code-scanning read GitHub refused with
+// 403 into the reason reported for the declaration, carrying GitHub's own
+// message so an unavailable feature can be told apart from missing
+// permissions. It returns an empty string for any other error. See
+// docs/adr.md record 9.
+func codeScanningUnavailableReason(err error) string {
+	if !githubapi.IsForbidden(err) {
+		return ""
+	}
+	const reason = "code scanning is not available for this repository"
+	var apiError *githubapi.APIError
+	if errors.As(err, &apiError) && apiError.Message != "" {
+		return reason + ": " + apiError.Message
+	}
+	return reason + " (HTTP 403)"
 }
 
 // appendFeatureChange records one security feature. An empty reason means the

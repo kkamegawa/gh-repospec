@@ -245,6 +245,7 @@ type SecurityConfig struct {
 	SecretScanning                *FeatureSetting `json:"secretScanning,omitempty" yaml:"secretScanning,omitempty"`
 	PushProtection                *FeatureSetting `json:"pushProtection,omitempty" yaml:"pushProtection,omitempty"`
 	CodeQLDefaultSetup            *FeatureSetting `json:"codeqlDefaultSetup,omitempty" yaml:"codeqlDefaultSetup,omitempty"`
+	AIPullRequestScan             *FeatureSetting `json:"aiPullRequestScan,omitempty" yaml:"aiPullRequestScan,omitempty"`
 	PrivateVulnerabilityReporting *FeatureSetting `json:"privateVulnerabilityReporting,omitempty" yaml:"privateVulnerabilityReporting,omitempty"`
 }
 

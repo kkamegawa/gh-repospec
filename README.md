@@ -16,18 +16,16 @@ Install a published release:
 gh extension install kkamegawa/gh-repospec
 ```
 
-For local development, build the executable under `bin`, then install that directory as an extension.
+For local development, build the executable into the repository root, then install the root as an extension. `gh extension install` uses the directory name as the extension name, so the checkout directory must be named `gh-repospec` and contain an executable of the same name.
 
 ```bash
-mkdir -p bin
-go build -o bin/gh-repospec ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec ./cmd/gh-repospec
+gh extension install .
 ```
 
 ```powershell
-New-Item -ItemType Directory -Path bin -Force
-go build -o bin/gh-repospec.exe ./cmd/gh-repospec
-gh extension install ./bin
+go build -o gh-repospec.exe ./cmd/gh-repospec
+gh extension install .
 ```
 
 Authenticate GitHub CLI against GitHub.com before using `plan` or `apply`.
@@ -63,7 +61,7 @@ Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, an
 | `seed` | Exactly one `template`, `directory`, or `zip` source. Differing existing files require a path in `overwrite`. |
 | `actions` | GitHub Actions permissions, variables, secrets, and environments. `allowedActions: selected` requires `selectedActions`, or every Action is blocked. |
 | `rulesets` | Repository rulesets, identified by name. Branch protection is not managed through the legacy API. |
-| `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, and private vulnerability reporting. |
+| `security` | Dependency graph, Dependabot, secret scanning, push protection, CodeQL default setup, AI Scan for pull requests (`aiPullRequestScan`), and private vulnerability reporting. `aiPullRequestScan` is a GitHub public preview that requires GitHub Advanced Security, Copilot, and CodeQL default setup; mark it `optional: true`. |
 | `agents` | Agent variables/secrets and repository-relative locations of MCP, instruction, agent, and skill files supplied by the seed. |
 | `labels` | Issue and pull request labels. Additive: labels absent from configuration are never deleted. |
 | `milestones` | Milestones. Additive: retire one with `state: closed` rather than removing it. |

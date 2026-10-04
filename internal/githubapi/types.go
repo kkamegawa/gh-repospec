@@ -237,6 +237,12 @@ type CodeQLDefaultSetupStatus struct {
 	QuerySuite string   `json:"query_suite,omitempty"`
 }
 
+// AIScanSetting is the request and response body of the repository AI Scan
+// endpoints (public preview). PRScan is "enabled" or "disabled".
+type AIScanSetting struct {
+	PRScan string `json:"pr_scan"`
+}
+
 // automatedSecurityFixesStatus is the response body GitHub returns when
 // Dependabot security updates are enabled; a 404 means disabled and carries
 // no body, matching GetVulnerabilityAlertsEnabled's pattern.

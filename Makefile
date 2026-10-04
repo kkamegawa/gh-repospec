@@ -4,7 +4,7 @@ BINARY := bin/gh-repospec
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/kkamegawa/gh-repospec/internal/cli.Version=$(VERSION)
 
-.PHONY: all test test-race vet build lint fmt clean
+.PHONY: all test test-race vet build install-local lint fmt clean
 
 all: test vet build
 
@@ -21,6 +21,10 @@ build:
 	mkdir -p bin
 	go build -ldflags="$(LDFLAGS)" -o $(BINARY) $(COMMAND)
 
+install-local:
+	go build -ldflags="$(LDFLAGS)" -o gh-repospec $(COMMAND)
+	gh extension install .
+
 lint:
 	golangci-lint run $(GO_PACKAGES)
 
@@ -28,4 +32,4 @@ fmt:
 	golangci-lint fmt $(GO_PACKAGES)
 
 clean:
-	rm -rf bin dist
+	rm -rf bin dist gh-repospec

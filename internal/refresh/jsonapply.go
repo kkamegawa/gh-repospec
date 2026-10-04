@@ -126,6 +126,8 @@ func applyScalarsToConfig(cfg *config.Config, scalars []ScalarChange) error {
 			cfg.Security.PushProtection.Enabled = sc.Value.Bool
 		case "security.codeqlDefaultSetup.enabled":
 			cfg.Security.CodeQLDefaultSetup.Enabled = sc.Value.Bool
+		case "security.aiPullRequestScan.enabled":
+			cfg.Security.AIPullRequestScan.Enabled = sc.Value.Bool
 		case "security.privateVulnerabilityReporting.enabled":
 			cfg.Security.PrivateVulnerabilityReporting.Enabled = sc.Value.Bool
 		default:
