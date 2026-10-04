@@ -124,10 +124,9 @@ func TestApplyYAMLValueStartSurvivesCommentOffsetSkew(t *testing.T) {
 	}
 }
 
-// A quoted key never matches at its own token offset, so its start falls
-// back to a literal search for the bare name. That search must stay inside
-// the target mapping, and a same-named key it can still reach there (in a
-// deeper child mapping) must never become the edit location.
+// A quoted key must be located as itself: a same-named bare key elsewhere —
+// in an earlier sibling mapping, an earlier sequence entry, or a deeper
+// child mapping of the same section — must never become the edit location.
 func TestApplyYAMLQuotedKeyNeverRedirectsTheEdit(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -186,6 +185,36 @@ func TestApplyYAMLQuotedKeyNeverRedirectsTheEdit(t *testing.T) {
 			assertApplyYAMLBothLineEndings(t, tt.src, tt.plan, tt.want)
 		})
 	}
+}
+
+// Appending after the last label entry relies on labels' own end, which is
+// the next top-level key's start. When that key follows a block scalar its
+// token offset is skewed, and the fallback search must find the top-level
+// key rather than the same-named key nested in the last label entry, or the
+// new entry would be spliced into the middle of that entry.
+func TestApplyYAMLAppendsLabelPastSameNamedNestedKeyAfterBlockScalar(t *testing.T) {
+	t.Parallel()
+	src := "labels:\n" +
+		"  - name: bug\n" +
+		"    milestones: deeper\n" +
+		"    description: |\n" +
+		"      text\n" +
+		"milestones:\n" +
+		"  - title: v1\n"
+	plan := Plan{Collections: []CollectionChange{{
+		Path:  "labels",
+		Added: []EntryAddition{{Key: "x", Fields: []FieldValue{{Name: "name", Value: stringValue("x")}, {Name: "color", Value: stringValue("ffffff")}}}},
+	}}}
+	want := "labels:\n" +
+		"  - name: bug\n" +
+		"    milestones: deeper\n" +
+		"    description: |\n" +
+		"      text\n" +
+		"  - name: x\n" +
+		"    color: ffffff\n" +
+		"milestones:\n" +
+		"  - title: v1\n"
+	assertApplyYAMLBothLineEndings(t, src, plan, want)
 }
 
 // assertApplyYAMLBothLineEndings applies plan to src and checks the result
