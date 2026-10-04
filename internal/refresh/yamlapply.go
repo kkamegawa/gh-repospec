@@ -84,7 +84,7 @@ func scalarReplacement(source []byte, topSpans []fieldSpan, change ScalarChange)
 		spans = mappingFieldSpans(source, nested, field.end)
 	}
 
-	start, end, err := scalarValueSpan(source, target.valueNode)
+	start, end, err := fieldValueSpan(source, target)
 	if err != nil {
 		return replacement{}, err
 	}
@@ -264,7 +264,7 @@ func collectionReplacements(source []byte, topSpans []fieldSpan, change Collecti
 				// for this pass and is reported rather than guessed at.
 				return nil, fmt.Errorf("entry %q has no field %q to update", upd.Key, sc.Path)
 			}
-			start, end, err := scalarValueSpan(source, field.valueNode)
+			start, end, err := fieldValueSpan(source, field)
 			if err != nil {
 				return nil, fmt.Errorf("entry %q field %q: %w", upd.Key, sc.Path, err)
 			}

@@ -62,6 +62,78 @@ func TestApplyYAMLUpdatesNestedActionsSelectedActionsField(t *testing.T) {
 	}
 }
 
+// A full-line comment above a mapping key combined with a trailing comment
+// on the sibling line just before the edited field skews go-yaml's value
+// token offset backwards onto the key's own ": ". The edit must still land
+// on the value alone.
+func TestApplyYAMLValueStartSurvivesCommentOffsetSkew(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		plan Plan
+		want string
+	}{
+		{
+			name: "nested security field",
+			src: "security:\n" +
+				"  # note\n" +
+				"  aiPullRequestScan:\n" +
+				"    optional: true # x\n" +
+				"    enabled: false\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "security.aiPullRequestScan.enabled", Value: boolValue(true)}}},
+			want: "security:\n" +
+				"  # note\n" +
+				"  aiPullRequestScan:\n" +
+				"    optional: true # x\n" +
+				"    enabled: true\n",
+		},
+		{
+			name: "top-level repository field",
+			src: "# note\n" +
+				"repository:\n" +
+				"  visibility: public # x\n" +
+				"  description: old\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "repository.description", Value: stringValue("new")}}},
+			want: "# note\n" +
+				"repository:\n" +
+				"  visibility: public # x\n" +
+				"  description: new\n",
+		},
+		{
+			name: "label entry field",
+			src: "labels:\n" +
+				"  # note\n" +
+				"  - name: bug # x\n" +
+				"    color: d73a4a\n",
+			plan: Plan{Collections: []CollectionChange{{
+				Path:    "labels",
+				Updated: []EntryUpdate{{Key: "bug", Scalars: []ScalarChange{{Path: "color", Value: stringValue("ff0000")}}}},
+			}}},
+			want: "labels:\n" +
+				"  # note\n" +
+				"  - name: bug # x\n" +
+				"    color: ff0000\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			for _, ending := range []string{"\n", "\r\n"} {
+				src := strings.ReplaceAll(tt.src, "\n", ending)
+				want := strings.ReplaceAll(tt.want, "\n", ending)
+				out, err := ApplyYAML([]byte(src), tt.plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(out) != want {
+					t.Fatalf("out = %q, want %q", out, want)
+				}
+			}
+		})
+	}
+}
+
 func TestApplyYAMLUpdatesLabelEntryLeavesOthersUntouched(t *testing.T) {
 	t.Parallel()
 	src := "labels:\n" +

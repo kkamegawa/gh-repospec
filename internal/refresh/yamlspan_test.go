@@ -27,7 +27,7 @@ func TestScalarValueSpanPlainScalar(t *testing.T) {
 	if !ok {
 		t.Fatal("name field not found")
 	}
-	start, end, err := scalarValueSpan(src, name.valueNode)
+	start, end, err := fieldValueSpan(src, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestScalarValueSpanQuotedScalarsPreserveStyle(t *testing.T) {
 	spans := mappingFieldSpans(src, top, len(src))
 
 	a, _ := findField(spans, "a")
-	start, end, err := scalarValueSpan(src, a.valueNode)
+	start, end, err := fieldValueSpan(src, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestScalarValueSpanQuotedScalarsPreserveStyle(t *testing.T) {
 	}
 
 	b, _ := findField(spans, "b")
-	start, end, err = scalarValueSpan(src, b.valueNode)
+	start, end, err = fieldValueSpan(src, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestScalarValueSpanStopsBeforeTrailingComment(t *testing.T) {
 		t.Fatal(err)
 	}
 	owner, _ := findField(mappingFieldSpans(src, top, len(src)), "owner")
-	start, end, err := scalarValueSpan(src, owner.valueNode)
+	start, end, err := fieldValueSpan(src, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,8 +101,8 @@ func TestScalarValueSpanRejectsBlockScalar(t *testing.T) {
 		t.Fatal(err)
 	}
 	field, _ := findField(mappingFieldSpans(src, top, len(src)), "description")
-	if _, _, err := scalarValueSpan(src, field.valueNode); err == nil {
-		t.Fatal("scalarValueSpan() unexpectedly accepted a block scalar")
+	if _, _, err := fieldValueSpan(src, field); err == nil {
+		t.Fatal("fieldValueSpan() unexpectedly accepted a block scalar")
 	}
 }
 

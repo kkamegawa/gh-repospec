@@ -280,36 +280,25 @@ func tokenOffset(tok *token.Token) int {
 	return tok.Position.Offset - 1
 }
 
-// scalarValueSpan computes the exact [start, end) byte span of a scalar
-// node's own source representation — quote characters included for a
-// quoted scalar — without ever reading past it into a trailing comment,
-// the newline, or the next line's indentation. This is the span a value
-// replacement may safely overwrite.
+// fieldValueSpan computes the exact [start, end) byte span of a mapping
+// field's scalar value's own source representation — quote characters
+// included for a quoted scalar — without ever reading past it into a
+// trailing comment, the newline, or the next line's indentation. This is the
+// span a value replacement may safely overwrite.
 //
 // Only plain, single-quoted, and double-quoted scalars in block context are
 // supported. A block scalar (| or >), an anchor or alias, or a scalar living
 // inside a flow collection returns an error instead of a guessed span.
-func scalarValueSpan(source []byte, node ast.Node) (start, end int, err error) {
-	scalar, ok := node.(*ast.StringNode)
-	if !ok {
-		if _, isInt := node.(*ast.IntegerNode); isInt {
-			return plainScalarSpan(source, node)
-		}
-		if _, isBool := node.(*ast.BoolNode); isBool {
-			return plainScalarSpan(source, node)
-		}
-		if _, isFloat := node.(*ast.FloatNode); isFloat {
-			return plainScalarSpan(source, node)
-		}
-		if _, isNull := node.(*ast.NullNode); isNull {
-			return plainScalarSpan(source, node)
-		}
+func fieldValueSpan(source []byte, field fieldSpan) (start, end int, err error) {
+	node := field.valueNode
+	switch node.(type) {
+	case *ast.StringNode, *ast.IntegerNode, *ast.BoolNode, *ast.FloatNode, *ast.NullNode:
+	default:
 		return 0, 0, fmt.Errorf("unsupported value node type %T for byte-range replacement", node)
 	}
 
-	tok := scalar.GetToken()
-	start = startOfNode(source, node)
-	switch tok.Type {
+	start = fieldValueStart(source, field)
+	switch node.GetToken().Type {
 	case token.SingleQuoteType:
 		end, err = scanSingleQuoted(source, start)
 	case token.DoubleQuoteType:
@@ -322,10 +311,35 @@ func scalarValueSpan(source []byte, node ast.Node) (start, end int, err error) {
 	return start, end, err
 }
 
-func plainScalarSpan(source []byte, node ast.Node) (start, end int, err error) {
-	start = startOfNode(source, node)
-	end = scanPlainScalarEnd(source, start)
-	return start, end, nil
+// fieldValueStart returns the offset of field's value, derived from the
+// already-verified key start by skipping "<key>", ":", and the spaces or
+// tabs after it, rather than trusted from the value token's own
+// Position.Offset.
+//
+// go-yaml's scanner is observed to skew a value token's offset backwards
+// onto the key's own ": " when a full-line comment sits above an enclosing
+// mapping key and the sibling line just before this field carries a
+// trailing comment — the same class of skew verifiedKeyStart guards against
+// for keys. The token offset is used only when the key text cannot be
+// matched at keyStart (a quoted key, "key :") or the value does not begin on
+// the key's own line (an empty value, or one on the following line).
+func fieldValueStart(source []byte, field fieldSpan) int {
+	computed := startOfNode(source, field.valueNode)
+	if !matchesKeyAt(source, field.keyStart, field.key) {
+		return computed
+	}
+	i := field.keyStart + len(field.key)
+	if i >= len(source) || source[i] != ':' {
+		return computed
+	}
+	i++
+	for i < len(source) && (source[i] == ' ' || source[i] == '\t') {
+		i++
+	}
+	if i >= len(source) || source[i] == '\n' || source[i] == '\r' || source[i] == '#' {
+		return computed
+	}
+	return i
 }
 
 // scanSingleQuoted returns the offset just past the closing quote of a
