@@ -62,6 +62,178 @@ func TestApplyYAMLUpdatesNestedActionsSelectedActionsField(t *testing.T) {
 	}
 }
 
+// A full-line comment above a mapping key combined with a trailing comment
+// on the sibling line just before the edited field skews go-yaml's value
+// token offset backwards onto the key's own ": ". The edit must still land
+// on the value alone.
+func TestApplyYAMLValueStartSurvivesCommentOffsetSkew(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		plan Plan
+		want string
+	}{
+		{
+			name: "nested security field",
+			src: "security:\n" +
+				"  # note\n" +
+				"  aiPullRequestScan:\n" +
+				"    optional: true # x\n" +
+				"    enabled: false\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "security.aiPullRequestScan.enabled", Value: boolValue(true)}}},
+			want: "security:\n" +
+				"  # note\n" +
+				"  aiPullRequestScan:\n" +
+				"    optional: true # x\n" +
+				"    enabled: true\n",
+		},
+		{
+			name: "top-level repository field",
+			src: "# note\n" +
+				"repository:\n" +
+				"  visibility: public # x\n" +
+				"  description: old\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "repository.description", Value: stringValue("new")}}},
+			want: "# note\n" +
+				"repository:\n" +
+				"  visibility: public # x\n" +
+				"  description: new\n",
+		},
+		{
+			name: "label entry field",
+			src: "labels:\n" +
+				"  # note\n" +
+				"  - name: bug # x\n" +
+				"    color: d73a4a\n",
+			plan: Plan{Collections: []CollectionChange{{
+				Path:    "labels",
+				Updated: []EntryUpdate{{Key: "bug", Scalars: []ScalarChange{{Path: "color", Value: stringValue("ff0000")}}}},
+			}}},
+			want: "labels:\n" +
+				"  # note\n" +
+				"  - name: bug # x\n" +
+				"    color: ff0000\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertApplyYAMLBothLineEndings(t, tt.src, tt.plan, tt.want)
+		})
+	}
+}
+
+// A quoted key must be located as itself: a same-named bare key elsewhere —
+// in an earlier sibling mapping, an earlier sequence entry, or a deeper
+// child mapping of the same section — must never become the edit location.
+func TestApplyYAMLQuotedKeyNeverRedirectsTheEdit(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		src  string
+		plan Plan
+		want string
+	}{
+		{
+			name: "same-named key in an earlier sibling mapping",
+			src: "security:\n" +
+				"  codeqlDefaultSetup:\n" +
+				"    enabled: false\n" +
+				"  aiPullRequestScan:\n" +
+				"    \"enabled\": false\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "security.aiPullRequestScan.enabled", Value: boolValue(true)}}},
+			want: "security:\n" +
+				"  codeqlDefaultSetup:\n" +
+				"    enabled: false\n" +
+				"  aiPullRequestScan:\n" +
+				"    \"enabled\": true\n",
+		},
+		{
+			name: "same-named field in an earlier sequence entry",
+			src: "labels:\n" +
+				"  - name: bug\n" +
+				"    color: d73a4a\n" +
+				"  - name: stale\n" +
+				"    \"color\": cccccc\n",
+			plan: Plan{Collections: []CollectionChange{{
+				Path:    "labels",
+				Updated: []EntryUpdate{{Key: "stale", Scalars: []ScalarChange{{Path: "color", Value: stringValue("ff0000")}}}},
+			}}},
+			want: "labels:\n" +
+				"  - name: bug\n" +
+				"    color: d73a4a\n" +
+				"  - name: stale\n" +
+				"    \"color\": ff0000\n",
+		},
+		{
+			name: "same-named key in a deeper child mapping",
+			src: "repository:\n" +
+				"  nested:\n" +
+				"    description: inner\n" +
+				"  \"description\": old\n",
+			plan: Plan{Scalars: []ScalarChange{{Path: "repository.description", Value: stringValue("new")}}},
+			want: "repository:\n" +
+				"  nested:\n" +
+				"    description: inner\n" +
+				"  \"description\": new\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assertApplyYAMLBothLineEndings(t, tt.src, tt.plan, tt.want)
+		})
+	}
+}
+
+// Appending after the last label entry relies on labels' own end, which is
+// the next top-level key's start. When that key follows a block scalar its
+// token offset is skewed, and the fallback search must find the top-level
+// key rather than the same-named key nested in the last label entry, or the
+// new entry would be spliced into the middle of that entry.
+func TestApplyYAMLAppendsLabelPastSameNamedNestedKeyAfterBlockScalar(t *testing.T) {
+	t.Parallel()
+	src := "labels:\n" +
+		"  - name: bug\n" +
+		"    milestones: deeper\n" +
+		"    description: |\n" +
+		"      text\n" +
+		"milestones:\n" +
+		"  - title: v1\n"
+	plan := Plan{Collections: []CollectionChange{{
+		Path:  "labels",
+		Added: []EntryAddition{{Key: "x", Fields: []FieldValue{{Name: "name", Value: stringValue("x")}, {Name: "color", Value: stringValue("ffffff")}}}},
+	}}}
+	want := "labels:\n" +
+		"  - name: bug\n" +
+		"    milestones: deeper\n" +
+		"    description: |\n" +
+		"      text\n" +
+		"  - name: x\n" +
+		"    color: ffffff\n" +
+		"milestones:\n" +
+		"  - title: v1\n"
+	assertApplyYAMLBothLineEndings(t, src, plan, want)
+}
+
+// assertApplyYAMLBothLineEndings applies plan to src and checks the result
+// against want byte for byte, once with LF and once with CRLF line endings.
+func assertApplyYAMLBothLineEndings(t *testing.T, src string, plan Plan, want string) {
+	t.Helper()
+	for _, ending := range []string{"\n", "\r\n"} {
+		src := strings.ReplaceAll(src, "\n", ending)
+		want := strings.ReplaceAll(want, "\n", ending)
+		out, err := ApplyYAML([]byte(src), plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != want {
+			t.Fatalf("out = %q, want %q", out, want)
+		}
+	}
+}
+
 func TestApplyYAMLUpdatesSecurityAIPullRequestScanPreservingComments(t *testing.T) {
 	t.Parallel()
 	src := "security:\n" +

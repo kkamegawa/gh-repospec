@@ -1,8 +1,96 @@
 package refresh
 
 import (
+	"bytes"
 	"testing"
 )
+
+func TestKeyTextAtAcceptsBareAndQuotedKeysOnly(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		src  string
+		want int
+	}{
+		{"enabled: true", 7},
+		{"\"enabled\": true", 9},
+		{"'enabled': true", 9},
+		{"enabled : true", 7},
+		{"enabledX: true", 0},
+		{"\"enabled': true", 0},
+		{"enabled true", 0},
+		{"other: true", 0},
+	}
+	for _, tt := range tests {
+		if got := keyTextAt([]byte(tt.src), 0, "enabled"); got != tt.want {
+			t.Errorf("keyTextAt(%q) = %d, want %d", tt.src, got, tt.want)
+		}
+	}
+}
+
+func TestFindKeyLineMatchesOnlyTheGivenColumn(t *testing.T) {
+	t.Parallel()
+	src := []byte("a:\n  b:\n    x: inner\n  \"x\": outer\n")
+	inner := bytes.Index(src, []byte("x: inner"))
+	outer := bytes.Index(src, []byte("\"x\": outer"))
+	if got, ok := findKeyLine(src, 0, len(src), "x", 2); !ok || got != outer {
+		t.Fatalf("column 2: got (%d, %v), want (%d, true): the nested x must be skipped", got, ok, outer)
+	}
+	if got, ok := findKeyLine(src, 0, len(src), "x", 4); !ok || got != inner {
+		t.Fatalf("column 4: got (%d, %v), want (%d, true)", got, ok, inner)
+	}
+	if got, ok := findKeyLine(src, 0, len(src), "x", 0); ok {
+		t.Fatalf("column 0: got (%d, true), want no match", got)
+	}
+}
+
+func TestFindDashLineMatchesOnlyTheGivenColumn(t *testing.T) {
+	t.Parallel()
+	src := []byte("items:\n  - a:\n      - nested\n  - b\n")
+	first := bytes.Index(src, []byte("- a"))
+	nested := bytes.Index(src, []byte("- nested"))
+	second := bytes.Index(src, []byte("- b"))
+	if got, ok := findDashLine(src, first+1, len(src), 2); !ok || got != second {
+		t.Fatalf("column 2: got (%d, %v), want (%d, true): the nested entry must be skipped", got, ok, second)
+	}
+	if got, ok := findDashLine(src, first+1, len(src), 6); !ok || got != nested {
+		t.Fatalf("column 6: got (%d, %v), want (%d, true)", got, ok, nested)
+	}
+}
+
+// A key right after a block scalar gets a skewed token offset, so its start
+// comes from the fallback search, which must not stop at a same-named key
+// nested inside the preceding field.
+func TestMappingFieldSpansSkipSameNamedNestedKeyAfterBlockScalar(t *testing.T) {
+	t.Parallel()
+	src := []byte("labels:\n" +
+		"  - name: bug\n" +
+		"    milestones: deeper\n" +
+		"    description: |\n" +
+		"      text\n" +
+		"milestones:\n" +
+		"  - title: v1\n")
+	file, err := parseYAML(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	top, err := topLevelMapping(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := keyTextAt(src, startOfNode(src, top.Values[1].Key), "milestones"); n != 0 {
+		t.Fatal("precondition: the milestones key token is no longer skewed, so this test no longer exercises the fallback search; find a new trigger")
+	}
+	spans := mappingFieldSpans(src, top, 0, len(src))
+	want := bytes.Index(src, []byte("\nmilestones:")) + 1
+	labels, _ := findField(spans, "labels")
+	milestones, _ := findField(spans, "milestones")
+	if milestones.keyStart != want {
+		t.Fatalf("milestones keyStart = %d, want %d (the top-level key, not the nested one)", milestones.keyStart, want)
+	}
+	if labels.end != want {
+		t.Fatalf("labels end = %d, want %d (labels must keep its whole last entry)", labels.end, want)
+	}
+}
 
 func TestScalarValueSpanPlainScalar(t *testing.T) {
 	t.Parallel()
@@ -15,7 +103,7 @@ func TestScalarValueSpanPlainScalar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repo, ok := findField(mappingFieldSpans(src, top, len(src)), "repository")
+	repo, ok := findField(mappingFieldSpans(src, top, 0, len(src)), "repository")
 	if !ok {
 		t.Fatal("repository field not found")
 	}
@@ -23,11 +111,11 @@ func TestScalarValueSpanPlainScalar(t *testing.T) {
 	if !ok {
 		t.Fatal("repository value is not a block mapping")
 	}
-	name, ok := findField(mappingFieldSpans(src, nested, repo.end), "name")
+	name, ok := findField(mappingFieldSpans(src, nested, repo.bodyStart(), repo.end), "name")
 	if !ok {
 		t.Fatal("name field not found")
 	}
-	start, end, err := scalarValueSpan(src, name.valueNode)
+	start, end, err := fieldValueSpan(src, name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +135,10 @@ func TestScalarValueSpanQuotedScalarsPreserveStyle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 
 	a, _ := findField(spans, "a")
-	start, end, err := scalarValueSpan(src, a.valueNode)
+	start, end, err := fieldValueSpan(src, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +147,7 @@ func TestScalarValueSpanQuotedScalarsPreserveStyle(t *testing.T) {
 	}
 
 	b, _ := findField(spans, "b")
-	start, end, err = scalarValueSpan(src, b.valueNode)
+	start, end, err = fieldValueSpan(src, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,8 +167,8 @@ func TestScalarValueSpanStopsBeforeTrailingComment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	owner, _ := findField(mappingFieldSpans(src, top, len(src)), "owner")
-	start, end, err := scalarValueSpan(src, owner.valueNode)
+	owner, _ := findField(mappingFieldSpans(src, top, 0, len(src)), "owner")
+	start, end, err := fieldValueSpan(src, owner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +188,9 @@ func TestScalarValueSpanRejectsBlockScalar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	field, _ := findField(mappingFieldSpans(src, top, len(src)), "description")
-	if _, _, err := scalarValueSpan(src, field.valueNode); err == nil {
-		t.Fatal("scalarValueSpan() unexpectedly accepted a block scalar")
+	field, _ := findField(mappingFieldSpans(src, top, 0, len(src)), "description")
+	if _, _, err := fieldValueSpan(src, field); err == nil {
+		t.Fatal("fieldValueSpan() unexpectedly accepted a block scalar")
 	}
 }
 
@@ -117,7 +205,7 @@ func TestMappingFieldSpansPreservesNonAlphabeticalOrderAndComputesEndsFromSiblin
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 	if len(spans) != 3 || spans[0].key != "zebra" || spans[1].key != "apple" || spans[2].key != "mango" {
 		t.Fatalf("spans = %#v, want file order preserved regardless of alphabetical order", spans)
 	}
@@ -152,7 +240,7 @@ func TestSequenceEntrySpansComputeCorrectBoundariesAroundBlockScalar(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	spans := mappingFieldSpans(src, top, len(src))
+	spans := mappingFieldSpans(src, top, 0, len(src))
 	labels, ok := findField(spans, "labels")
 	if !ok {
 		t.Fatal("labels field not found")
@@ -161,7 +249,7 @@ func TestSequenceEntrySpansComputeCorrectBoundariesAroundBlockScalar(t *testing.
 	if !ok {
 		t.Fatalf("labels value is not a sequence: %T", labels.valueNode)
 	}
-	entries := sequenceEntrySpans(src, seqNode, labels.end)
+	entries := sequenceEntrySpans(src, seqNode, labels.bodyStart(), labels.end)
 	if len(entries) != 2 {
 		t.Fatalf("len(entries) = %d, want 2", len(entries))
 	}

@@ -26,7 +26,7 @@ func ApplyYAML(original []byte, plan Plan) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	topSpans := mappingFieldSpans(source, top, len(source))
+	topSpans := mappingFieldSpans(source, top, 0, len(source))
 
 	var replacements []replacement
 
@@ -81,10 +81,10 @@ func scalarReplacement(source []byte, topSpans []fieldSpan, change ScalarChange)
 		if !ok {
 			return replacement{}, fmt.Errorf("field %q is not a mapping", seg)
 		}
-		spans = mappingFieldSpans(source, nested, field.end)
+		spans = mappingFieldSpans(source, nested, field.bodyStart(), field.end)
 	}
 
-	start, end, err := scalarValueSpan(source, target.valueNode)
+	start, end, err := fieldValueSpan(source, target)
 	if err != nil {
 		return replacement{}, err
 	}
@@ -234,14 +234,14 @@ func collectionReplacements(source []byte, topSpans []fieldSpan, change Collecti
 		if !ok {
 			return nil, fmt.Errorf("field %q is not a mapping", seg)
 		}
-		spans = mappingFieldSpans(source, nested, field.end)
+		spans = mappingFieldSpans(source, nested, field.bodyStart(), field.end)
 	}
 
 	seq, ok := asSequence(seqField.valueNode)
 	if !ok {
 		return nil, fmt.Errorf("%q is not a sequence", change.Path)
 	}
-	entrySpans := sequenceEntrySpans(source, seq, seqField.end)
+	entrySpans := sequenceEntrySpans(source, seq, seqField.bodyStart(), seqField.end)
 	keyField := collectionKeyField(change.Path)
 
 	var replacements []replacement
@@ -254,7 +254,7 @@ func collectionReplacements(source []byte, topSpans []fieldSpan, change Collecti
 		if !ok {
 			return nil, fmt.Errorf("entry %q is not a mapping", upd.Key)
 		}
-		fields := mappingFieldSpans(source, mapping, entry.end)
+		fields := mappingFieldSpans(source, mapping, entry.start, entry.end)
 		for _, sc := range upd.Scalars {
 			field, ok := findField(fields, sc.Path)
 			if !ok {
@@ -264,7 +264,7 @@ func collectionReplacements(source []byte, topSpans []fieldSpan, change Collecti
 				// for this pass and is reported rather than guessed at.
 				return nil, fmt.Errorf("entry %q has no field %q to update", upd.Key, sc.Path)
 			}
-			start, end, err := scalarValueSpan(source, field.valueNode)
+			start, end, err := fieldValueSpan(source, field)
 			if err != nil {
 				return nil, fmt.Errorf("entry %q field %q: %w", upd.Key, sc.Path, err)
 			}
@@ -317,7 +317,7 @@ func findEntrySpanByField(source []byte, spans []entrySpan, fieldName, key strin
 		if !ok {
 			continue
 		}
-		fields := mappingFieldSpans(source, mapping, sp.end)
+		fields := mappingFieldSpans(source, mapping, sp.start, sp.end)
 		field, ok := findField(fields, fieldName)
 		if !ok {
 			continue
@@ -379,7 +379,7 @@ func rulesetReplacements(source []byte, topSpans []fieldSpan, change *RulesetCha
 	if !ok {
 		return nil, fmt.Errorf("rulesets is not a sequence")
 	}
-	entrySpans := sequenceEntrySpans(source, seq, field.end)
+	entrySpans := sequenceEntrySpans(source, seq, field.bodyStart(), field.end)
 
 	var replacements []replacement
 	for _, updated := range change.Updated {
