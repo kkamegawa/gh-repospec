@@ -350,10 +350,16 @@ func (s *repositorySettingsMemory) SetBranchProtection(_ context.Context, _ gith
 		resolved, contexts := make([]any, 0), make([]any, 0)
 		if list, ok := checks["checks"].([]any); ok {
 			for _, item := range list {
+				// An omitted app_id pins the app that last provided the check,
+				// and -1 lets any app provide it, which the read API reports as
+				// null.
 				check := item.(map[string]any)
 				appID := check["app_id"]
-				if appID == nil {
+				switch appID {
+				case nil:
 					appID = 15368
+				case -1:
+					appID = nil
 				}
 				resolved = append(resolved, map[string]any{"context": check["context"], "app_id": appID})
 				contexts = append(contexts, check["context"])
@@ -735,7 +741,9 @@ required_conversation_resolution: true
 
 func TestBranchProtectionRequestFillsRequiredSectionsAndDropsContexts(t *testing.T) {
 	request := githubapi.BranchProtectionRequest(map[string]any{
-		"required_status_checks":  map[string]any{"strict": true, "contexts": []any{"build"}, "checks": []any{map[string]any{"context": "build", "app_id": nil}}},
+		"required_status_checks": map[string]any{"strict": true, "contexts": []any{"build", "lint"}, "checks": []any{
+			map[string]any{"context": "build", "app_id": nil}, map[string]any{"context": "lint"},
+		}},
 		"required_linear_history": true,
 	})
 	for _, key := range []string{"enforce_admins", "required_pull_request_reviews", "restrictions"} {
@@ -747,8 +755,46 @@ func TestBranchProtectionRequestFillsRequiredSectionsAndDropsContexts(t *testing
 	if _, ok := checks["contexts"]; ok {
 		t.Fatalf("status checks = %#v, want contexts dropped in favor of checks", checks)
 	}
-	if _, ok := checks["checks"].([]any)[0].(map[string]any)["app_id"]; ok {
-		t.Fatalf("status checks = %#v, want a null app_id omitted", checks)
+	list := checks["checks"].([]any)
+	if appID := list[0].(map[string]any)["app_id"]; appID != -1 {
+		t.Fatalf("app_id for a check any app may provide = %#v, want -1", appID)
+	}
+	if _, ok := list[1].(map[string]any)["app_id"]; ok {
+		t.Fatalf("status checks = %#v, want an undeclared app_id left omitted", checks)
+	}
+}
+
+func TestBranchProtectionCheckAppConverges(t *testing.T) {
+	for name, check := range map[string]map[string]any{
+		// import writes app_id null for a check that any app may provide; it
+		// must stay unpinned rather than be pinned to the app GitHub selects.
+		"any app":     {"context": "build", "app_id": nil},
+		"pinned app":  {"context": "build", "app_id": 15368},
+		"undeclared":  {"context": "build"},
+		"explicit -1": {"context": "build", "app_id": -1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := newRepositorySettingsMemory()
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			settings := map[string]any{"required_status_checks": map[string]any{"strict": true, "checks": []any{check}}}
+			desired := &config.RepositorySettings{BranchProtections: []config.BranchProtectionConfig{{Branch: "main", Settings: settings}}}
+			repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+			if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+				t.Fatalf("applyRepositorySettings() error = %v", err)
+			}
+			stored := service.protections["main"]["required_status_checks"].(map[string]any)["checks"].([]any)[0].(map[string]any)
+			if appID, declared := check["app_id"]; declared && (appID == nil || appID == -1) && stored["app_id"] != nil {
+				t.Fatalf("stored check = %#v, want any app kept", stored)
+			}
+			plan := Plan{}
+			appendRepositorySettingsChanges(context.Background(), service, &plan, desired, repository, true, false)
+			if !hasChange(plan, "settings.branchProtection.main", ChangeNoop) {
+				t.Fatalf("post-apply plan = %#v, want branch protection converged", plan.Changes)
+			}
+		})
 	}
 }
 
@@ -802,6 +848,40 @@ func TestEnvironmentSwitchedToCustomBranchPoliciesIsNotBlocked(t *testing.T) {
 	appendActionsChanges(context.Background(), service, &after, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
 	if after.HasDrift() || after.HasBlocked() {
 		t.Fatalf("post-apply plan = %#v, want the environment and its patterns converged", after.Changes)
+	}
+}
+
+func TestEnvironmentBranchPatternsWithoutCustomPoliciesAreBlocked(t *testing.T) {
+	policies := []config.EnvironmentBranchPolicy{{Name: "main", Type: "branch"}}
+	for name, tc := range map[string]struct {
+		live   []githubapi.Environment
+		policy *config.DeploymentBranchPolicy
+	}{
+		"existing environment kept on all branches": {live: []githubapi.Environment{{Name: "release"}}},
+		"existing environment set to protected branches": {
+			live: []githubapi.Environment{{Name: "release"}}, policy: &config.DeploymentBranchPolicy{ProtectedBranches: true},
+		},
+		"new environment without a policy": {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := newRepositorySettingsMemory()
+			service.environments = tc.live
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired := &config.ActionsConfig{Environments: []config.Environment{{Name: "release", DeploymentBranchPolicy: tc.policy, BranchPolicies: &policies}}}
+			repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+			plan := Plan{}
+			appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+			if !hasChange(plan, "actions.environment.release.branchPolicies", ChangeBlocked) {
+				t.Fatalf("plan = %#v, want patterns blocked while custom policies stay disabled", plan.Changes)
+			}
+			err = engine.applyActions(context.Background(), repository, desired, Options{})
+			if err == nil || !strings.Contains(err.Error(), "customBranchPolicies") {
+				t.Fatalf("applyActions() error = %v, want the missing custom branch policy reported", err)
+			}
+		})
 	}
 }
 

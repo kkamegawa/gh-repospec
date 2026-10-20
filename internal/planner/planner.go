@@ -1195,6 +1195,12 @@ func environmentRequest(environment config.Environment) githubapi.EnvironmentReq
 }
 
 func applyEnvironmentBranchPolicies(ctx context.Context, service environmentService, repository githubapi.Repository, desired config.Environment, environment githubapi.Environment) error {
+	if environment.DeploymentBranchPolicy == nil || !environment.DeploymentBranchPolicy.CustomBranchPolicies {
+		if len(*desired.BranchPolicies) == 0 {
+			return nil
+		}
+		return fmt.Errorf("environment %q deployment branch patterns require deploymentBranchPolicy.customBranchPolicies", desired.Name)
+	}
 	actual, err := listEnvironmentBranchPolicies(ctx, service, repository, desired.Name, environment.DeploymentBranchPolicy)
 	if err != nil {
 		return fmt.Errorf("list deployment branch policies for environment %q: %w", desired.Name, err)
@@ -1969,7 +1975,18 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 			plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: state, Summary: summary})
 			if environment.BranchPolicies != nil {
 				state, summary := ChangeBlocked, "deployment branch policy API is unavailable"
-				if actual, ok := existing[environment.Name]; known && ok {
+				actual, ok := existing[environment.Name]
+				switch {
+				case !known:
+				case !customBranchPoliciesAfterApply(environment, actual.DeploymentBranchPolicy):
+					// GitHub serves deployment branch patterns only while custom
+					// branch policies are enabled, and this run does not enable them.
+					if len(*environment.BranchPolicies) == 0 {
+						state, summary = ChangeNoop, "no deployment branch patterns without custom branch policies"
+					} else {
+						summary = "deployment branch patterns require deploymentBranchPolicy.customBranchPolicies"
+					}
+				case ok:
 					if api, available := service.(environmentService); available {
 						policies, listErr := listEnvironmentBranchPolicies(ctx, api, repository, environment.Name, actual.DeploymentBranchPolicy)
 						switch {
@@ -1983,7 +2000,7 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 							state, summary = ChangeUpdate, "converge deployment branch patterns"
 						}
 					}
-				} else if known && !ok {
+				default:
 					state, summary = ChangeCreate, "create deployment branch patterns"
 				}
 				plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name + ".branchPolicies", State: state, Summary: summary})
@@ -2076,6 +2093,16 @@ func environmentSettingsMatch(ctx context.Context, service Service, repository g
 // patterns of an existing environment. GitHub answers the list with 404 until
 // custom branch policies are enabled, so an environment that allows all
 // branches or only protected branches has no patterns yet.
+// customBranchPoliciesAfterApply reports whether an environment has custom
+// deployment branch policies enabled once apply has written its declared
+// deploymentBranchPolicy; without a declaration the live policy is kept.
+func customBranchPoliciesAfterApply(desired config.Environment, live *githubapi.DeploymentBranchPolicy) bool {
+	if desired.DeploymentBranchPolicy != nil {
+		return !desired.DeploymentBranchPolicy.AllowAllBranches && desired.DeploymentBranchPolicy.CustomBranchPolicies
+	}
+	return live != nil && live.CustomBranchPolicies
+}
+
 func listEnvironmentBranchPolicies(ctx context.Context, api environmentService, repository githubapi.Repository, name string, policy *githubapi.DeploymentBranchPolicy) ([]githubapi.EnvironmentBranchPolicy, error) {
 	if policy == nil || !policy.CustomBranchPolicies {
 		return nil, nil

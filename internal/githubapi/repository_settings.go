@@ -359,8 +359,14 @@ func BranchProtectionRequest(settings map[string]any) map[string]any {
 		if list, hasChecks := checks["checks"].([]any); hasChecks {
 			delete(checks, "contexts")
 			for _, item := range list {
-				if check, ok := item.(map[string]any); ok && check["app_id"] == nil {
-					delete(check, "app_id")
+				// The read API reports a check that any app may provide as
+				// app_id null, while the update API reads an omitted app_id as
+				// "pin the app that last provided this check" and needs -1 for
+				// any app.
+				if check, ok := item.(map[string]any); ok {
+					if appID, declared := check["app_id"]; declared && appID == nil {
+						check["app_id"] = -1
+					}
 				}
 			}
 		}
@@ -371,27 +377,43 @@ func BranchProtectionRequest(settings map[string]any) map[string]any {
 // BranchProtectionMatches reports whether declared settings describe the
 // protection GitHub returned. Booleans that are false and sections that are
 // null are the update API's defaults, so they compare equal to an absent key.
-// A declaration that lists required checks only by context name matches the
-// checks GitHub resolved for those names, whichever app GitHub assigned.
+// A required check declared by context name only, either in contexts or as a
+// check without app_id, matches the check GitHub resolved for that name,
+// whichever app GitHub assigned. A check declared with app_id null or -1
+// matches only a check that any app may provide.
 func BranchProtectionMatches(desired, actual map[string]any) bool {
 	want := comparableBranchProtection(desired)
 	got := comparableBranchProtection(NormalizeBranchProtection(actual))
 	wantChecks, _ := want["required_status_checks"].(map[string]any)
 	gotChecks, _ := got["required_status_checks"].(map[string]any)
 	if wantChecks != nil && gotChecks != nil {
-		if _, declaresChecks := wantChecks["checks"]; !declaresChecks {
-			if _, declaresContexts := wantChecks["contexts"]; declaresContexts {
-				contexts := make([]any, 0)
-				if list, ok := gotChecks["checks"].([]any); ok {
-					for _, item := range list {
-						if check, ok := item.(map[string]any); ok {
-							contexts = append(contexts, check["context"])
-						}
+		if wantList, declaresChecks := wantChecks["checks"].([]any); declaresChecks {
+			unpinned := map[any]bool{}
+			for _, item := range wantList {
+				if check, ok := item.(map[string]any); ok {
+					if _, declared := check["app_id"]; !declared {
+						unpinned[check["context"]] = true
 					}
 				}
-				delete(gotChecks, "checks")
-				gotChecks["contexts"] = contexts
 			}
+			if gotList, ok := gotChecks["checks"].([]any); ok {
+				for _, item := range gotList {
+					if check, ok := item.(map[string]any); ok && unpinned[check["context"]] {
+						delete(check, "app_id")
+					}
+				}
+			}
+		} else if _, declaresContexts := wantChecks["contexts"]; declaresContexts {
+			contexts := make([]any, 0)
+			if list, ok := gotChecks["checks"].([]any); ok {
+				for _, item := range list {
+					if check, ok := item.(map[string]any); ok {
+						contexts = append(contexts, check["context"])
+					}
+				}
+			}
+			delete(gotChecks, "checks")
+			gotChecks["contexts"] = contexts
 		}
 	}
 	for _, values := range []map[string]any{wantChecks, gotChecks} {
@@ -414,14 +436,28 @@ func comparableBranchProtection(settings map[string]any) map[string]any {
 		if list, hasChecks := checks["checks"].([]any); hasChecks {
 			delete(checks, "contexts")
 			for _, item := range list {
-				if check, ok := item.(map[string]any); ok && check["app_id"] == nil {
-					delete(check, "app_id")
+				// -1 on the update API and null on the read API both mean
+				// any app; an omitted app_id stays omitted.
+				if check, ok := item.(map[string]any); ok && isAnyAppID(check["app_id"]) {
+					check["app_id"] = nil
 				}
 			}
 		}
 	}
 	dropDefaultValues(clean)
 	return clean
+}
+
+func isAnyAppID(value any) bool {
+	switch value := value.(type) {
+	case int:
+		return value == -1
+	case int64:
+		return value == -1
+	case float64:
+		return value == -1
+	}
+	return false
 }
 
 func dropDefaultValues(values map[string]any) {
