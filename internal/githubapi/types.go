@@ -409,7 +409,7 @@ type environmentBranchPolicyList struct {
 	BranchPolicies []EnvironmentBranchPolicy `json:"branch_policies"`
 }
 
-func (l *environmentBranchPolicyList) pageItems() []EnvironmentBranchPolicy {
+func (l *environmentBranchPolicyList) pageItems() []EnvironmentBranchPolicy { //nolint:unused // see customRepositoryRoleList.pageItems
 	return l.BranchPolicies
 }
 
@@ -437,7 +437,7 @@ type deploymentProtectionRuleList struct {
 	CustomDeploymentProtectionRules []DeploymentProtectionRule `json:"custom_deployment_protection_rules"`
 }
 
-func (l *deploymentProtectionRuleList) pageItems() []DeploymentProtectionRule {
+func (l *deploymentProtectionRuleList) pageItems() []DeploymentProtectionRule { //nolint:unused // see customRepositoryRoleList.pageItems
 	return l.CustomDeploymentProtectionRules
 }
 
@@ -446,7 +446,7 @@ type availableDeploymentProtectionIntegrationList struct {
 	AvailableCustomDeploymentProtectionIntegrations []AvailableDeploymentProtectionIntegration `json:"available_custom_deployment_protection_rule_integrations"`
 }
 
-func (l *availableDeploymentProtectionIntegrationList) pageItems() []AvailableDeploymentProtectionIntegration {
+func (l *availableDeploymentProtectionIntegrationList) pageItems() []AvailableDeploymentProtectionIntegration { //nolint:unused // see customRepositoryRoleList.pageItems
 	return l.AvailableCustomDeploymentProtectionIntegrations
 }
 

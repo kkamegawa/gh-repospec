@@ -13,7 +13,6 @@ import (
 // the apply-then-plan test exercises convergence without contacting GitHub.
 type repositorySettingsMemory struct {
 	*recordingService
-	repositorySettingsService
 	pages                 githubapi.PagesSite
 	pagesEnabled          bool
 	webhooks              []githubapi.RepositoryWebhook

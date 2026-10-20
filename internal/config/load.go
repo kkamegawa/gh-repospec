@@ -355,7 +355,7 @@ func validateSeed(seed *SeedConfig, checkSeedFilesystem bool) error {
 			return errors.New("seed.initialize.gitignoreTemplate must not contain leading or trailing whitespace")
 		}
 	}
-	if count != 1 && !(count == 0 && seed.Initialize != nil) {
+	if count != 1 && (count != 0 || seed.Initialize == nil) {
 		return errors.New("seed must define exactly one of template, directory, or zip")
 	}
 	for _, path := range seed.Overwrite {
@@ -416,7 +416,7 @@ func validateActions(actions *ActionsConfig) error {
 				return errors.New("actions.oidcSubjectCustomization.includeClaimKeys must not contain empty values")
 			}
 			for _, character := range claim {
-				if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_') {
+				if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
 					return fmt.Errorf("actions.oidcSubjectCustomization.includeClaimKeys contains invalid key %q", claim)
 				}
 			}

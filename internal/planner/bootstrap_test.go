@@ -74,7 +74,7 @@ func TestEmptyRepositoryInitializationAndCommandsRunOnce(t *testing.T) {
 	if _, err := engine.Apply(context.Background(), cfg, Options{}); err != nil {
 		t.Fatalf("second Apply() without command approval error = %v", err)
 	}
-	count, err := os.ReadFile(countPath)
+	count, err := os.ReadFile(countPath) //nolint:gosec // countPath is a t.TempDir path
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,8 @@ func TestOneTimeBootstrapCommandHelper(t *testing.T) {
 	if os.Getenv("GO_WANT_BOOTSTRAP_HELPER") != "1" {
 		return
 	}
-	count, err := os.OpenFile(os.Getenv("BOOTSTRAP_COUNT_FILE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	count, err := os.OpenFile(os.Getenv("BOOTSTRAP_COUNT_FILE"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec // the parent test sets this to a t.TempDir path
+
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +153,7 @@ type bootstrapRecordingService struct {
 func (s *bootstrapRecordingService) UpdateRepository(ctx context.Context, repository githubapi.Repository, request githubapi.UpdateRepositoryRequest) (githubapi.RepositoryInfo, error) {
 	updated, err := s.recordingService.UpdateRepository(ctx, repository, request)
 	if err == nil && request.DefaultBranch != "" {
-		s.fakeService.repository.DefaultBranch = request.DefaultBranch
+		s.repository.DefaultBranch = request.DefaultBranch
 		s.branchReady = true
 	}
 	return updated, err
