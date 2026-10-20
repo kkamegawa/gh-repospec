@@ -2,10 +2,13 @@ package planner
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
 	"github.com/kkamegawa/gh-repospec/internal/githubapi"
@@ -107,15 +110,32 @@ func newRepositorySettingsMemory() *repositorySettingsMemory {
 	}
 }
 
-func (s *repositorySettingsMemory) CreateOrUpdateEnvironment(_ context.Context, _ githubapi.Repository, name string, _ githubapi.EnvironmentRequest) (githubapi.Environment, error) {
-	for _, environment := range s.environments {
-		if environment.Name == name {
-			return environment, nil
+func (s *repositorySettingsMemory) CreateOrUpdateEnvironment(_ context.Context, _ githubapi.Repository, name string, request githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+	for i := range s.environments {
+		if s.environments[i].Name == name {
+			if request.DeploymentBranchPolicy != nil {
+				s.environments[i].DeploymentBranchPolicy = *request.DeploymentBranchPolicy
+			}
+			return s.environments[i], nil
 		}
 	}
 	environment := githubapi.Environment{Name: name}
+	if request.DeploymentBranchPolicy != nil {
+		environment.DeploymentBranchPolicy = *request.DeploymentBranchPolicy
+	}
 	s.environments = append(s.environments, environment)
 	return environment, nil
+}
+
+// customBranchPoliciesEnabled follows GitHub, which serves the deployment
+// branch policy endpoints only while custom branch policies are enabled.
+func (s *repositorySettingsMemory) customBranchPoliciesEnabled(name string) bool {
+	for _, environment := range s.environments {
+		if environment.Name == name {
+			return environment.DeploymentBranchPolicy != nil && environment.DeploymentBranchPolicy.CustomBranchPolicies
+		}
+	}
+	return false
 }
 
 func (s *repositorySettingsMemory) ListDeploymentProtectionRules(_ context.Context, _ githubapi.Repository, environment string) ([]githubapi.DeploymentProtectionRule, error) {
@@ -231,7 +251,12 @@ func (s *repositorySettingsMemory) ListDeployKeys(context.Context, githubapi.Rep
 	return s.deployKeys, nil
 }
 
+// CreateDeployKey follows GitHub, which stores a public key without the
+// trailing comment of a .pub file.
 func (s *repositorySettingsMemory) CreateDeployKey(_ context.Context, _ githubapi.Repository, item githubapi.DeployKey) (githubapi.DeployKey, error) {
+	if fields := strings.Fields(item.Key); len(fields) > 2 {
+		item.Key = fields[0] + " " + fields[1]
+	}
 	item.ID = s.nextID
 	s.nextID++
 	s.deployKeys = append(s.deployKeys, item)
@@ -303,8 +328,61 @@ func (s *repositorySettingsMemory) GetBranchProtection(_ context.Context, _ gith
 	return protection, nil
 }
 
+// SetBranchProtection follows GitHub's update API: the four top-level
+// sections are required (null disables one), and a required_status_checks
+// object carrying both checks and contexts is rejected. The stored value is
+// what the read API returns: unused sections omitted, toggles wrapped in
+// {enabled}, and each required context mirrored into checks with the app
+// GitHub assigned.
 func (s *repositorySettingsMemory) SetBranchProtection(_ context.Context, _ githubapi.Repository, branch string, settings map[string]any) error {
-	s.protections[branch] = settings
+	for _, key := range []string{"required_status_checks", "enforce_admins", "required_pull_request_reviews", "restrictions"} {
+		if _, ok := settings[key]; !ok {
+			return &githubapi.APIError{StatusCode: 422, Message: `"` + key + `" wasn't supplied.`}
+		}
+	}
+	stored := map[string]any{"url": "response-only"}
+	if checks, ok := settings["required_status_checks"].(map[string]any); ok {
+		_, hasChecks := checks["checks"]
+		_, hasContexts := checks["contexts"]
+		if hasChecks && hasContexts {
+			return &githubapi.APIError{StatusCode: 422, Message: "Invalid request: data matches more than one schema in oneOf"}
+		}
+		resolved, contexts := make([]any, 0), make([]any, 0)
+		if list, ok := checks["checks"].([]any); ok {
+			for _, item := range list {
+				check := item.(map[string]any)
+				appID := check["app_id"]
+				if appID == nil {
+					appID = 15368
+				}
+				resolved = append(resolved, map[string]any{"context": check["context"], "app_id": appID})
+				contexts = append(contexts, check["context"])
+			}
+		} else if list, ok := checks["contexts"].([]any); ok {
+			for _, name := range list {
+				resolved = append(resolved, map[string]any{"context": name, "app_id": 15368})
+				contexts = append(contexts, name)
+			}
+		}
+		stored["required_status_checks"] = map[string]any{"url": "response-only", "strict": checks["strict"], "contexts": contexts, "checks": resolved}
+	}
+	if reviews, ok := settings["required_pull_request_reviews"].(map[string]any); ok {
+		read := map[string]any{"url": "response-only", "dismiss_stale_reviews": false, "require_code_owner_reviews": false, "require_last_push_approval": false}
+		for key, value := range reviews {
+			read[key] = value
+		}
+		stored["required_pull_request_reviews"] = read
+	}
+	if restrictions, ok := settings["restrictions"].(map[string]any); ok {
+		stored["restrictions"] = restrictions
+	}
+	enforceAdmins, _ := settings["enforce_admins"].(bool)
+	stored["enforce_admins"] = map[string]any{"url": "response-only", "enabled": enforceAdmins}
+	for _, key := range []string{"required_linear_history", "allow_force_pushes", "allow_deletions", "block_creations", "required_conversation_resolution", "lock_branch", "allow_fork_syncing"} {
+		enabled, _ := settings[key].(bool)
+		stored[key] = map[string]any{"enabled": enabled}
+	}
+	s.protections[branch] = stored
 	return nil
 }
 
@@ -487,10 +565,16 @@ func TestActionsOIDCImmutableSubjectCanBeTurnedOn(t *testing.T) {
 }
 
 func (s *repositorySettingsMemory) ListEnvironmentBranchPolicies(_ context.Context, _ githubapi.Repository, environment string) ([]githubapi.EnvironmentBranchPolicy, error) {
+	if !s.customBranchPoliciesEnabled(environment) {
+		return nil, &githubapi.APIError{StatusCode: 404}
+	}
 	return append([]githubapi.EnvironmentBranchPolicy(nil), s.branchPolicies[environment]...), nil
 }
 
 func (s *repositorySettingsMemory) CreateEnvironmentBranchPolicy(_ context.Context, _ githubapi.Repository, environment string, request githubapi.EnvironmentBranchPolicyRequest) (githubapi.EnvironmentBranchPolicy, error) {
+	if !s.customBranchPoliciesEnabled(environment) {
+		return githubapi.EnvironmentBranchPolicy{}, &githubapi.APIError{StatusCode: 404}
+	}
 	for _, policy := range s.branchPolicies[environment] {
 		if policy.Name == request.Name && policy.Type == request.Type {
 			return githubapi.EnvironmentBranchPolicy{}, &githubapi.APIError{StatusCode: 422, Message: "already exists"}
@@ -517,14 +601,16 @@ func TestEnvironmentBranchPoliciesConvergeByTypeAndName(t *testing.T) {
 	service := newRepositorySettingsMemory()
 	// The live tag pattern shares its name with the declared branch pattern;
 	// only the type tells them apart.
-	service.environments = []githubapi.Environment{{Name: "production"}}
+	service.environments = []githubapi.Environment{{Name: "production", DeploymentBranchPolicy: &githubapi.DeploymentBranchPolicy{CustomBranchPolicies: true}}}
 	service.branchPolicies["production"] = []githubapi.EnvironmentBranchPolicy{{ID: 90, Name: "release/*", Type: "tag"}}
 	engine, err := New(service)
 	if err != nil {
 		t.Fatal(err)
 	}
 	policies := []config.EnvironmentBranchPolicy{{Name: "release/*", Type: "branch"}, {Name: "v*", Type: "tag"}}
-	desired := &config.ActionsConfig{Environments: []config.Environment{{Name: "production", BranchPolicies: &policies}}}
+	desired := &config.ActionsConfig{Environments: []config.Environment{{
+		Name: "production", DeploymentBranchPolicy: &config.DeploymentBranchPolicy{CustomBranchPolicies: true}, BranchPolicies: &policies,
+	}}}
 	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
 
 	before := Plan{}
@@ -581,5 +667,167 @@ func TestCustomEnvironmentProtectionPlanBlocksUnavailableApp(t *testing.T) {
 	change, ok := findChange(plan, "actions.environment.production.customProtectionRules")
 	if !ok || change.State != ChangeBlocked {
 		t.Fatalf("custom protection change = %#v, want blocked when app is unavailable", change)
+	}
+}
+
+// liveBranchProtection is the read API's answer for the protection used in
+// the repotest1 reproduction of issue #48.
+const liveBranchProtection = `{"url":"response-only","required_status_checks":{"url":"response-only","strict":true,"contexts":["build"],"contexts_url":"response-only","checks":[{"context":"build","app_id":15368}]},"required_pull_request_reviews":{"url":"response-only","dismiss_stale_reviews":true,"require_code_owner_reviews":false,"require_last_push_approval":false,"required_approving_review_count":1},"required_signatures":{"url":"response-only","enabled":true},"enforce_admins":{"url":"response-only","enabled":false},"required_linear_history":{"enabled":true},"allow_force_pushes":{"enabled":false},"allow_deletions":{"enabled":false},"block_creations":{"enabled":false},"required_conversation_resolution":{"enabled":true},"lock_branch":{"enabled":false},"allow_fork_syncing":{"enabled":false}}`
+
+func TestImportedBranchProtectionAppliesAndConverges(t *testing.T) {
+	var live map[string]any
+	if err := json.Unmarshal([]byte(liveBranchProtection), &live); err != nil {
+		t.Fatal(err)
+	}
+	// import writes the normalized read form into YAML, and loading the YAML
+	// back decodes numbers as int rather than float64.
+	encoded, err := yaml.Marshal(githubapi.NormalizeBranchProtection(live))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported := map[string]any{}
+	if err := yaml.Unmarshal(encoded, &imported); err != nil {
+		t.Fatal(err)
+	}
+	handWritten := map[string]any{}
+	if err := yaml.Unmarshal([]byte(`
+required_status_checks:
+  strict: true
+  contexts: [build]
+required_pull_request_reviews:
+  dismiss_stale_reviews: true
+  required_approving_review_count: 1
+enforce_admins: false
+restrictions: null
+required_linear_history: true
+required_conversation_resolution: true
+`), &handWritten); err != nil {
+		t.Fatal(err)
+	}
+	for name, settings := range map[string]map[string]any{"imported": imported, "hand written": handWritten} {
+		t.Run(name, func(t *testing.T) {
+			service := newRepositorySettingsMemory()
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signed := true
+			desired := &config.RepositorySettings{BranchProtections: []config.BranchProtectionConfig{{Branch: "main", Settings: settings, RequireSignedCommits: &signed}}}
+			repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+
+			before := Plan{}
+			appendRepositorySettingsChanges(context.Background(), service, &before, desired, repository, true, false)
+			change, ok := findChange(before, "settings.branchProtection.main")
+			if !ok || change.State != ChangeCreate || change.Summary != "create classic branch protection" {
+				t.Fatalf("plan for an unprotected existing branch = %#v, want protection created", change)
+			}
+			if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+				t.Fatalf("applyRepositorySettings() error = %v", err)
+			}
+			after := Plan{}
+			appendRepositorySettingsChanges(context.Background(), service, &after, desired, repository, true, false)
+			if after.HasDrift() || after.HasBlocked() {
+				t.Fatalf("post-apply plan = %#v, want branch protection converged", after.Changes)
+			}
+		})
+	}
+}
+
+func TestBranchProtectionRequestFillsRequiredSectionsAndDropsContexts(t *testing.T) {
+	request := githubapi.BranchProtectionRequest(map[string]any{
+		"required_status_checks":  map[string]any{"strict": true, "contexts": []any{"build"}, "checks": []any{map[string]any{"context": "build", "app_id": nil}}},
+		"required_linear_history": true,
+	})
+	for _, key := range []string{"enforce_admins", "required_pull_request_reviews", "restrictions"} {
+		if value, ok := request[key]; !ok || value != nil {
+			t.Fatalf("request[%q] = %#v (present %v), want explicit null", key, value, ok)
+		}
+	}
+	checks := request["required_status_checks"].(map[string]any)
+	if _, ok := checks["contexts"]; ok {
+		t.Fatalf("status checks = %#v, want contexts dropped in favor of checks", checks)
+	}
+	if _, ok := checks["checks"].([]any)[0].(map[string]any)["app_id"]; ok {
+		t.Fatalf("status checks = %#v, want a null app_id omitted", checks)
+	}
+}
+
+// rulesetProtectedBranches lists main as protected, as GitHub does for a
+// branch covered only by a ruleset, while classic protection answers 404.
+type rulesetProtectedBranches struct {
+	*repositorySettingsMemory
+}
+
+func (rulesetProtectedBranches) ListProtectedBranches(context.Context, githubapi.Repository) ([]githubapi.Branch, error) {
+	return []githubapi.Branch{{Name: "main", Protected: true}}, nil
+}
+
+func TestRulesetOnlyProtectedBranchPlansClassicProtectionCreate(t *testing.T) {
+	service := rulesetProtectedBranches{repositorySettingsMemory: newRepositorySettingsMemory()}
+	desired := &config.RepositorySettings{BranchProtections: []config.BranchProtectionConfig{{Branch: "main", Settings: map[string]any{"required_linear_history": true}}}}
+	plan := Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, true, false)
+	if !hasChange(plan, "settings.branchProtection.main", ChangeCreate) {
+		t.Fatalf("plan = %#v, want classic protection created on a ruleset-protected branch", plan.Changes)
+	}
+}
+
+func TestEnvironmentSwitchedToCustomBranchPoliciesIsNotBlocked(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	// The live environment allows all branches, so GitHub answers the branch
+	// policy list with 404 until custom policies are enabled.
+	service.environments = []githubapi.Environment{{Name: "release"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies := []config.EnvironmentBranchPolicy{{Name: "main", Type: "branch"}, {Name: "v*", Type: "tag"}}
+	desired := &config.ActionsConfig{Environments: []config.Environment{{
+		Name: "release", DeploymentBranchPolicy: &config.DeploymentBranchPolicy{CustomBranchPolicies: true}, BranchPolicies: &policies,
+	}}}
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+
+	before := Plan{}
+	appendActionsChanges(context.Background(), service, &before, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+	if before.HasBlocked() {
+		t.Fatalf("plan = %#v, want no blocked entries before custom policies are enabled", before.Changes)
+	}
+	if !hasChange(before, "actions.environment.release", ChangeUpdate) || !hasChange(before, "actions.environment.release.branchPolicies", ChangeCreate) {
+		t.Fatalf("plan = %#v, want the policy switched and the patterns created", before.Changes)
+	}
+	if err := engine.applyActions(context.Background(), repository, desired, Options{}); err != nil {
+		t.Fatalf("applyActions() error = %v", err)
+	}
+	after := Plan{}
+	appendActionsChanges(context.Background(), service, &after, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+	if after.HasDrift() || after.HasBlocked() {
+		t.Fatalf("post-apply plan = %#v, want the environment and its patterns converged", after.Changes)
+	}
+}
+
+func TestDeployKeyWithCommentConvergesAfterOneApply(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desired := &config.RepositorySettings{DeployKeys: []config.DeployKeyConfig{{
+		Title: "repotest1-deploy", Key: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITEST user@host\n", ReadOnly: true,
+	}}}
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+	if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+		t.Fatalf("first apply error = %v", err)
+	}
+	created := service.deployKeys[0].ID
+	plan := Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, repository, true, false)
+	if !hasChange(plan, "settings.deployKey.repotest1-deploy", ChangeNoop) {
+		t.Fatalf("plan = %#v, want the stored key without its comment to match", plan.Changes)
+	}
+	if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+		t.Fatalf("second apply error = %v", err)
+	}
+	if len(service.deployKeys) != 1 || service.deployKeys[0].ID != created {
+		t.Fatalf("deploy keys = %#v, want the key kept rather than recreated", service.deployKeys)
 	}
 }

@@ -229,7 +229,7 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 			for _, item := range desired.DeployKeys {
 				state := ChangeCreate
 				for _, actual := range keys {
-					if actual.Title == item.Title || actual.Key == item.Key {
+					if actual.Title == item.Title || sameDeployKey(item.Key, actual.Key) {
 						state = ChangeUpdate
 						if deployKeyMatches(item, actual) {
 							state = ChangeNoop
@@ -324,8 +324,11 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 							continue
 						}
 					}
-					summary := "configure protection after target branch exists"
-					if state == ChangeBlocked {
+					summary := "create classic branch protection"
+					switch {
+					case empty:
+						summary = "configure protection after target branch exists"
+					case state == ChangeBlocked:
 						summary = "target branch does not exist or its status could not be read"
 					}
 					append("branchProtection."+item.Branch, state, summary)
@@ -333,9 +336,13 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 				}
 				actual, getErr := api.GetBranchProtection(ctx, repository, item.Branch)
 				switch {
+				case githubapi.IsNotFound(getErr):
+					// A branch protected only by a ruleset is listed as protected
+					// but has no classic protection to compare against yet.
+					append("branchProtection."+item.Branch, ChangeCreate, "create classic branch protection")
 				case getErr != nil:
 					append("branchProtection."+item.Branch, ChangeBlocked, capabilityError(getErr))
-				case jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)):
+				case githubapi.BranchProtectionMatches(item.Settings, actual):
 					append("branchProtection."+item.Branch, ChangeNoop, "branch protection already converged")
 				default:
 					append("branchProtection."+item.Branch, ChangeUpdate, "converge classic branch protection")
@@ -515,7 +522,7 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 		request := githubapi.DeployKey{Title: item.Title, Key: item.Key, ReadOnly: item.ReadOnly}
 		found := false
 		for _, actual := range keys {
-			if actual.Title != item.Title && actual.Key != item.Key {
+			if actual.Title != item.Title && !sameDeployKey(item.Key, actual.Key) {
 				continue
 			}
 			found = true
@@ -604,15 +611,16 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 	if len(desired.BranchProtections) > 0 {
 		for _, item := range desired.BranchProtections {
 			actual, err := api.GetBranchProtection(ctx, repository, item.Branch)
+			request := githubapi.BranchProtectionRequest(item.Settings)
 			switch {
 			case githubapi.IsNotFound(err):
-				if err := api.SetBranchProtection(ctx, repository, item.Branch, item.Settings); err != nil {
+				if err := api.SetBranchProtection(ctx, repository, item.Branch, request); err != nil {
 					return fmt.Errorf("set branch protection %q: %w", item.Branch, err)
 				}
 			case err != nil:
 				return fmt.Errorf("get branch protection %q: %w", item.Branch, err)
-			case !jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)):
-				if err := api.SetBranchProtection(ctx, repository, item.Branch, item.Settings); err != nil {
+			case !githubapi.BranchProtectionMatches(item.Settings, actual):
+				if err := api.SetBranchProtection(ctx, repository, item.Branch, request); err != nil {
 					return fmt.Errorf("set branch protection %q: %w", item.Branch, err)
 				}
 			}
@@ -816,7 +824,18 @@ func autolinkMatches(desired config.AutolinkConfig, actual githubapi.Autolink) b
 }
 
 func deployKeyMatches(desired config.DeployKeyConfig, actual githubapi.DeployKey) bool {
-	return desired.Title == actual.Title && desired.Key == actual.Key && desired.ReadOnly == actual.ReadOnly
+	return desired.Title == actual.Title && sameDeployKey(desired.Key, actual.Key) && desired.ReadOnly == actual.ReadOnly
+}
+
+// sameDeployKey compares the key type and base64 body only. GitHub stores a
+// public key without the trailing comment that ssh-keygen writes into a .pub
+// file, so a key pasted with its comment is still the same key.
+func sameDeployKey(desired, actual string) bool {
+	left, right := strings.Fields(desired), strings.Fields(actual)
+	if len(left) < 2 || len(right) < 2 {
+		return strings.TrimSpace(desired) == strings.TrimSpace(actual)
+	}
+	return left[0] == right[0] && left[1] == right[1]
 }
 
 func jsonEqual(left, right any) bool {

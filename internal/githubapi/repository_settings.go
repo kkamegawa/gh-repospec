@@ -2,7 +2,10 @@ package githubapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"reflect"
+	"sort"
 	"strconv"
 )
 
@@ -325,9 +328,137 @@ func NormalizeBranchProtection(protection map[string]any) map[string]any {
 			clean[key] = value["enabled"]
 		}
 	}
+	// GitHub mirrors every required check into the legacy contexts list, and
+	// the update API rejects a body that carries both, so checks is kept as
+	// the single representation.
+	if checks, ok := clean["required_status_checks"].(map[string]any); ok {
+		if _, hasChecks := checks["checks"]; hasChecks {
+			delete(checks, "contexts")
+		}
+	}
 	delete(clean, "url")
 	delete(clean, "required_signatures")
 	return clean
+}
+
+// BranchProtectionRequest converts declared branch protection settings into
+// the body accepted by the update API. The API requires
+// required_status_checks, enforce_admins, required_pull_request_reviews, and
+// restrictions to be present, with null disabling a section, while the read
+// API omits sections that are not in use.
+func BranchProtectionRequest(settings map[string]any) map[string]any {
+	request := cloneJSONMap(settings)
+	for _, key := range []string{"required_status_checks", "enforce_admins", "required_pull_request_reviews", "restrictions"} {
+		if _, ok := request[key]; !ok {
+			request[key] = nil
+		}
+	}
+	if checks, ok := request["required_status_checks"].(map[string]any); ok {
+		// checks and contexts are alternative forms of the same list; sending
+		// both matches more than one branch of the request schema.
+		if list, hasChecks := checks["checks"].([]any); hasChecks {
+			delete(checks, "contexts")
+			for _, item := range list {
+				if check, ok := item.(map[string]any); ok && check["app_id"] == nil {
+					delete(check, "app_id")
+				}
+			}
+		}
+	}
+	return request
+}
+
+// BranchProtectionMatches reports whether declared settings describe the
+// protection GitHub returned. Booleans that are false and sections that are
+// null are the update API's defaults, so they compare equal to an absent key.
+// A declaration that lists required checks only by context name matches the
+// checks GitHub resolved for those names, whichever app GitHub assigned.
+func BranchProtectionMatches(desired, actual map[string]any) bool {
+	want := comparableBranchProtection(desired)
+	got := comparableBranchProtection(NormalizeBranchProtection(actual))
+	wantChecks, _ := want["required_status_checks"].(map[string]any)
+	gotChecks, _ := got["required_status_checks"].(map[string]any)
+	if wantChecks != nil && gotChecks != nil {
+		if _, declaresChecks := wantChecks["checks"]; !declaresChecks {
+			if _, declaresContexts := wantChecks["contexts"]; declaresContexts {
+				contexts := make([]any, 0)
+				if list, ok := gotChecks["checks"].([]any); ok {
+					for _, item := range list {
+						if check, ok := item.(map[string]any); ok {
+							contexts = append(contexts, check["context"])
+						}
+					}
+				}
+				delete(gotChecks, "checks")
+				gotChecks["contexts"] = contexts
+			}
+		}
+	}
+	for _, values := range []map[string]any{wantChecks, gotChecks} {
+		if values != nil {
+			for _, key := range []string{"checks", "contexts"} {
+				if list, ok := values[key].([]any); ok {
+					sortJSONList(list)
+				}
+			}
+		}
+	}
+	return reflect.DeepEqual(roundTripJSON(want), roundTripJSON(got))
+}
+
+// comparableBranchProtection drops default-valued keys and resolves the
+// checks/contexts duplication so equivalent protections compare equal.
+func comparableBranchProtection(settings map[string]any) map[string]any {
+	clean := cloneJSONMap(settings)
+	if checks, ok := clean["required_status_checks"].(map[string]any); ok {
+		if list, hasChecks := checks["checks"].([]any); hasChecks {
+			delete(checks, "contexts")
+			for _, item := range list {
+				if check, ok := item.(map[string]any); ok && check["app_id"] == nil {
+					delete(check, "app_id")
+				}
+			}
+		}
+	}
+	dropDefaultValues(clean)
+	return clean
+}
+
+func dropDefaultValues(values map[string]any) {
+	for key, value := range values {
+		switch value := value.(type) {
+		case nil:
+			delete(values, key)
+		case bool:
+			if !value {
+				delete(values, key)
+			}
+		case map[string]any:
+			dropDefaultValues(value)
+		}
+	}
+}
+
+func sortJSONList(list []any) {
+	sort.SliceStable(list, func(i, j int) bool {
+		left, _ := json.Marshal(list[i])
+		right, _ := json.Marshal(list[j])
+		return string(left) < string(right)
+	})
+}
+
+// roundTripJSON maps YAML- and JSON-decoded values onto the same Go types,
+// for example int and float64 numbers, before they are compared.
+func roundTripJSON(value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return value
+	}
+	return decoded
 }
 
 func stripBranchProtectionLinks(values map[string]any) {
