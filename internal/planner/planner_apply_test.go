@@ -665,9 +665,11 @@ func TestApplyRechecksAIPullRequestScanCodeQLDependency(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
+			// AI Scan is live-enabled so that disabling it is a real change.
 			service := &recordingService{fakeService: fakeService{
 				repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
 				codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
+				aiScan:             githubapi.AIScanSetting{PRScan: "enabled"},
 			}}
 			engine, err := New(service)
 			if err != nil {
@@ -721,6 +723,7 @@ func TestApplyAIPullRequestScanAfterOptionalCodeQLWriteFailure(t *testing.T) {
 				fakeService: fakeService{
 					repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
 					codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
+					aiScan:             githubapi.AIScanSetting{PRScan: "enabled"},
 				},
 				configureCodeQL: &githubapi.APIError{StatusCode: 422, Message: "CodeQL default setup could not be configured"},
 			}
@@ -872,6 +875,41 @@ func TestApplyDisablesAIPullRequestScanBeforeCodeQL(t *testing.T) {
 	}
 	if service.lastAIScan.PRScan != "disabled" {
 		t.Fatalf("lastAIScan.PRScan = %q, want %q", service.lastAIScan.PRScan, "disabled")
+	}
+}
+
+// TestApplySkipsConvergedCodeScanningWrites guards the case plan reports as two
+// noops: when CodeQL default setup and AI Scan already match the declaration,
+// apply writes neither.
+func TestApplySkipsConvergedCodeScanningWrites(t *testing.T) {
+	t.Parallel()
+	for _, enabled := range []bool{true, false} {
+		t.Run(map[bool]string{true: "enabled", false: "disabled"}[enabled], func(t *testing.T) {
+			t.Parallel()
+			live := githubapi.CodeQLDefaultSetupStatus{State: "not-configured"}
+			liveAIScan := githubapi.AIScanSetting{PRScan: "disabled"}
+			if enabled {
+				live.State, liveAIScan.PRScan = "configured", "enabled"
+			}
+			service := &recordingService{fakeService: fakeService{
+				repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+				codeQLDefaultSetup: live,
+				aiScan:             liveAIScan,
+			}}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+				CodeQLDefaultSetup: &config.FeatureSetting{Enabled: enabled},
+				AIPullRequestScan:  &config.FeatureSetting{Enabled: enabled},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(service.mutations) != 0 {
+				t.Fatalf("mutations = %#v, want none when both features already match", service.mutations)
+			}
+		})
 	}
 }
 

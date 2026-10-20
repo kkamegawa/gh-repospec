@@ -995,9 +995,9 @@ func (e *Engine) applyCodeQLDefaultSetup(ctx context.Context, repository githuba
 	return false, nil
 }
 
-// applyAIPullRequestScan writes the declared AI Scan for pull requests state,
-// applying the same unavailability and dependency rules as Build through the
-// shared aiPullRequestScanReasons.
+// applyAIPullRequestScan writes the declared AI Scan for pull requests state
+// unless it already holds, applying the same unavailability and dependency
+// rules as Build through the shared aiPullRequestScanReasons.
 func (e *Engine) applyAIPullRequestScan(ctx context.Context, repository githubapi.Repository, desired *config.SecurityConfig, state codeScanningState, codeQLWriteFailed bool) error {
 	feature := desired.AIPullRequestScan
 	unavailable, dependency := aiPullRequestScanReasons(desired, state, codeQLWriteFailed)
@@ -1011,6 +1011,8 @@ func (e *Engine) applyAIPullRequestScan(ctx context.Context, repository githubap
 		if !feature.Optional {
 			return fmt.Errorf("set AI Scan for pull requests for %s: %s", repository, dependency)
 		}
+		return nil
+	case state.aiScanKnown && state.aiScanEnabled == feature.Enabled:
 		return nil
 	}
 	setting := githubapi.AIScanSetting{PRScan: "disabled"}
