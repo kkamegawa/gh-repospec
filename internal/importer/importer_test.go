@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
 	"github.com/kkamegawa/gh-repospec/internal/githubapi"
@@ -18,31 +19,54 @@ import (
 // zero value that succeeds with an empty result, so a test only sets what it
 // exercises.
 type fakeReader struct {
-	repository         githubapi.RepositoryInfo
-	getRepositoryErr   error
-	immutableReleases  githubapi.ImmutableReleases
-	labels             []githubapi.Label
-	milestones         []githubapi.Milestone
-	rulesets           []githubapi.Ruleset
-	rulesetDetail      map[int64]githubapi.Ruleset
-	getRulesetErr      error
-	actionsPermissions githubapi.ActionsPermissions
-	selectedActions    githubapi.SelectedActions
-	workflowPerms      githubapi.DefaultWorkflowPermissions
-	forkApproval       githubapi.ForkPullRequestApproval
-	getForkApprovalErr error
-	actionVariables    githubapi.ActionVariableList
-	actionSecrets      githubapi.SecretList
-	environments       []githubapi.Environment
-	vulnAlertsEnabled  bool
-	securityFixes      bool
-	privateVR          bool
-	codeQL             githubapi.CodeQLDefaultSetupStatus
-	getCodeQLErr       error
-	aiScan             githubapi.AIScanSetting
-	getAIScanErr       error
-	agentVariables     githubapi.AgentVariableList
-	agentSecrets       githubapi.SecretList
+	repository                githubapi.RepositoryInfo
+	getRepositoryErr          error
+	immutableReleases         githubapi.ImmutableReleases
+	pages                     githubapi.PagesSite
+	getPagesErr               error
+	interactionLimit          githubapi.RepositoryInteractionLimit
+	interactionLimitErr       error
+	creationCap               githubapi.PullRequestCreationCap
+	creationCapErr            error
+	creationCapBypasses       []githubapi.InteractionBypassUser
+	creationCapBypassErr      error
+	webhooks                  []githubapi.RepositoryWebhook
+	autolinks                 []githubapi.Autolink
+	deployKeys                []githubapi.DeployKey
+	collaborators             []githubapi.Collaborator
+	teams                     []githubapi.RepositoryTeam
+	customProperties          []githubapi.CustomPropertyValue
+	protectedBranches         []githubapi.Branch
+	branchProtections         map[string]map[string]any
+	branchProtectionErr       map[string]error
+	signatureErr              map[string]error
+	labels                    []githubapi.Label
+	milestones                []githubapi.Milestone
+	rulesets                  []githubapi.Ruleset
+	rulesetDetail             map[int64]githubapi.Ruleset
+	getRulesetErr             error
+	actionsPermissions        githubapi.ActionsPermissions
+	selectedActions           githubapi.SelectedActions
+	oidcCustomization         githubapi.OIDCSubjectCustomization
+	workflowPerms             githubapi.DefaultWorkflowPermissions
+	forkApproval              githubapi.ForkPullRequestApproval
+	workflowAccess            githubapi.WorkflowRepositoryAccess
+	getForkApprovalErr        error
+	actionVariables           githubapi.ActionVariableList
+	actionSecrets             githubapi.SecretList
+	environments              []githubapi.Environment
+	environmentPolicies       map[string][]githubapi.EnvironmentBranchPolicy
+	deploymentProtectionRules map[string][]githubapi.DeploymentProtectionRule
+	environmentSecrets        map[string]githubapi.SecretList
+	vulnAlertsEnabled         bool
+	securityFixes             bool
+	privateVR                 bool
+	codeQL                    githubapi.CodeQLDefaultSetupStatus
+	getCodeQLErr              error
+	aiScan                    githubapi.AIScanSetting
+	getAIScanErr              error
+	agentVariables            githubapi.AgentVariableList
+	agentSecrets              githubapi.SecretList
 }
 
 func (f *fakeReader) GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error) {
@@ -50,6 +74,45 @@ func (f *fakeReader) GetRepository(context.Context, githubapi.Repository) (githu
 }
 func (f *fakeReader) GetImmutableReleases(context.Context, githubapi.Repository) (githubapi.ImmutableReleases, error) {
 	return f.immutableReleases, nil
+}
+func (f *fakeReader) GetPages(context.Context, githubapi.Repository) (githubapi.PagesSite, error) {
+	return f.pages, f.getPagesErr
+}
+func (f *fakeReader) GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error) {
+	return f.interactionLimit, f.interactionLimitErr
+}
+func (f *fakeReader) GetPullRequestCreationCap(context.Context, githubapi.Repository) (githubapi.PullRequestCreationCap, error) {
+	return f.creationCap, f.creationCapErr
+}
+func (f *fakeReader) ListPullRequestCreationCapBypassUsers(context.Context, githubapi.Repository) ([]githubapi.InteractionBypassUser, error) {
+	return f.creationCapBypasses, f.creationCapBypassErr
+}
+func (f *fakeReader) ListWebhooks(context.Context, githubapi.Repository) ([]githubapi.RepositoryWebhook, error) {
+	return f.webhooks, nil
+}
+func (f *fakeReader) ListAutolinks(context.Context, githubapi.Repository) ([]githubapi.Autolink, error) {
+	return f.autolinks, nil
+}
+func (f *fakeReader) ListDeployKeys(context.Context, githubapi.Repository) ([]githubapi.DeployKey, error) {
+	return f.deployKeys, nil
+}
+func (f *fakeReader) ListCollaborators(context.Context, githubapi.Repository) ([]githubapi.Collaborator, error) {
+	return f.collaborators, nil
+}
+func (f *fakeReader) ListRepositoryTeams(context.Context, githubapi.Repository) ([]githubapi.RepositoryTeam, error) {
+	return f.teams, nil
+}
+func (f *fakeReader) GetCustomPropertyValues(context.Context, githubapi.Repository) ([]githubapi.CustomPropertyValue, error) {
+	return f.customProperties, nil
+}
+func (f *fakeReader) ListProtectedBranches(context.Context, githubapi.Repository) ([]githubapi.Branch, error) {
+	return f.protectedBranches, nil
+}
+func (f *fakeReader) GetBranchProtection(_ context.Context, _ githubapi.Repository, branch string) (map[string]any, error) {
+	return f.branchProtections[branch], f.branchProtectionErr[branch]
+}
+func (f *fakeReader) GetRequiredSignatures(_ context.Context, _ githubapi.Repository, branch string) (bool, error) {
+	return false, f.signatureErr[branch]
 }
 func (f *fakeReader) ListLabels(context.Context, githubapi.Repository) ([]githubapi.Label, error) {
 	return f.labels, nil
@@ -72,11 +135,17 @@ func (f *fakeReader) GetActionsPermissions(context.Context, githubapi.Repository
 func (f *fakeReader) GetSelectedActions(context.Context, githubapi.Repository) (githubapi.SelectedActions, error) {
 	return f.selectedActions, nil
 }
+func (f *fakeReader) GetOIDCSubjectCustomization(context.Context, githubapi.Repository) (githubapi.OIDCSubjectCustomization, error) {
+	return f.oidcCustomization, nil
+}
 func (f *fakeReader) GetDefaultWorkflowPermissions(context.Context, githubapi.Repository) (githubapi.DefaultWorkflowPermissions, error) {
 	return f.workflowPerms, nil
 }
 func (f *fakeReader) GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error) {
 	return f.forkApproval, f.getForkApprovalErr
+}
+func (f *fakeReader) GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error) {
+	return f.workflowAccess, nil
 }
 func (f *fakeReader) ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error) {
 	return f.actionVariables, nil
@@ -86,6 +155,15 @@ func (f *fakeReader) ListActionsSecrets(context.Context, githubapi.Repository) (
 }
 func (f *fakeReader) ListEnvironments(context.Context, githubapi.Repository) ([]githubapi.Environment, error) {
 	return f.environments, nil
+}
+func (f *fakeReader) ListEnvironmentBranchPolicies(_ context.Context, _ githubapi.Repository, name string) ([]githubapi.EnvironmentBranchPolicy, error) {
+	return f.environmentPolicies[name], nil
+}
+func (f *fakeReader) ListDeploymentProtectionRules(_ context.Context, _ githubapi.Repository, name string) ([]githubapi.DeploymentProtectionRule, error) {
+	return f.deploymentProtectionRules[name], nil
+}
+func (f *fakeReader) ListEnvironmentSecrets(_ context.Context, _ githubapi.Repository, name string) (githubapi.SecretList, error) {
+	return f.environmentSecrets[name], nil
 }
 func (f *fakeReader) GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error) {
 	return f.vulnAlertsEnabled, nil
@@ -113,10 +191,98 @@ var _ Reader = (*fakeReader)(nil)
 
 func newFakeReader() *fakeReader {
 	return &fakeReader{
-		repository:    githubapi.RepositoryInfo{Visibility: "public"},
-		rulesetDetail: map[int64]githubapi.Ruleset{},
-		codeQL:        githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
-		aiScan:        githubapi.AIScanSetting{PRScan: "disabled"},
+		repository:          githubapi.RepositoryInfo{Visibility: "public"},
+		rulesetDetail:       map[int64]githubapi.Ruleset{},
+		getPagesErr:         &githubapi.APIError{StatusCode: 404, Method: "GET", Path: "/pages"},
+		branchProtections:   map[string]map[string]any{},
+		branchProtectionErr: map[string]error{},
+		signatureErr:        map[string]error{},
+		oidcCustomization:   githubapi.OIDCSubjectCustomization{UseDefault: true},
+		codeQL:              githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
+		aiScan:              githubapi.AIScanSetting{PRScan: "disabled"},
+	}
+}
+
+func TestImportHandlesRulesetOnlyProtectedBranchesAndDisabledSignatures(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.protectedBranches = []githubapi.Branch{{Name: "main", Protected: true}, {Name: "release", Protected: true}}
+	reader.branchProtectionErr["main"] = &githubapi.APIError{StatusCode: 404, Method: "GET"}
+	reader.branchProtections["release"] = map[string]any{"required_linear_history": map[string]any{"enabled": true}}
+	reader.signatureErr["release"] = &githubapi.APIError{StatusCode: 404, Method: "GET"}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatalf("Import() error = %v, want ruleset-only branch protection and disabled signatures accepted", err)
+	}
+	if got := len(result.Config.Settings.BranchProtections); got != 1 {
+		t.Fatalf("imported classic branch protections = %d, want only the classic-protected branch", got)
+	}
+	protection := result.Config.Settings.BranchProtections[0]
+	if protection.Branch != "release" || protection.RequireSignedCommits == nil || *protection.RequireSignedCommits {
+		t.Fatalf("imported branch protection = %#v, want release with required signatures disabled", protection)
+	}
+}
+
+func TestImportMapsCustomEnvironmentProtectionRules(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.environments = []githubapi.Environment{{Name: "production"}}
+	reader.deploymentProtectionRules = map[string][]githubapi.DeploymentProtectionRule{
+		"production": {
+			{ID: 4, Enabled: true, App: struct {
+				ID   int64  `json:"id"`
+				Slug string `json:"slug"`
+			}{ID: 10, Slug: "release-approval"}},
+			{ID: 5, Enabled: true, App: struct {
+				ID   int64  `json:"id"`
+				Slug string `json:"slug"`
+			}{ID: 11, Slug: "security-check"}},
+			{ID: 6, Enabled: false, App: struct {
+				ID   int64  `json:"id"`
+				Slug string `json:"slug"`
+			}{ID: 12, Slug: "disabled-check"}},
+		},
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Config.Actions.Environments) != 1 {
+		t.Fatalf("environments = %#v, want production", result.Config.Actions.Environments)
+	}
+	rules := result.Config.Actions.Environments[0].CustomProtectionRules
+	if rules == nil || strings.Join(*rules, ",") != "release-approval,security-check" {
+		t.Fatalf("custom protection rules = %v, want sorted enabled app slugs", rules)
+	}
+}
+
+func TestImportMapsRepositoryInteractionSettings(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.interactionLimit = githubapi.RepositoryInteractionLimit{
+		Limit: "contributors_only", Origin: "repository", ExpiresAt: time.Now().UTC().Add(48 * time.Hour).Format(time.RFC3339),
+	}
+	reader.creationCap = githubapi.PullRequestCreationCap{Enabled: true, MaxOpenPullRequests: 5, IncludeDrafts: true}
+	reader.creationCapBypasses = []githubapi.InteractionBypassUser{{Login: "zeta"}, {Login: "alpha"}}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := result.Config.Settings
+	if settings.InteractionLimit == nil || !settings.InteractionLimit.Enabled || settings.InteractionLimit.Limit != "contributors_only" || settings.InteractionLimit.Expiry != "three_days" {
+		t.Fatalf("interaction limit = %#v, want enabled contributors_only with three_days preset", settings.InteractionLimit)
+	}
+	if settings.PullRequestCreationCap == nil || !settings.PullRequestCreationCap.Enabled || settings.PullRequestCreationCap.MaxOpenPullRequests != 5 || !settings.PullRequestCreationCap.IncludeDrafts {
+		t.Fatalf("pull request creation cap = %#v", settings.PullRequestCreationCap)
+	}
+	if users := settings.PullRequestCreationCap.BypassUsers; users == nil || strings.Join(*users, ",") != "alpha,zeta" {
+		t.Fatalf("pull request cap bypass users = %v, want sorted list", users)
+	}
+	if !hasDiagnostic(result.Diagnostics, "settings.interactionLimit.expiresAt") {
+		t.Fatalf("diagnostics = %#v, want explicit absolute expiry limitation", result.Diagnostics)
 	}
 }
 
@@ -130,8 +296,12 @@ func TestImportMapsRepositorySettings(t *testing.T) {
 		Visibility: "public", DefaultBranch: "main", Archived: false,
 		Topics: []string{"b", "a"}, HasIssues: true, HasWiki: false,
 		AllowMergeCommit: true, MergeCommitTitle: "PR_TITLE",
+		AllowForking: true, HasPullRequests: true, HasDownloads: false,
+		PullRequestCreationPolicy: "all", AllowUpdateBranch: false,
+		WebCommitSignoffRequired: false,
 	}
 	reader.immutableReleases = githubapi.ImmutableReleases{Enabled: true}
+	reader.workflowAccess = githubapi.WorkflowRepositoryAccess{AccessLevel: "organization"}
 
 	result, err := Import(context.Background(), reader, testRepo())
 	if err != nil {
@@ -162,12 +332,92 @@ func TestImportMapsRepositorySettings(t *testing.T) {
 	if repo.MergeCommitTitle != "PR_TITLE" {
 		t.Fatalf("MergeCommitTitle = %q", repo.MergeCommitTitle)
 	}
+	if result.Config.Actions == nil || result.Config.Actions.WorkflowAccessLevel != "organization" {
+		t.Fatalf("Actions.WorkflowAccessLevel = %#v, want organization", result.Config.Actions)
+	}
+	if repo.AllowForking == nil || !*repo.AllowForking || repo.HasPullRequests == nil || !*repo.HasPullRequests || repo.HasDownloads == nil || *repo.HasDownloads {
+		t.Fatalf("general repository settings were not imported: %#v", repo)
+	}
+	if repo.PullRequestCreationPolicy != "all" || repo.AllowUpdateBranch == nil || *repo.AllowUpdateBranch || repo.WebCommitSignoffRequired == nil || *repo.WebCommitSignoffRequired {
+		t.Fatalf("pull request and signoff settings were not imported: %#v", repo)
+	}
 	// Local intent must never be inferred from repository state.
 	if repo.Create {
 		t.Fatal("Create was set from repository state; it is local intent")
 	}
 	if repo.AllowVisibilityChange {
 		t.Fatal("AllowVisibilityChange was set from repository state; it is local intent")
+	}
+}
+
+func TestImportMapsAdditionalRepositorySettings(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.repository.Owner.Type = "Organization"
+	reader.pages = githubapi.PagesSite{
+		BuildType: "workflow", Source: &githubapi.PagesSource{Branch: "main", Path: "/"}, CNAME: "docs.example.test", HTTPSEnforced: true,
+	}
+	reader.getPagesErr = nil
+	reader.webhooks = []githubapi.RepositoryWebhook{{
+		ID: 44, Name: "web", Active: true, Events: []string{"push", "pull_request"},
+		Config: githubapi.WebhookConfig{URL: "https://hooks.example.test/events", ContentType: "json", InsecureSSL: "0"},
+	}}
+	reader.autolinks = []githubapi.Autolink{{ID: 3, KeyPrefix: "ISSUE-", URLTemplate: "https://issues.example.test/<num>", IsAlphanumeric: true}}
+	reader.deployKeys = []githubapi.DeployKey{{ID: 8, Title: "read-only", Key: "ssh-ed25519 AAAA test", ReadOnly: true}}
+	reader.collaborators = []githubapi.Collaborator{{Login: "octo", Permission: "admin"}, {Login: "writer", Permission: "push"}}
+	reader.teams = []githubapi.RepositoryTeam{{Slug: "maintainers", Permission: "maintain"}}
+	reader.customProperties = []githubapi.CustomPropertyValue{{PropertyName: "tier", Value: "gold"}}
+	immutableSubject := true
+	reader.oidcCustomization = githubapi.OIDCSubjectCustomization{UseDefault: false, IncludeClaimKeys: []string{"repo", "context"}, UseImmutableSubject: &immutableSubject}
+	reader.protectedBranches = []githubapi.Branch{{Name: "main", Protected: true}}
+	reader.branchProtections["main"] = map[string]any{
+		"url": "https://api.example.test/protection", "enforce_admins": map[string]any{"url": "https://api.example.test/enforce", "enabled": true},
+		"allow_force_pushes":     map[string]any{"enabled": false},
+		"required_status_checks": map[string]any{"url": "https://api.example.test/checks", "contexts_url": "https://api.example.test/contexts", "strict": true, "contexts": []any{"ci"}},
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := result.Config.Settings
+	if result.Config.Actions == nil || result.Config.Actions.OIDCSubjectCustomization == nil || result.Config.Actions.OIDCSubjectCustomization.UseDefault || len(result.Config.Actions.OIDCSubjectCustomization.IncludeClaimKeys) != 2 || result.Config.Actions.OIDCSubjectCustomization.UseImmutableSubject == nil || !*result.Config.Actions.OIDCSubjectCustomization.UseImmutableSubject {
+		t.Fatalf("Actions OIDC customization = %#v", result.Config.Actions)
+	}
+	if settings == nil || settings.Pages == nil || !settings.Pages.Enabled || settings.Pages.Source == nil || settings.Pages.Source.Branch != "main" || settings.Pages.HTTPSRequired == nil || !*settings.Pages.HTTPSRequired {
+		t.Fatalf("Pages settings = %#v", settings)
+	}
+	if len(settings.Webhooks) != 1 || settings.Webhooks[0].URL != "https://hooks.example.test/events" || settings.Webhooks[0].Events[0] != "push" {
+		t.Fatalf("Webhooks = %#v", settings.Webhooks)
+	}
+	if len(settings.Autolinks) != 1 || settings.Autolinks[0].KeyPrefix != "ISSUE-" || !settings.Autolinks[0].IsAlphanumeric {
+		t.Fatalf("Autolinks = %#v", settings.Autolinks)
+	}
+	if len(settings.DeployKeys) != 1 || !settings.DeployKeys[0].ReadOnly {
+		t.Fatalf("DeployKeys = %#v", settings.DeployKeys)
+	}
+	if len(settings.Collaborators) != 1 || settings.Collaborators[0].Login != "writer" {
+		t.Fatalf("Collaborators = %#v; repository owner should not be repeated", settings.Collaborators)
+	}
+	if len(settings.Teams) != 1 || settings.Teams[0].Slug != "maintainers" || len(settings.CustomProperties) != 1 {
+		t.Fatalf("team/custom property settings = %#v / %#v", settings.Teams, settings.CustomProperties)
+	}
+	if len(settings.BranchProtections) != 1 || settings.BranchProtections[0].Branch != "main" {
+		t.Fatalf("BranchProtections = %#v", settings.BranchProtections)
+	}
+	protection := settings.BranchProtections[0].Settings
+	if protection["url"] != nil || protection["enforce_admins"] != true || protection["allow_force_pushes"] != false {
+		t.Fatalf("branch protection request normalization = %#v", protection)
+	}
+	webhookSecretDiagnostic := false
+	for _, diagnostic := range result.Diagnostics {
+		if strings.Contains(diagnostic.Resource, "webhooks") && strings.Contains(diagnostic.Resource, ".secret") {
+			webhookSecretDiagnostic = true
+			break
+		}
+	}
+	if !webhookSecretDiagnostic {
+		t.Fatalf("webhook secret omission was not diagnosed: %#v", result.Diagnostics)
 	}
 }
 
@@ -322,6 +572,7 @@ func TestImportReversesEveryBypassActorType(t *testing.T) {
 			{ActorID: 1, ActorType: "OrganizationAdmin", BypassMode: "always"},
 			{ActorID: 42, ActorType: "Team", BypassMode: "always"},
 			{ActorID: 7, ActorType: "Integration", BypassMode: "pull_request"},
+			{ActorID: 1450745, ActorType: "User", BypassMode: "always"},
 		},
 	}
 
@@ -330,8 +581,8 @@ func TestImportReversesEveryBypassActorType(t *testing.T) {
 		t.Fatal(err)
 	}
 	actors := result.Config.Rulesets[0].BypassActors
-	if len(actors) != 7 {
-		t.Fatalf("len(actors) = %d, want 7", len(actors))
+	if len(actors) != 8 {
+		t.Fatalf("len(actors) = %d, want 8", len(actors))
 	}
 	want := []config.BypassActorConfig{
 		{Role: "maintain", BypassMode: "always"},
@@ -341,6 +592,7 @@ func TestImportReversesEveryBypassActorType(t *testing.T) {
 		{OrgAdmin: true, BypassMode: "always"},
 		{Team: "id:42", BypassMode: "always"},
 		{App: "id:7", BypassMode: "pull_request"},
+		{User: "id:1450745", BypassMode: "always"},
 	}
 	for i, w := range want {
 		if actors[i] != w {

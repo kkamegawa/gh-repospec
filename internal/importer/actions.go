@@ -43,6 +43,19 @@ func importActions(ctx context.Context, reader Reader, repository githubapi.Repo
 	}
 	cfg.DefaultWorkflowPermissions = workflowPermissions.DefaultWorkflowPermissions
 	cfg.CanApprovePullRequestWorkflows = boolPtr(workflowPermissions.CanApprovePullRequest)
+	workflowAccess, err := reader.GetWorkflowRepositoryAccess(ctx, repository)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get workflow repository access for %s: %w", repository, err)
+	}
+	cfg.WorkflowAccessLevel = workflowAccess.AccessLevel
+	oidc, err := reader.GetOIDCSubjectCustomization(ctx, repository)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get Actions OIDC subject customization for %s: %w", repository, err)
+	}
+	cfg.OIDCSubjectCustomization = &config.OIDCSubjectCustomizationConfig{
+		UseDefault: oidc.UseDefault, IncludeClaimKeys: append([]string(nil), oidc.IncludeClaimKeys...),
+		UseImmutableSubject: oidc.UseImmutableSubject,
+	}
 
 	var diagnostics []Diagnostic
 	if info.Private {
@@ -80,11 +93,86 @@ func importActions(ctx context.Context, reader Reader, repository githubapi.Repo
 		return nil, nil, fmt.Errorf("list environments for %s: %w", repository, err)
 	}
 	for _, environment := range environments {
-		cfg.Environments = append(cfg.Environments, config.Environment{Name: environment.Name})
+		mapped := mapEnvironment(environment)
+		customRules, err := reader.ListDeploymentProtectionRules(ctx, repository, environment.Name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list custom deployment protection rules for environment %q: %w", environment.Name, err)
+		}
+		customRuleSlugs := make([]string, 0, len(customRules))
+		for _, rule := range customRules {
+			if rule.Enabled && rule.App.Slug != "" {
+				customRuleSlugs = append(customRuleSlugs, rule.App.Slug)
+			}
+		}
+		sort.Strings(customRuleSlugs)
+		mapped.CustomProtectionRules = &customRuleSlugs
+		if environment.DeploymentBranchPolicy != nil && environment.DeploymentBranchPolicy.CustomBranchPolicies {
+			policies, err := reader.ListEnvironmentBranchPolicies(ctx, repository, environment.Name)
+			if err != nil {
+				return nil, nil, fmt.Errorf("list deployment branch policies for environment %q: %w", environment.Name, err)
+			}
+			branchPolicies := make([]config.EnvironmentBranchPolicy, 0, len(policies))
+			for _, policy := range policies {
+				// The REST response exposes the pattern but not the branch/tag
+				// discriminator accepted by the write endpoint. Preserve the
+				// supported branch default and report the unreadable distinction.
+				branchPolicies = append(branchPolicies, config.EnvironmentBranchPolicy{Name: policy.Name, Type: "branch"})
+			}
+			mapped.BranchPolicies = &branchPolicies
+			if len(policies) > 0 {
+				diagnostics = append(diagnostics, Diagnostic{Resource: "actions.environment." + environment.Name + ".branchPolicyTypes", Message: "GitHub's list response omits whether each pattern targets a branch or tag; imported as branch for review"})
+			}
+		}
+		secrets, err := reader.ListEnvironmentSecrets(ctx, repository, environment.Name)
+		if err != nil {
+			return nil, nil, fmt.Errorf("list secrets for environment %q: %w", environment.Name, err)
+		}
+		for _, secret := range secrets.Secrets {
+			diagnostics = append(diagnostics, secretDiagnostic("actions.environment."+environment.Name+".secret."+secret.Name))
+		}
+		for _, rule := range environment.ProtectionRules {
+			if rule.Type != "wait_timer" && rule.Type != "required_reviewers" && rule.Type != "branch_policy" {
+				diagnostics = append(diagnostics, Diagnostic{Resource: "actions.environment." + environment.Name + ".protectionRule." + rule.Type, Message: "this deployment protection rule type is not represented in the configuration schema"})
+			}
+		}
+		cfg.Environments = append(cfg.Environments, mapped)
 	}
 	sort.Slice(cfg.Environments, func(i, j int) bool { return cfg.Environments[i].Name < cfg.Environments[j].Name })
 
 	return cfg, diagnostics, nil
+}
+
+func mapEnvironment(environment githubapi.Environment) config.Environment {
+	waitTimer := 0
+	preventSelfReview := false
+	reviewers := make([]config.EnvironmentReviewer, 0)
+	for _, rule := range environment.ProtectionRules {
+		switch rule.Type {
+		case "wait_timer":
+			waitTimer = rule.WaitTimer
+		case "required_reviewers":
+			preventSelfReview = rule.PreventSelfReview
+			for _, reviewer := range rule.Reviewers {
+				reviewers = append(reviewers, config.EnvironmentReviewer{Type: reviewer.Type, ID: reviewer.Reviewer.ID})
+			}
+		}
+	}
+	var policy *config.DeploymentBranchPolicy
+	if environment.DeploymentBranchPolicy == nil {
+		policy = &config.DeploymentBranchPolicy{AllowAllBranches: true}
+	} else {
+		policy = &config.DeploymentBranchPolicy{
+			ProtectedBranches:    environment.DeploymentBranchPolicy.ProtectedBranches,
+			CustomBranchPolicies: environment.DeploymentBranchPolicy.CustomBranchPolicies,
+		}
+	}
+	return config.Environment{
+		Name:                   environment.Name,
+		WaitTimer:              &waitTimer,
+		PreventSelfReview:      &preventSelfReview,
+		Reviewers:              &reviewers,
+		DeploymentBranchPolicy: policy,
+	}
 }
 
 // secretDiagnostic reports one secret name found on the repository. The

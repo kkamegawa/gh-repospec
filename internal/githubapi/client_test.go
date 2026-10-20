@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,6 +247,52 @@ func TestGetTreePreservesRecursiveQuery(t *testing.T) {
 	client, _ := NewClient(server.Client(), server.URL)
 	if _, err := client.GetTree(context.Background(), Repository{Owner: "octo", Name: "demo"}, "tree", true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestGitignoreTemplateAndContentsInitializationUseGitHubEndpoints(t *testing.T) {
+	t.Parallel()
+	var gotTemplate bool
+	var gotContents bool
+	assertions := newHandlerAssertions(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method + " " + r.URL.Path {
+		case "GET /gitignore/templates/VisualStudio":
+			gotTemplate = true
+			_ = json.NewEncoder(w).Encode(GitignoreTemplate{Name: "VisualStudio", Source: "# Visual Studio", FileName: ".gitignore"})
+		case "PUT /repos/octo/demo/contents/README.md":
+			gotContents = true
+			var request ContentsFile
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				assertions.Errorf("decode contents request: %v", err)
+			}
+			content, err := base64.StdEncoding.DecodeString(request.Content)
+			if err != nil {
+				assertions.Errorf("decode base64 content: %v", err)
+			}
+			if request.Path != "README.md" || request.Branch != "main" || request.Message == "" || string(content) != "# demo\n" {
+				assertions.Errorf("contents request = %+v, content = %q", request, content)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"content":{"path":"README.md"},"commit":{"sha":"initial"}}`))
+		default:
+			assertions.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template, err := client.GetGitignoreTemplate(context.Background(), "VisualStudio")
+	if err != nil || template.Source != "# Visual Studio" {
+		t.Fatalf("GetGitignoreTemplate() = %#v, %v", template, err)
+	}
+	if err := client.CreateContentsFile(context.Background(), Repository{Owner: "octo", Name: "demo"}, File{Path: "README.md", Content: []byte("# demo\n")}, "main", "initialize"); err != nil {
+		t.Fatal(err)
+	}
+	if !gotTemplate || !gotContents {
+		t.Fatalf("template request = %t, contents request = %t, want both true", gotTemplate, gotContents)
 	}
 }
 
@@ -830,6 +877,53 @@ func TestGetSelectedActionsAndDefaultWorkflowPermissions(t *testing.T) {
 	}
 	if permissions.DefaultWorkflowPermissions != "read" || permissions.CanApprovePullRequest {
 		t.Fatalf("GetDefaultWorkflowPermissions() = %#v", permissions)
+	}
+}
+
+func TestWorkflowRepositoryAccessEndpoints(t *testing.T) {
+	t.Parallel()
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/repos/octo/demo/actions/permissions/access"; got != want {
+			t.Errorf("path = %q, want %q", got, want)
+		}
+		switch r.Method {
+		case http.MethodGet:
+			calls.Add(1)
+			_, _ = io.WriteString(w, `{"access_level":"organization"}`)
+		case http.MethodPut:
+			calls.Add(1)
+			var request WorkflowRepositoryAccess
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode request: %v", err)
+			}
+			if request.AccessLevel != "user" {
+				t.Errorf("request access_level = %q, want user", request.AccessLevel)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("method = %q, want GET or PUT", r.Method)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+		}
+	}))
+	defer server.Close()
+	client, err := NewClient(server.Client(), server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := Repository{Owner: "octo", Name: "demo"}
+	access, err := client.GetWorkflowRepositoryAccess(context.Background(), repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if access.AccessLevel != "organization" {
+		t.Fatalf("GetWorkflowRepositoryAccess() = %#v, want organization", access)
+	}
+	if err := client.UpdateWorkflowRepositoryAccess(context.Background(), repository, WorkflowRepositoryAccess{AccessLevel: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("request count = %d, want 2", got)
 	}
 }
 

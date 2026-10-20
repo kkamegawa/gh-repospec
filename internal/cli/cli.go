@@ -179,17 +179,24 @@ func executeApply(ctx context.Context, options executionOptions, stdin io.Reader
 	if err != nil {
 		return err
 	}
-	for _, command := range cfg.Commands {
-		if !options.approvedCommands[command.ID] {
-			return fmt.Errorf("command %q requires --approve-command %s", command.ID, command.ID)
-		}
-	}
 	plan, err := engine.Build(ctx, cfg, planner.Options{RepositoryOverride: options.repository})
 	if err != nil {
 		return err
 	}
 	if err := writePlan(stdout, plan, options.format); err != nil {
 		return err
+	}
+	for _, command := range cfg.Commands {
+		pending := false
+		for _, change := range plan.Changes {
+			if change.Resource == "command."+command.ID && change.State == planner.ChangeManual {
+				pending = true
+				break
+			}
+		}
+		if pending && !options.approvedCommands[command.ID] {
+			return fmt.Errorf("command %q requires --approve-command %s", command.ID, command.ID)
+		}
 	}
 	if plan.HasBlocked() {
 		return errors.New("apply is blocked; resolve blocked plan entries before retrying")

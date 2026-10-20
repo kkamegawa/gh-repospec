@@ -154,6 +154,20 @@ func (c *Client) GetSelectedActions(ctx context.Context, repo Repository) (Selec
 	return result, err
 }
 
+// GetOIDCSubjectCustomization retrieves the repository's Actions OIDC subject
+// claim template so imports can preserve custom trust conditions.
+func (c *Client) GetOIDCSubjectCustomization(ctx context.Context, repo Repository) (OIDCSubjectCustomization, error) {
+	var result OIDCSubjectCustomization
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/oidc/customization/sub", nil, &result)
+	return result, err
+}
+
+// SetOIDCSubjectCustomization writes the repository-level Actions OIDC
+// subject claim template.
+func (c *Client) SetOIDCSubjectCustomization(ctx context.Context, repo Repository, request OIDCSubjectCustomization) error {
+	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/oidc/customization/sub", request, nil)
+}
+
 // GetForkPullRequestApproval retrieves the fork PR contributor approval policy.
 // GitHub rejects this endpoint for private repositories with HTTP 422.
 func (c *Client) GetForkPullRequestApproval(ctx context.Context, repo Repository) (ForkPullRequestApproval, error) {
@@ -165,6 +179,20 @@ func (c *Client) GetForkPullRequestApproval(ctx context.Context, repo Repository
 // SetForkPullRequestApproval sets the fork PR contributor approval policy.
 func (c *Client) SetForkPullRequestApproval(ctx context.Context, repo Repository, request ForkPullRequestApproval) error {
 	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/fork-pr-contributor-approval", request, nil)
+}
+
+// GetWorkflowRepositoryAccess reads who may access Actions and reusable
+// workflows from this repository.
+func (c *Client) GetWorkflowRepositoryAccess(ctx context.Context, repo Repository) (WorkflowRepositoryAccess, error) {
+	var result WorkflowRepositoryAccess
+	err := c.do(ctx, http.MethodGet, repoPath(repo)+"/actions/permissions/access", nil, &result)
+	return result, err
+}
+
+// UpdateWorkflowRepositoryAccess configures access to Actions and reusable
+// workflows hosted in this repository.
+func (c *Client) UpdateWorkflowRepositoryAccess(ctx context.Context, repo Repository, access WorkflowRepositoryAccess) error {
+	return c.do(ctx, http.MethodPut, repoPath(repo)+"/actions/permissions/access", access, nil)
 }
 
 // ListRulesets lists every ruleset declared directly on the repository. It
@@ -563,11 +591,133 @@ func (c *Client) CreateOrUpdateEnvironment(ctx context.Context, repo Repository,
 	return result, err
 }
 
+// GetGitignoreTemplate returns the official template body from github/gitignore.
+func (c *Client) GetGitignoreTemplate(ctx context.Context, name string) (GitignoreTemplate, error) {
+	if name == "" {
+		return GitignoreTemplate{}, errors.New("gitignore template name is required")
+	}
+	var result GitignoreTemplate
+	err := c.do(ctx, http.MethodGet, "/gitignore/templates/"+escape(name), nil, &result)
+	return result, err
+}
+
+// CreateContentsFile creates a file with the repository Contents API. GitHub
+// specifically supports this endpoint as the first commit in an empty repo.
+func (c *Client) CreateContentsFile(ctx context.Context, repo Repository, file File, branch, message string) error {
+	if err := validateRepositoryPath(file.Path); err != nil {
+		return err
+	}
+	if message == "" || branch == "" {
+		return errors.New("contents commit message and branch are required")
+	}
+	request := ContentsFile{
+		Path: file.Path, Message: message,
+		Content: base64.StdEncoding.EncodeToString(file.Content), Branch: branch,
+	}
+	var result ContentsCommitResult
+	return c.do(ctx, http.MethodPut, repoPath(repo)+"/contents/"+escapePath(file.Path), request, &result)
+}
+
 // ListEnvironments lists every repository environment, across every page.
 func (c *Client) ListEnvironments(ctx context.Context, repo Repository) ([]Environment, error) {
 	return listAllWrapped[Environment](ctx, c, repoPath(repo)+"/environments", func() *environmentList {
 		return &environmentList{}
 	})
+}
+
+// ListEnvironmentBranchPolicies lists custom branch/tag patterns for an environment.
+func (c *Client) ListEnvironmentBranchPolicies(ctx context.Context, repo Repository, environment string) ([]EnvironmentBranchPolicy, error) {
+	if environment == "" {
+		return nil, errors.New("environment name is required")
+	}
+	return listAllWrapped[EnvironmentBranchPolicy](ctx, c, repoPath(repo)+"/environments/"+escape(environment)+"/deployment-branch-policies", func() *environmentBranchPolicyList {
+		return &environmentBranchPolicyList{}
+	})
+}
+
+// CreateEnvironmentBranchPolicy adds a custom deployment branch or tag pattern.
+func (c *Client) CreateEnvironmentBranchPolicy(ctx context.Context, repo Repository, environment string, policy EnvironmentBranchPolicyRequest) (EnvironmentBranchPolicy, error) {
+	if environment == "" || policy.Name == "" || (policy.Type != "branch" && policy.Type != "tag") {
+		return EnvironmentBranchPolicy{}, errors.New("environment name and branch policy name/type are required")
+	}
+	var result EnvironmentBranchPolicy
+	err := c.do(ctx, http.MethodPost, repoPath(repo)+"/environments/"+escape(environment)+"/deployment-branch-policies", policy, &result)
+	return result, err
+}
+
+// UpdateEnvironmentBranchPolicy updates a custom deployment branch or tag pattern.
+func (c *Client) UpdateEnvironmentBranchPolicy(ctx context.Context, repo Repository, environment string, id int64, name string) (EnvironmentBranchPolicy, error) {
+	if environment == "" || id <= 0 || name == "" {
+		return EnvironmentBranchPolicy{}, errors.New("environment name, branch policy id, and name are required")
+	}
+	var result EnvironmentBranchPolicy
+	err := c.do(ctx, http.MethodPut, repoPath(repo)+"/environments/"+escape(environment)+"/deployment-branch-policies/"+strconv.FormatInt(id, 10), struct {
+		Name string `json:"name"`
+	}{Name: name}, &result)
+	return result, err
+}
+
+// DeleteEnvironmentBranchPolicy removes a custom deployment branch or tag pattern.
+func (c *Client) DeleteEnvironmentBranchPolicy(ctx context.Context, repo Repository, environment string, id int64) error {
+	if environment == "" || id <= 0 {
+		return errors.New("environment name and branch policy id are required")
+	}
+	return c.do(ctx, http.MethodDelete, repoPath(repo)+"/environments/"+escape(environment)+"/deployment-branch-policies/"+strconv.FormatInt(id, 10), nil, nil)
+}
+
+// ListDeploymentProtectionRules lists enabled custom app protection rules for an environment.
+func (c *Client) ListDeploymentProtectionRules(ctx context.Context, repo Repository, environment string) ([]DeploymentProtectionRule, error) {
+	if environment == "" {
+		return nil, errors.New("environment name is required")
+	}
+	return listAllWrapped[DeploymentProtectionRule](ctx, c, repoPath(repo)+"/environments/"+escape(environment)+"/deployment_protection_rules", func() *deploymentProtectionRuleList {
+		return &deploymentProtectionRuleList{}
+	})
+}
+
+// ListAvailableDeploymentProtectionIntegrations lists apps that can be enabled as environment protection rules.
+func (c *Client) ListAvailableDeploymentProtectionIntegrations(ctx context.Context, repo Repository, environment string) ([]AvailableDeploymentProtectionIntegration, error) {
+	if environment == "" {
+		return nil, errors.New("environment name is required")
+	}
+	return listAllWrapped[AvailableDeploymentProtectionIntegration](ctx, c, repoPath(repo)+"/environments/"+escape(environment)+"/deployment_protection_rules/apps", func() *availableDeploymentProtectionIntegrationList {
+		return &availableDeploymentProtectionIntegrationList{}
+	})
+}
+
+// EnableDeploymentProtectionIntegration enables an installed GitHub App's protection rule for an environment.
+func (c *Client) EnableDeploymentProtectionIntegration(ctx context.Context, repo Repository, environment string, integrationID int64) (DeploymentProtectionRule, error) {
+	if environment == "" || integrationID <= 0 {
+		return DeploymentProtectionRule{}, errors.New("environment name and integration id are required")
+	}
+	var result DeploymentProtectionRule
+	err := c.do(ctx, http.MethodPost, repoPath(repo)+"/environments/"+escape(environment)+"/deployment_protection_rules", struct {
+		IntegrationID int64 `json:"integration_id"`
+	}{IntegrationID: integrationID}, &result)
+	return result, err
+}
+
+// DisableDeploymentProtectionRule removes an enabled custom protection rule from an environment.
+func (c *Client) DisableDeploymentProtectionRule(ctx context.Context, repo Repository, environment string, ruleID int64) error {
+	if environment == "" || ruleID <= 0 {
+		return errors.New("environment name and protection rule id are required")
+	}
+	return c.do(ctx, http.MethodDelete, repoPath(repo)+"/environments/"+escape(environment)+"/deployment_protection_rules/"+strconv.FormatInt(ruleID, 10), nil, nil)
+}
+
+// ListEnvironmentSecrets returns only environment secret metadata. GitHub does
+// not expose secret values through this endpoint.
+func (c *Client) ListEnvironmentSecrets(ctx context.Context, repo Repository, environment string) (SecretList, error) {
+	if environment == "" {
+		return SecretList{}, errors.New("environment name is required")
+	}
+	secrets, err := listAllWrapped[SecretMetadata](ctx, c, repoPath(repo)+"/environments/"+escape(environment)+"/secrets", func() *SecretList {
+		return &SecretList{}
+	})
+	if err != nil {
+		return SecretList{}, err
+	}
+	return SecretList{TotalCount: len(secrets), Secrets: secrets}, nil
 }
 
 // GetBranchHead retrieves the current commit ref for a branch.
@@ -784,3 +934,11 @@ func repoPath(repo Repository) string {
 }
 
 func escape(segment string) string { return url.PathEscape(segment) }
+
+func escapePath(value string) string {
+	segments := strings.Split(value, "/")
+	for index := range segments {
+		segments[index] = escape(segments[index])
+	}
+	return strings.Join(segments, "/")
+}

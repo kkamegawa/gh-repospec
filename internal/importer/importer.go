@@ -33,17 +33,35 @@ import (
 type Reader interface {
 	GetRepository(context.Context, githubapi.Repository) (githubapi.RepositoryInfo, error)
 	GetImmutableReleases(context.Context, githubapi.Repository) (githubapi.ImmutableReleases, error)
+	GetPages(context.Context, githubapi.Repository) (githubapi.PagesSite, error)
+	GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error)
+	GetPullRequestCreationCap(context.Context, githubapi.Repository) (githubapi.PullRequestCreationCap, error)
+	ListPullRequestCreationCapBypassUsers(context.Context, githubapi.Repository) ([]githubapi.InteractionBypassUser, error)
+	ListWebhooks(context.Context, githubapi.Repository) ([]githubapi.RepositoryWebhook, error)
+	ListAutolinks(context.Context, githubapi.Repository) ([]githubapi.Autolink, error)
+	ListDeployKeys(context.Context, githubapi.Repository) ([]githubapi.DeployKey, error)
+	ListCollaborators(context.Context, githubapi.Repository) ([]githubapi.Collaborator, error)
+	ListRepositoryTeams(context.Context, githubapi.Repository) ([]githubapi.RepositoryTeam, error)
+	GetCustomPropertyValues(context.Context, githubapi.Repository) ([]githubapi.CustomPropertyValue, error)
+	ListProtectedBranches(context.Context, githubapi.Repository) ([]githubapi.Branch, error)
+	GetBranchProtection(context.Context, githubapi.Repository, string) (map[string]any, error)
+	GetRequiredSignatures(context.Context, githubapi.Repository, string) (bool, error)
 	ListLabels(context.Context, githubapi.Repository) ([]githubapi.Label, error)
 	ListMilestones(context.Context, githubapi.Repository) ([]githubapi.Milestone, error)
 	ListRulesets(context.Context, githubapi.Repository) ([]githubapi.Ruleset, error)
 	GetRuleset(context.Context, githubapi.Repository, int64) (githubapi.Ruleset, error)
 	GetActionsPermissions(context.Context, githubapi.Repository) (githubapi.ActionsPermissions, error)
 	GetSelectedActions(context.Context, githubapi.Repository) (githubapi.SelectedActions, error)
+	GetOIDCSubjectCustomization(context.Context, githubapi.Repository) (githubapi.OIDCSubjectCustomization, error)
 	GetDefaultWorkflowPermissions(context.Context, githubapi.Repository) (githubapi.DefaultWorkflowPermissions, error)
 	GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error)
+	GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error)
 	ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error)
 	ListActionsSecrets(context.Context, githubapi.Repository) (githubapi.SecretList, error)
 	ListEnvironments(context.Context, githubapi.Repository) ([]githubapi.Environment, error)
+	ListEnvironmentBranchPolicies(context.Context, githubapi.Repository, string) ([]githubapi.EnvironmentBranchPolicy, error)
+	ListDeploymentProtectionRules(context.Context, githubapi.Repository, string) ([]githubapi.DeploymentProtectionRule, error)
+	ListEnvironmentSecrets(context.Context, githubapi.Repository, string) (githubapi.SecretList, error)
 	GetVulnerabilityAlertsEnabled(context.Context, githubapi.Repository) (bool, error)
 	GetAutomatedSecurityFixesEnabled(context.Context, githubapi.Repository) (bool, error)
 	GetPrivateVulnerabilityReportingEnabled(context.Context, githubapi.Repository) (bool, error)
@@ -105,6 +123,10 @@ func Import(ctx context.Context, reader Reader, repository githubapi.Repository)
 	if err != nil {
 		return Result{}, err
 	}
+	repositorySettings, settingsDiagnostics, err := importRepositorySettings(ctx, reader, repository, info.Owner.Type)
+	if err != nil {
+		return Result{}, err
+	}
 	agents, agentDiagnostics, err := importAgents(ctx, reader, repository)
 	if err != nil {
 		return Result{}, err
@@ -120,11 +142,13 @@ func Import(ctx context.Context, reader Reader, repository githubapi.Repository)
 			Actions:       actions,
 			Security:      security,
 			Agents:        agents,
+			Settings:      repositorySettings,
 		},
 	}
 	result.Diagnostics = append(result.Diagnostics, rulesetDiagnostics...)
 	result.Diagnostics = append(result.Diagnostics, actionsDiagnostics...)
 	result.Diagnostics = append(result.Diagnostics, securityDiagnostics...)
+	result.Diagnostics = append(result.Diagnostics, settingsDiagnostics...)
 	result.Diagnostics = append(result.Diagnostics, agentDiagnostics...)
 	return result, nil
 }
