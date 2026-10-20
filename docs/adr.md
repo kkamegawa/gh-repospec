@@ -8,7 +8,8 @@ Record 7 is dated 2026-09-10 and tracks
 [Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30) (documentation
 for drift detection). Record 8 is dated 2026-09-11 and tracks
 [Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35) (AI Scan for pull
-requests). Record 10 is dated 2026-10-20 and tracks
+requests). Records 9 and 10 track the same issue; record 10 is dated 2026-10-20.
+Record 11 is dated 2026-10-20 and tracks
 [Issue #40](https://github.com/kkamegawa/gh-repospec/issues/40) (repository
 settings import).
 
@@ -196,7 +197,36 @@ its reason carries GitHub's message so the user can tell the two apart. If code 
 is later enabled for the repository, the next plan reads the state normally and
 converges.
 
-## 10. An immutable OIDC subject that GitHub keeps on is reported as manual
+## 10. A disabling declaration on an unavailable code-scanning feature is already satisfied
+
+**Decision.** This refines record 9. When `plan` finds `codeqlDefaultSetup` or
+`aiPullRequestScan` unavailable, only a declaration that enables the feature is reported
+as blocked, or as manual when `optional: true`; one that disables it is reported as a
+noop, and `apply` writes neither. An AI Scan read answered with 404 also means the
+feature is unavailable, matching how `import` already treats it under record 8; the CodeQL
+default setup 404 keeps its meaning of "not configured". A 403 or 429 that GitHub marks as a
+rate limit (a retry delay, or a rate-limit message) is not an unavailable feature: `plan`
+reports the state as unknown and `import` fails. When both features are declared, a
+declaration that disables AI Scan is written before CodeQL default setup, and one that
+enables it is written after.
+
+**Rationale.** An unavailable feature cannot be on, so a declaration that it is off already
+holds. Blocking it made a required `enabled: false` stop every `apply` on a repository
+without GitHub Advanced Security, although nothing needed to change. Treating an AI Scan
+404 as unknown reported an update on every plan that no `apply` could converge — the
+non-convergence record 9 removed for 403 — and disagreed with `import`. A rate-limited read
+says nothing about the feature, and classifying it as unavailable would silently drop the
+key from `import` and block a required declaration with a misleading reason. Disabling the
+dependent feature first keeps AI Scan from being left enabled while CodeQL default setup is
+being turned off.
+
+**Consequences.** A 403 caused by insufficient permissions on a repository where the
+feature is actually enabled is now reported as a noop for a disabling declaration, so that
+declaration does not detect such drift; a declaration that enables the feature is still
+blocked. A 404 from the AI Scan endpoint caused by GitHub withdrawing the preview API is
+reported as unavailable rather than failing.
+
+## 11. An immutable OIDC subject that GitHub keeps on is reported as manual
 
 **Decision.** When `actions.oidcSubjectCustomization.useImmutableSubject` is declared
 `false` and GitHub reports `true`, `plan` does not report an update. It adds a separate

@@ -82,10 +82,11 @@ func importSecurity(ctx context.Context, reader Reader, repository githubapi.Rep
 		// repository, the same "absent means disabled" shape as
 		// vulnerability alerts and automated security fixes.
 		cfg.CodeQLDefaultSetup = &config.FeatureSetting{Enabled: false}
-	case githubapi.IsForbidden(err):
+	case githubapi.IsRefused(err):
 		// A 403 means code scanning is not enabled for this repository (see
 		// docs/adr.md record 9), which says nothing about what a declaration
-		// should be, so the field is left unset.
+		// should be, so the field is left unset. A rate-limited 403 is not
+		// such an answer and fails the import below (record 10).
 		diagnostics = append(diagnostics, Diagnostic{
 			Resource: "security.codeqlDefaultSetup",
 			Message:  "GitHub did not report CodeQL default setup status (code scanning may not be enabled for this repository); declare it to manage it going forward",
@@ -98,7 +99,7 @@ func importSecurity(ctx context.Context, reader Reader, repository githubapi.Rep
 	switch {
 	case err == nil:
 		cfg.AIPullRequestScan = &config.FeatureSetting{Enabled: aiScan.PRScan == "enabled"}
-	case githubapi.IsForbidden(err) || githubapi.IsNotFound(err):
+	case githubapi.IsRefused(err) || githubapi.IsNotFound(err):
 		// Unlike CodeQL's 404, a 403 here says nothing about whether AI Scan
 		// is enabled, only that its state could not be read, so the field
 		// is left unset instead of being written as disabled.

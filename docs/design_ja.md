@@ -110,18 +110,24 @@ GitHubのAIによるセキュリティ検出、AI Scan for pull requestsを制�
 実質的に有効である必要があり、上記のDependabotの依存関係と同じ方法で評価します。
 宣言された`codeqlDefaultSetup`を優先して先に適用し、省略した場合はGitHub上の現在の状態を使い、
 `codeqlDefaultSetup.enabled: false`を明示したままAI Scanを有効にした場合はblockedとして
-報告します。無効化には依存関係はありません。AI ScanにはGitHub Advanced Security、Copilot
-ライセンス、Enterpriseと組織による有効化も必要ですが、ツールは書き込み前にこれらを確認できない
-ため、欠けている可能性がある場合は`optional: true`を付けて宣言することを推奨します。
+報告します。無効化には依存関係がないため、AI Scanを無効にする宣言は逆にCodeQL default setupより
+先に書き込み、依存先の機能が無効になるまで依存元を残します。AI ScanにはGitHub Advanced Security、
+Copilotライセンス、Enterpriseと組織による有効化も必要ですが、ツールは書き込み前にこれらを確認
+できないため、欠けている可能性がある場合は`optional: true`を付けて宣言することを推奨します。
 
 コードスキャン自体が利用できない場合もあります。GitHub Advanced Securityのないprivate
 リポジトリ、たとえば初期構築しようとしている空の個人リポジトリでは、CodeQL default setupと
-AI Scanの読み取りに403が返ります。`plan`はこの応答を「状態が不明」ではなく「機能が利用できない」
-と扱い、`codeqlDefaultSetup`と`aiPullRequestScan`をGitHubのメッセージを理由としてblocked、
-`optional: true`ならmanualとして報告し、`apply`は書き込みを試みません。updateとして報告すると、
-どの`apply`でも変えられないため、optionalの宣言が永久にドリフトし続けます。権限不足による403も
-同じ経路をたどりますが、必須の宣言は引き続きblockedとなり実行を止めます。リポジトリでコード
-スキャンが有効になれば、次のplanは通常どおり状態を読み取ります。
+AI Scanの読み取りに403が返ります。また、GitHubがそのリポジトリについて報告できるAI Scanの設定を
+持たない場合、AI Scanの読み取りに404が返ります。`plan`はこれらの応答を「状態が不明」ではなく
+「機能が利用できない」と扱います。`codeqlDefaultSetup`または`aiPullRequestScan`を有効にする宣言は、
+GitHubのメッセージを理由としてblocked、`optional: true`ならmanualとして報告し、`apply`は書き込みを
+試みません。updateとして報告すると、どの`apply`でも変えられないため、optionalの宣言が永久に
+ドリフトし続けます。機能を無効にする宣言は既に満たされている（利用できない機能は有効になり得ない）
+ため、noopとして報告し、`apply`も書き込みません。権限不足による403も同じ経路をたどりますが、
+機能を有効にする必須の宣言は引き続きblockedとなり実行を止めます。GitHubがレート制限として返す
+403や429は機能が利用できないことを表さず、他の失敗した読み取りと同様に、`plan`は状態を不明として
+報告し、`import`は失敗します。リポジトリでコードスキャンが有効になれば、次のplanは通常どおり
+状態を読み取ります。
 
 `actions.allowedActions: selected`を指定する場合は`actions.selectedActions`
 (`githubOwnedAllowed`、`verifiedAllowed`、任意の`patternsAllowed`)が必須です。

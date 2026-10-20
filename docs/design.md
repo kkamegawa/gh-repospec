@@ -128,22 +128,30 @@ setup to be effectively enabled, evaluated the same way as the Dependabot
 dependency above: a declared `codeqlDefaultSetup` takes precedence and is
 applied first, an omitted one falls back to the current state on GitHub, and
 an explicit `codeqlDefaultSetup.enabled: false` alongside an enabled AI Scan is
-reported as blocked. Disabling it has no dependency. AI Scan also needs GitHub
-Advanced Security, a Copilot license, and enablement by the enterprise and
-organization, none of which the tool can verify before writing, so it is best
-declared with `optional: true` wherever those may be missing.
+reported as blocked. Disabling it has no dependency, so a declaration that
+disables AI Scan is written before CodeQL default setup instead, which keeps
+the dependency in place until the dependent feature is off. AI Scan also needs
+GitHub Advanced Security, a Copilot license, and enablement by the enterprise
+and organization, none of which the tool can verify before writing, so it is
+best declared with `optional: true` wherever those may be missing.
 
 Code scanning itself can be unavailable: a private repository without GitHub
 Advanced Security, such as an empty personal repository about to be
-bootstrapped, answers the CodeQL default setup and AI Scan reads with 403. `plan`
-treats that answer as the feature being unavailable rather than its state being
-unknown, so `codeqlDefaultSetup` and `aiPullRequestScan` are reported as
-blocked, or as manual when `optional: true`, with GitHub's message as the
-reason, and `apply` does not attempt the write. Reporting them as updates would
-make an optional declaration drift forever, because no `apply` can change it.
-A 403 caused by missing permissions takes the same path; a required declaration
-is still blocked and stops the run. Once code scanning is enabled for the
-repository, the next plan reads the state normally.
+bootstrapped, answers the CodeQL default setup and AI Scan reads with 403, and
+the AI Scan read answers 404 where GitHub has no AI Scan setting to report for
+the repository. `plan` treats those answers as the feature being unavailable
+rather than its state being unknown. A declaration that enables
+`codeqlDefaultSetup` or `aiPullRequestScan` is then reported as blocked, or as
+manual when `optional: true`, with GitHub's message as the reason, and `apply`
+does not attempt the write. Reporting it as an update would make an optional
+declaration drift forever, because no `apply` can change it. A declaration that
+disables the feature is already satisfied — an unavailable feature cannot be on
+— so it is reported as a noop and `apply` does not write it either. A 403 caused
+by missing permissions takes the same path; a required declaration that enables
+the feature is still blocked and stops the run. A 403 or 429 that GitHub marks
+as a rate limit is not an unavailable feature: `plan` reports the state as
+unknown and `import` fails, as for any other failed read. Once code scanning is
+enabled for the repository, the next plan reads the state normally.
 
 `actions.allowedActions: selected` requires `actions.selectedActions`
 (`githubOwnedAllowed`, `verifiedAllowed`, and an optional `patternsAllowed`

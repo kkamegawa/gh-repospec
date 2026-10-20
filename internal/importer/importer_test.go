@@ -959,6 +959,33 @@ func TestImportReportsCodeQL403AsDiagnostic(t *testing.T) {
 	}
 }
 
+// TestImportRateLimitedCodeScanningReadIsAnError guards docs/adr.md record 10:
+// a 403 that GitHub marks as a rate limit says nothing about whether code
+// scanning or AI Scan is available, so it fails the import like any other
+// failed read instead of silently dropping the key behind a diagnostic.
+func TestImportRateLimitedCodeScanningReadIsAnError(t *testing.T) {
+	t.Parallel()
+	rateLimited := &githubapi.APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit.", RetryAfter: time.Minute}
+	for _, tc := range []struct {
+		name   string
+		setErr func(*fakeReader)
+		want   string
+	}{
+		{name: "codeql", setErr: func(reader *fakeReader) { reader.getCodeQLErr = rateLimited }, want: "CodeQL default setup"},
+		{name: "ai scan", setErr: func(reader *fakeReader) { reader.getAIScanErr = rateLimited }, want: "AI Scan for pull requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			reader := newFakeReader()
+			tc.setErr(reader)
+			_, err := Import(context.Background(), reader, testRepo())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Import() error = %v, want the rate-limited %s read reported as an error", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestImportCodeQLServerErrorIsAnError(t *testing.T) {
 	t.Parallel()
 	reader := newFakeReader()

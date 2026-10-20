@@ -8,7 +8,7 @@ record 7は日付2026-09-10、追跡は
 [Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30)（ドリフト検出のドキュメント）
 です。record 8は日付2026-09-11、追跡は
 [Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)（AI Scan for pull requests）
-です。record 10は日付2026-10-20、追跡は
+です。record 9と10も同じIssueを追跡し、record 10の日付は2026-10-20です。record 11は日付2026-10-20、追跡は
 [Issue #40](https://github.com/kkamegawa/gh-repospec/issues/40)（リポジトリ設定のimport）です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
@@ -176,7 +176,33 @@ CodeQLの403でそのまま失敗しており、record 1と矛盾していまし
 manualとして報告され、理由にGitHubのメッセージが入るため、利用者は両者を見分けられます。後で
 リポジトリのコードスキャンが有効になれば、次のplanは通常どおり状態を読み取って収束します。
 
-## 10. GitHubが有効のまま維持する不変のOIDC subjectはmanualとして報告する
+## 10. 利用できないコードスキャン機能を無効にする宣言は既に満たされているとする
+
+**決定。** これはrecord 9を精緻化するものです。`plan`が`codeqlDefaultSetup`または
+`aiPullRequestScan`を利用できないと判断した場合、blocked（`optional: true`ならmanual）として
+報告するのは機能を有効にする宣言だけとし、無効にする宣言はnoopとして報告します。`apply`は
+どちらも書き込みません。AI Scanの読み取りに返る404も、record 8で`import`が既にそう扱っている
+とおり、機能が利用できないことを表すものとします。CodeQL default setupの404は引き続き
+「未設定」を表します。GitHubがレート制限として返す403や429（再試行までの待ち時間、または
+レート制限のメッセージを伴うもの）は機能が利用できないことを表さず、`plan`は状態を不明として
+報告し、`import`は失敗します。両方の機能を宣言した場合、AI Scanを無効にする宣言はCodeQL default
+setupより先に、有効にする宣言は後に書き込みます。
+
+**理由。** 利用できない機能は有効になり得ないため、無効であるという宣言は既に成り立っています。
+これをblockedにすると、GitHub Advanced Securityのないリポジトリでは、変える必要が何もないのに
+必須の`enabled: false`がすべての`apply`を止めていました。AI Scanの404を不明として扱うと、どの
+`apply`でも収束しないupdateが毎回のplanで報告され（record 9が403について解消した非収束と同じ）、
+`import`とも食い違っていました。レート制限された読み取りは機能について何も示さず、これを
+「利用できない」と分類すると、`import`がキーを黙って省略し、必須の宣言を誤解を招く理由で
+blockedにしてしまいます。依存元の機能を先に無効にすれば、CodeQL default setupを無効にする間に
+AI Scanが有効なまま残ることを防げます。
+
+**結果。** 実際には機能が有効なリポジトリで権限不足により403が返った場合、無効にする宣言は
+noopとして報告されるため、その宣言ではこのドリフトを検出できません。有効にする宣言は引き続き
+blockedになります。GitHubがプレビューAPIを廃止したことによるAI Scanエンドポイントの404は、
+失敗ではなく「利用できない」として報告されます。
+
+## 11. GitHubが有効のまま維持する不変のOIDC subjectはmanualとして報告する
 
 **決定。** `actions.oidcSubjectCustomization.useImmutableSubject`が`false`と宣言され、
 GitHubが`true`を報告する場合、`plan`はupdateを報告しません。理由を付けた独立したmanual
