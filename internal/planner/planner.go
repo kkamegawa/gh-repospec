@@ -1142,14 +1142,15 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 	environmentAPI, hasEnvironmentAPI := e.service.(environmentService)
 	for _, environment := range desired.Environments {
 		request := environmentRequest(environment)
-		if _, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, request); err != nil {
+		updated, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, request)
+		if err != nil {
 			return fmt.Errorf("ensure Actions environment %q: %w", environment.Name, err)
 		}
 		if environment.BranchPolicies != nil {
 			if !hasEnvironmentAPI {
 				return errors.New("deployment branch policy operations are unavailable from the configured GitHub service")
 			}
-			if err := applyEnvironmentBranchPolicies(ctx, environmentAPI, repository, environment); err != nil {
+			if err := applyEnvironmentBranchPolicies(ctx, environmentAPI, repository, environment, updated); err != nil {
 				return err
 			}
 		}
@@ -1193,8 +1194,14 @@ func environmentRequest(environment config.Environment) githubapi.EnvironmentReq
 	return request
 }
 
-func applyEnvironmentBranchPolicies(ctx context.Context, service environmentService, repository githubapi.Repository, desired config.Environment) error {
-	actual, err := service.ListEnvironmentBranchPolicies(ctx, repository, desired.Name)
+func applyEnvironmentBranchPolicies(ctx context.Context, service environmentService, repository githubapi.Repository, desired config.Environment, environment githubapi.Environment) error {
+	if environment.DeploymentBranchPolicy == nil || !environment.DeploymentBranchPolicy.CustomBranchPolicies {
+		if len(*desired.BranchPolicies) == 0 {
+			return nil
+		}
+		return fmt.Errorf("environment %q deployment branch patterns require deploymentBranchPolicy.customBranchPolicies", desired.Name)
+	}
+	actual, err := listEnvironmentBranchPolicies(ctx, service, repository, desired.Name, environment.DeploymentBranchPolicy)
 	if err != nil {
 		return fmt.Errorf("list deployment branch policies for environment %q: %w", desired.Name, err)
 	}
@@ -1968,21 +1975,32 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 			plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: state, Summary: summary})
 			if environment.BranchPolicies != nil {
 				state, summary := ChangeBlocked, "deployment branch policy API is unavailable"
-				if actual, ok := existing[environment.Name]; known && ok {
+				actual, ok := existing[environment.Name]
+				switch {
+				case !known:
+				case !customBranchPoliciesAfterApply(environment, actual.DeploymentBranchPolicy):
+					// GitHub serves deployment branch patterns only while custom
+					// branch policies are enabled, and this run does not enable them.
+					if len(*environment.BranchPolicies) == 0 {
+						state, summary = ChangeNoop, "no deployment branch patterns without custom branch policies"
+					} else {
+						summary = "deployment branch patterns require deploymentBranchPolicy.customBranchPolicies"
+					}
+				case ok:
 					if api, available := service.(environmentService); available {
-						policies, listErr := api.ListEnvironmentBranchPolicies(ctx, repository, environment.Name)
+						policies, listErr := listEnvironmentBranchPolicies(ctx, api, repository, environment.Name, actual.DeploymentBranchPolicy)
 						switch {
 						case listErr != nil:
 							summary = capabilityError(listErr)
 						case environmentBranchPoliciesMatch(environment.BranchPolicies, policies):
 							state, summary = ChangeNoop, "deployment branch patterns already converged"
+						case len(policies) == 0:
+							state, summary = ChangeCreate, "create deployment branch patterns"
 						default:
 							state, summary = ChangeUpdate, "converge deployment branch patterns"
 						}
-					} else {
-						_ = actual
 					}
-				} else if known && !ok {
+				default:
 					state, summary = ChangeCreate, "create deployment branch patterns"
 				}
 				plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name + ".branchPolicies", State: state, Summary: summary})
@@ -2060,7 +2078,7 @@ func environmentSettingsMatch(ctx context.Context, service Service, repository g
 		if !ok {
 			return false, errors.New("deployment branch policy API is unavailable")
 		}
-		actualPolicies, err := api.ListEnvironmentBranchPolicies(ctx, repository, desired.Name)
+		actualPolicies, err := listEnvironmentBranchPolicies(ctx, api, repository, desired.Name, actual.DeploymentBranchPolicy)
 		if err != nil {
 			return false, err
 		}
@@ -2069,6 +2087,27 @@ func environmentSettingsMatch(ctx context.Context, service Service, repository g
 		}
 	}
 	return true, nil
+}
+
+// listEnvironmentBranchPolicies reads the custom deployment branch and tag
+// patterns of an existing environment. GitHub answers the list with 404 until
+// custom branch policies are enabled, so an environment that allows all
+// branches or only protected branches has no patterns yet.
+// customBranchPoliciesAfterApply reports whether an environment has custom
+// deployment branch policies enabled once apply has written its declared
+// deploymentBranchPolicy; without a declaration the live policy is kept.
+func customBranchPoliciesAfterApply(desired config.Environment, live *githubapi.DeploymentBranchPolicy) bool {
+	if desired.DeploymentBranchPolicy != nil {
+		return !desired.DeploymentBranchPolicy.AllowAllBranches && desired.DeploymentBranchPolicy.CustomBranchPolicies
+	}
+	return live != nil && live.CustomBranchPolicies
+}
+
+func listEnvironmentBranchPolicies(ctx context.Context, api environmentService, repository githubapi.Repository, name string, policy *githubapi.DeploymentBranchPolicy) ([]githubapi.EnvironmentBranchPolicy, error) {
+	if policy == nil || !policy.CustomBranchPolicies {
+		return nil, nil
+	}
+	return api.ListEnvironmentBranchPolicies(ctx, repository, name)
 }
 
 func oidcCustomizationRequest(desired *config.OIDCSubjectCustomizationConfig) githubapi.OIDCSubjectCustomization {

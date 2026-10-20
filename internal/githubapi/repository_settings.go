@@ -2,7 +2,10 @@ package githubapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
+	"reflect"
+	"sort"
 	"strconv"
 )
 
@@ -325,9 +328,176 @@ func NormalizeBranchProtection(protection map[string]any) map[string]any {
 			clean[key] = value["enabled"]
 		}
 	}
+	// GitHub mirrors every required check into the legacy contexts list, and
+	// the update API rejects a body that carries both, so checks is kept as
+	// the single representation.
+	if checks, ok := clean["required_status_checks"].(map[string]any); ok {
+		if _, hasChecks := checks["checks"]; hasChecks {
+			delete(checks, "contexts")
+		}
+	}
 	delete(clean, "url")
 	delete(clean, "required_signatures")
 	return clean
+}
+
+// BranchProtectionRequest converts declared branch protection settings into
+// the body accepted by the update API. The API requires
+// required_status_checks, enforce_admins, required_pull_request_reviews, and
+// restrictions to be present, with null disabling a section, while the read
+// API omits sections that are not in use.
+func BranchProtectionRequest(settings map[string]any) map[string]any {
+	request := cloneJSONMap(settings)
+	for _, key := range []string{"required_status_checks", "enforce_admins", "required_pull_request_reviews", "restrictions"} {
+		if _, ok := request[key]; !ok {
+			request[key] = nil
+		}
+	}
+	if checks, ok := request["required_status_checks"].(map[string]any); ok {
+		// checks and contexts are alternative forms of the same list; sending
+		// both matches more than one branch of the request schema.
+		if list, hasChecks := checks["checks"].([]any); hasChecks {
+			delete(checks, "contexts")
+			for _, item := range list {
+				// The read API reports a check that any app may provide as
+				// app_id null, while the update API reads an omitted app_id as
+				// "pin the app that last provided this check" and needs -1 for
+				// any app.
+				if check, ok := item.(map[string]any); ok {
+					if appID, declared := check["app_id"]; declared && appID == nil {
+						check["app_id"] = -1
+					}
+				}
+			}
+		}
+	}
+	return request
+}
+
+// BranchProtectionMatches reports whether declared settings describe the
+// protection GitHub returned. Booleans that are false and sections that are
+// null are the update API's defaults, so they compare equal to an absent key.
+// A required check declared by context name only, either in contexts or as a
+// check without app_id, matches the check GitHub resolved for that name,
+// whichever app GitHub assigned. A check declared with app_id null or -1
+// matches only a check that any app may provide.
+func BranchProtectionMatches(desired, actual map[string]any) bool {
+	want := comparableBranchProtection(desired)
+	got := comparableBranchProtection(NormalizeBranchProtection(actual))
+	wantChecks, _ := want["required_status_checks"].(map[string]any)
+	gotChecks, _ := got["required_status_checks"].(map[string]any)
+	if wantChecks != nil && gotChecks != nil {
+		if wantList, declaresChecks := wantChecks["checks"].([]any); declaresChecks {
+			unpinned := map[any]bool{}
+			for _, item := range wantList {
+				if check, ok := item.(map[string]any); ok {
+					if _, declared := check["app_id"]; !declared {
+						unpinned[check["context"]] = true
+					}
+				}
+			}
+			if gotList, ok := gotChecks["checks"].([]any); ok {
+				for _, item := range gotList {
+					if check, ok := item.(map[string]any); ok && unpinned[check["context"]] {
+						delete(check, "app_id")
+					}
+				}
+			}
+		} else if _, declaresContexts := wantChecks["contexts"]; declaresContexts {
+			contexts := make([]any, 0)
+			if list, ok := gotChecks["checks"].([]any); ok {
+				for _, item := range list {
+					if check, ok := item.(map[string]any); ok {
+						contexts = append(contexts, check["context"])
+					}
+				}
+			}
+			delete(gotChecks, "checks")
+			gotChecks["contexts"] = contexts
+		}
+	}
+	for _, values := range []map[string]any{wantChecks, gotChecks} {
+		if values != nil {
+			for _, key := range []string{"checks", "contexts"} {
+				if list, ok := values[key].([]any); ok {
+					sortJSONList(list)
+				}
+			}
+		}
+	}
+	return reflect.DeepEqual(roundTripJSON(want), roundTripJSON(got))
+}
+
+// comparableBranchProtection drops default-valued keys and resolves the
+// checks/contexts duplication so equivalent protections compare equal.
+func comparableBranchProtection(settings map[string]any) map[string]any {
+	clean := cloneJSONMap(settings)
+	if checks, ok := clean["required_status_checks"].(map[string]any); ok {
+		if list, hasChecks := checks["checks"].([]any); hasChecks {
+			delete(checks, "contexts")
+			for _, item := range list {
+				// -1 on the update API and null on the read API both mean
+				// any app; an omitted app_id stays omitted.
+				if check, ok := item.(map[string]any); ok && isAnyAppID(check["app_id"]) {
+					check["app_id"] = nil
+				}
+			}
+		}
+	}
+	dropDefaultValues(clean)
+	return clean
+}
+
+func isAnyAppID(value any) bool {
+	switch value := value.(type) {
+	case int:
+		return value == -1
+	case int64:
+		return value == -1
+	case float64:
+		return value == -1
+	}
+	return false
+}
+
+// dropDefaultValues descends into nested objects only, never into arrays: an
+// app_id null inside required_status_checks.checks means "any app", not a
+// default, and must stay distinct from a check pinned to an app.
+func dropDefaultValues(values map[string]any) {
+	for key, value := range values {
+		switch value := value.(type) {
+		case nil:
+			delete(values, key)
+		case bool:
+			if !value {
+				delete(values, key)
+			}
+		case map[string]any:
+			dropDefaultValues(value)
+		}
+	}
+}
+
+func sortJSONList(list []any) {
+	sort.SliceStable(list, func(i, j int) bool {
+		left, _ := json.Marshal(list[i])
+		right, _ := json.Marshal(list[j])
+		return string(left) < string(right)
+	})
+}
+
+// roundTripJSON maps YAML- and JSON-decoded values onto the same Go types,
+// for example int and float64 numbers, before they are compared.
+func roundTripJSON(value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return value
+	}
+	return decoded
 }
 
 func stripBranchProtectionLinks(values map[string]any) {

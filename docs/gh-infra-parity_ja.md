@@ -30,6 +30,7 @@
 | rulesetの`evaluate` enforcement(dry run) | 実装済み | `rulesets[].enforcement` |
 | Actions の fork pull request 承認ポリシー | 実装済み(public リポジトリのみ。GitHub は private リポジトリに対してこのエンドポイントを拒否します) | `actions.forkPullRequestApproval` |
 | security update が vulnerability alert に依存することの検証 | 実装済み | `security` セクション |
+| 旧 branch protection (`branch_protection`) | ruleset とは独立に実装済み。旧 branch protection を使い続けているリポジトリも `import` と `apply` で往復できます。GitHub は両方を合わせて適用し、最も厳しいルールが有効になります | `settings.branchProtections` |
 
 ## 取り込まない機能
 
@@ -38,7 +39,6 @@
 | `RepositorySet` / `FileSet` — 1 つの manifest で複数リポジトリを扱い、`defaults` とリポジトリごとの override を持つ | 本拡張は 1 ドキュメント 1 リポジトリの初期化と収束を対象とします。複数展開はドキュメントモデル(複数ドキュメント YAML、ディレクトリ走査、defaults のマージ)を現行契約から大きく変更します。現行契約は意図的に厳密かつ単一ドキュメントです。多数リポジトリへの反復利用が実際に必要になった時点で、別 schema version として再検討します。 |
 | `File` / `FileSet` — `content`、`source`、`github://` 参照、`<% %>` テンプレート、unified diff patch、`via: pull_request` による継続的なファイル同期 | 本拡張は `seed` でリポジトリ内容を配置しており、その契約は template / directory / ZIP からの初回投入です。重複するファイル配信機構を追加すると、あるパスをどちらが所有するのかが曖昧になります。継続的なファイル同期は bootstrap とは別の製品目標です。 |
 | `reconcile: authoritative` — manifest に宣言されていない label、ruleset、branch protection、ファイルを削除する | 「宣言したリソースは収束させ、宣言していないリソースは削除しない」ことは本拡張の確定した安全性です。削除は再実行では取り戻せない唯一の変更であり、本ツールの目的は fleet の強制ではなく初期化です。 |
-| 旧 branch protection (`branch_protection`) | ruleset は GitHub による旧 branch protection の後継であり、より豊富な制御(enforcement mode、bypass actor、tag 対象)で本拡張の用途を満たします。両方の API を扱うと、同じ branch を 2 つの宣言が優先順位なしに記述できてしまいます。 |
 | `internal` visibility | GitHub Enterprise Cloud の organization でのみ利用可能であり、対象範囲外です。 |
 
 ## 見送る機能

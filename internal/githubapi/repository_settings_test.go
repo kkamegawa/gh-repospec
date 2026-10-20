@@ -303,6 +303,30 @@ func TestRepositoryInteractionSettingsEndpoints(t *testing.T) {
 	}
 }
 
+func TestBranchProtectionMatchesKeepsAnyAppDistinctFromPinnedApp(t *testing.T) {
+	pinned := map[string]any{"required_status_checks": map[string]any{"strict": true, "checks": []any{map[string]any{"context": "build", "app_id": 15368}}}}
+	anyApp := map[string]any{"required_status_checks": map[string]any{"strict": true, "checks": []any{map[string]any{"context": "build", "app_id": nil}}}}
+	for name, tc := range map[string]struct {
+		check  map[string]any
+		actual map[string]any
+		want   bool
+	}{
+		"null against pinned":       {check: map[string]any{"context": "build", "app_id": nil}, actual: pinned, want: false},
+		"-1 against pinned":         {check: map[string]any{"context": "build", "app_id": -1}, actual: pinned, want: false},
+		"null against any app":      {check: map[string]any{"context": "build", "app_id": nil}, actual: anyApp, want: true},
+		"-1 against any app":        {check: map[string]any{"context": "build", "app_id": -1}, actual: anyApp, want: true},
+		"pinned against any app":    {check: map[string]any{"context": "build", "app_id": 15368}, actual: anyApp, want: false},
+		"undeclared against pinned": {check: map[string]any{"context": "build"}, actual: pinned, want: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			desired := map[string]any{"required_status_checks": map[string]any{"strict": true, "checks": []any{tc.check}}}
+			if got := BranchProtectionMatches(desired, tc.actual); got != tc.want {
+				t.Fatalf("BranchProtectionMatches() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeBranchProtectionForUpdate(t *testing.T) {
 	input := map[string]any{
 		"url": "response-only", "enforce_admins": map[string]any{"url": "response-only", "enabled": true},

@@ -343,5 +343,4 @@ replaced by `***`.
 [`gh-infra-parity.md`](gh-infra-parity.md) records the feature comparison with
 `babarot/gh-infra`, the capabilities adopted above, and the capabilities
 deliberately left out — multi-repository sets, continuous file synchronization,
-authoritative deletion of undeclared resources, and classic branch protection —
-with the reason for each.
+and authoritative deletion of undeclared resources — with the reason for each.

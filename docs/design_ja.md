@@ -283,4 +283,4 @@ allowlistは厳密で、`PATH`とホームディレクトリの変数(`HOME`、W
 
 [`gh-infra-parity_ja.md`](gh-infra-parity_ja.md)に、`babarot/gh-infra`との機能比較、
 上記で取り込んだ機能、および意図的に取り込まなかった機能(複数リポジトリのset、継続的な
-ファイル同期、宣言外リソースの削除、旧branch protection)とその理由を記録しています。
+ファイル同期、宣言外リソースの削除)とその理由を記録しています。

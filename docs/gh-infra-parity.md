@@ -33,6 +33,7 @@ The comparison was made against the gh-infra documentation set (`import`,
 | Ruleset `evaluate` enforcement (dry run) | Implemented | `rulesets[].enforcement` |
 | Actions fork pull request approval policy | Implemented (public repositories only; GitHub rejects the endpoint on private repositories) | `actions.forkPullRequestApproval` |
 | Dependency check: security updates require vulnerability alerts | Implemented | `security` section |
+| Classic branch protection (`branch_protection`) | Implemented independently of rulesets, so a repository that still uses classic protection round-trips through `import` and `apply`; GitHub enforces both layers together and the most restrictive rule applies | `settings.branchProtections` |
 
 ## Not adopted
 
@@ -41,7 +42,6 @@ The comparison was made against the gh-infra documentation set (`import`,
 | `RepositorySet` / `FileSet` — one manifest, many repositories, with `defaults` and per-repository overrides | This extension bootstraps and converges one repository per document. Fan-out changes the document model (multi-document YAML, directory scanning, defaults merging) far beyond the current contract, and the current contract is deliberately strict and single-document. Revisit as a separate schema version if repeated-fleet use appears. |
 | `File` / `FileSet` — continuously synchronized files with `content`, `source`, `github://` references, `<% %>` templating, unified-diff patches, and `via: pull_request` delivery | This extension already delivers repository content through `seed`, whose contract is one-time initialization from a template, directory, or ZIP. A second, overlapping file-delivery mechanism would make it ambiguous which one owns a path. Continuous file synchronization is a different product goal from bootstrapping. |
 | `reconcile: authoritative` — delete labels, rulesets, branch protection rules, and files that the manifest does not declare | The additive rule ("declared resources converge; undeclared resources are never removed") is a settled safety property of this extension. Deletion is the one class of change a user cannot recover from with a rerun, and this tool is aimed at initialization rather than fleet enforcement. |
-| Classic branch protection (`branch_protection`) | Rulesets are GitHub's successor to classic branch protection and cover this extension's use cases with richer controls (enforcement modes, bypass actors, tag targets). Supporting both APIs would let two overlapping declarations describe the same branch with no defined precedence. |
 | `internal` visibility | Available only to organizations on GitHub Enterprise Cloud, which is outside the supported target set. |
 
 ## Deferred
