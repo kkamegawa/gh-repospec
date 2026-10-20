@@ -2,7 +2,6 @@
 package githubapi
 
 import (
-	"errors"
 	"time"
 )
 
@@ -456,12 +455,4 @@ func (e *APIError) Error() string {
 		return e.Method + " " + e.Path + " returned HTTP " + itoa(e.StatusCode)
 	}
 	return e.Method + " " + e.Path + " returned HTTP " + itoa(e.StatusCode) + ": " + e.Message
-}
-
-// IsNotFound reports whether err is a GitHub 404 response. errors.As is used
-// instead of a direct type assertion so a wrapped APIError (fmt.Errorf with
-// %w) is still recognised.
-func IsNotFound(err error) bool {
-	var apiError *APIError
-	return errors.As(err, &apiError) && apiError.StatusCode == 404
 }
