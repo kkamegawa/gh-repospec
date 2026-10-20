@@ -878,6 +878,29 @@ func TestApplyDisablesAIPullRequestScanBeforeCodeQL(t *testing.T) {
 	}
 }
 
+// TestApplySkipsCodeQLDisableWhenNotFound guards that a CodeQL default setup
+// 404, which means not configured, already satisfies a disabling declaration,
+// so apply does not write it again.
+func TestApplySkipsCodeQLDisableWhenNotFound(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository:            githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		codeQLDefaultSetupErr: &githubapi.APIError{StatusCode: 404},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+		CodeQLDefaultSetup: &config.FeatureSetting{Enabled: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(service.mutations, "codeql") {
+		t.Fatalf("mutations = %#v, want no CodeQL default setup write when it is not configured", service.mutations)
+	}
+}
+
 // TestApplySkipsConvergedCodeScanningWrites guards the case plan reports as two
 // noops: when CodeQL default setup and AI Scan already match the declaration,
 // apply writes neither.

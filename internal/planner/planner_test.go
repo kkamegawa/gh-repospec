@@ -1225,6 +1225,54 @@ func TestBuildCodeScanningUnavailable(t *testing.T) {
 	}
 }
 
+// TestBuildTreatsCodeQL404AsNotConfigured guards that plan reads a CodeQL
+// default setup 404 the way import does: a known "not configured" state, so
+// a disabling declaration converges as a noop instead of a redundant update,
+// and an omitted codeqlDefaultSetup still leaves AI Scan's dependency
+// unsatisfied.
+func TestBuildTreatsCodeQL404AsNotConfigured(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		codeQL     *config.FeatureSetting
+		aiScan     *config.FeatureSetting
+		wantCodeQL ChangeState
+		wantAIScan ChangeState
+	}{
+		{name: "disabled", codeQL: &config.FeatureSetting{Enabled: false}, wantCodeQL: ChangeNoop},
+		{name: "enabled", codeQL: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeUpdate},
+		{name: "ai scan without codeql", aiScan: &config.FeatureSetting{Enabled: true}, wantAIScan: ChangeBlocked},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &fakeService{
+				repository:            githubapi.RepositoryInfo{Visibility: "public"},
+				codeQLDefaultSetupErr: &githubapi.APIError{StatusCode: 404},
+				aiScan:                githubapi.AIScanSetting{PRScan: "disabled"},
+			}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, err := engine.Build(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+				Security:      &config.SecurityConfig{CodeQLDefaultSetup: tc.codeQL, AIPullRequestScan: tc.aiScan},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.codeQL != nil && !hasChange(plan, "security.codeqlDefaultSetup", tc.wantCodeQL) {
+				t.Fatalf("plan.Changes = %#v, want security.codeqlDefaultSetup as %s", plan.Changes, tc.wantCodeQL)
+			}
+			if tc.aiScan != nil && !hasChange(plan, "security.aiPullRequestScan", tc.wantAIScan) {
+				t.Fatalf("plan.Changes = %#v, want security.aiPullRequestScan as %s", plan.Changes, tc.wantAIScan)
+			}
+		})
+	}
+}
+
 // TestBuildAIPullRequestScanCodeQLDependency guards docs/design.md's
 // dependency: enabling AI Scan requires CodeQL default setup to be
 // effectively enabled, with a declared codeqlDefaultSetup taking precedence

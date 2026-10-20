@@ -1610,15 +1610,20 @@ type codeScanningState struct {
 
 // readCodeScanningState reads CodeQL default setup when either code-scanning
 // feature is declared, and AI Scan when it is declared and code scanning is
-// available.
+// available. A CodeQL default setup 404 means not configured, as import reads
+// it (docs/adr.md record 10), so it is a known disabled state.
 func readCodeScanningState(ctx context.Context, service Service, repository githubapi.Repository, desired *config.SecurityConfig) codeScanningState {
 	var state codeScanningState
 	if desired.CodeQLDefaultSetup == nil && desired.AIPullRequestScan == nil {
 		return state
 	}
-	if status, err := service.GetCodeQLDefaultSetup(ctx, repository); err == nil {
+	status, err := service.GetCodeQLDefaultSetup(ctx, repository)
+	switch {
+	case err == nil:
 		state.codeQL, state.codeQLKnown = status, true
-	} else if githubapi.IsRefused(err) {
+	case githubapi.IsNotFound(err):
+		state.codeQL, state.codeQLKnown = githubapi.CodeQLDefaultSetupStatus{State: "not-configured"}, true
+	case githubapi.IsRefused(err):
 		state.unavailable = unavailableReason("code scanning is not available for this repository", err)
 	}
 	if desired.AIPullRequestScan == nil {
