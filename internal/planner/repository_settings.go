@@ -65,21 +65,23 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 			state, summary = ChangeCreate, "set repository interaction limit after repository creation"
 		} else if interactionAPI, available := service.(repositoryInteractionService); available {
 			actual, err := interactionAPI.GetRepositoryInteractionLimit(ctx, repository)
-			if err != nil {
+			switch {
+			case err != nil:
 				summary = capabilityError(err)
-			} else if desired.InteractionLimit.Enabled {
-				if actual.Limit != "" && actual.Origin != "repository" {
+			case desired.InteractionLimit.Enabled:
+				switch {
+				case actual.Limit != "" && actual.Origin != "repository":
 					summary = "interaction limit is inherited and cannot be changed at repository scope"
-				} else if actual.Limit == desired.InteractionLimit.Limit && interactionExpiryMatches(desired.InteractionLimit.Expiry, actual.ExpiresAt, time.Now().UTC()) {
+				case actual.Limit == desired.InteractionLimit.Limit && interactionExpiryMatches(desired.InteractionLimit.Expiry, actual.ExpiresAt, time.Now().UTC()):
 					state, summary = ChangeNoop, "repository interaction limit already converged"
-				} else {
+				default:
 					state, summary = ChangeUpdate, "set repository interaction limit"
 				}
-			} else if actual.Limit == "" {
+			case actual.Limit == "":
 				state, summary = ChangeNoop, "repository interaction limit already disabled"
-			} else if actual.Origin == "repository" {
+			case actual.Origin == "repository":
 				state, summary = ChangeUpdate, "remove repository interaction limit"
-			} else {
+			default:
 				summary = "interaction limit is inherited and cannot be changed at repository scope"
 			}
 		}
@@ -91,11 +93,12 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 			state, summary = ChangeCreate, "set pull request creation cap after repository creation"
 		} else if interactionAPI, available := service.(repositoryInteractionService); available {
 			actual, err := interactionAPI.GetPullRequestCreationCap(ctx, repository)
-			if err != nil {
+			switch {
+			case err != nil:
 				summary = capabilityError(err)
-			} else if pullRequestCreationCapMatches(*desired.PullRequestCreationCap, actual) {
+			case pullRequestCreationCapMatches(*desired.PullRequestCreationCap, actual):
 				state, summary = ChangeNoop, "pull request creation cap already converged"
-			} else {
+			default:
 				state, summary = ChangeUpdate, "converge pull request creation cap"
 			}
 		}
@@ -106,11 +109,12 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 				state, summary = ChangeCreate, "set pull request creation cap bypass users after repository creation"
 			} else if interactionAPI, available := service.(repositoryInteractionService); available {
 				actual, err := interactionAPI.ListPullRequestCreationCapBypassUsers(ctx, repository)
-				if err != nil {
+				switch {
+				case err != nil:
 					summary = capabilityError(err)
-				} else if sameStrings(*desired.PullRequestCreationCap.BypassUsers, interactionBypassLogins(actual)) {
+				case sameStrings(*desired.PullRequestCreationCap.BypassUsers, interactionBypassLogins(actual)):
 					state, summary = ChangeNoop, "pull request creation cap bypass users already converged"
-				} else {
+				default:
 					state, summary = ChangeUpdate, "converge pull request creation cap bypass users"
 				}
 			}
@@ -118,11 +122,12 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 		}
 	}
 	if desired.Pages != nil {
-		if !ok {
+		switch {
+		case !ok:
 			append("pages", ChangeBlocked, "repository settings API is unavailable")
-		} else if !exists {
+		case !exists:
 			append("pages", ChangeCreate, "configure GitHub Pages after repository creation")
-		} else {
+		default:
 			actual, err := api.GetPages(ctx, repository)
 			switch {
 			case githubapi.IsNotFound(err):
@@ -327,11 +332,12 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 					continue
 				}
 				actual, getErr := api.GetBranchProtection(ctx, repository, item.Branch)
-				if getErr != nil {
+				switch {
+				case getErr != nil:
 					append("branchProtection."+item.Branch, ChangeBlocked, capabilityError(getErr))
-				} else if jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)) {
+				case jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)):
 					append("branchProtection."+item.Branch, ChangeNoop, "branch protection already converged")
-				} else {
+				default:
 					append("branchProtection."+item.Branch, ChangeUpdate, "converge classic branch protection")
 				}
 				if item.RequireSignedCommits != nil {
@@ -339,11 +345,12 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 					if githubapi.IsNotFound(signatureErr) {
 						signed, signatureErr = false, nil
 					}
-					if signatureErr != nil {
+					switch {
+					case signatureErr != nil:
 						append("branchProtection."+item.Branch+".requireSignedCommits", ChangeBlocked, capabilityError(signatureErr))
-					} else if signed == *item.RequireSignedCommits {
+					case signed == *item.RequireSignedCommits:
 						append("branchProtection."+item.Branch+".requireSignedCommits", ChangeNoop, "signed commit requirement already converged")
-					} else {
+					default:
 						append("branchProtection."+item.Branch+".requireSignedCommits", ChangeUpdate, "converge signed commit requirement")
 					}
 				}
@@ -397,7 +404,8 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 			}
 		} else {
 			request := pagesRequest(*desired.Pages)
-			if githubapi.IsNotFound(err) {
+			switch {
+			case githubapi.IsNotFound(err):
 				createRequest := githubapi.PagesRequest{BuildType: request.BuildType, Source: request.Source}
 				if _, err = api.CreatePages(ctx, repository, createRequest); err != nil {
 					return fmt.Errorf("create Pages for %s: %w", repository, err)
@@ -407,9 +415,9 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 						return fmt.Errorf("set Pages domain and HTTPS for %s: %w", repository, err)
 					}
 				}
-			} else if err != nil {
+			case err != nil:
 				return fmt.Errorf("get Pages for %s: %w", repository, err)
-			} else if !pagesMatch(*desired.Pages, actual) {
+			case !pagesMatch(*desired.Pages, actual):
 				if _, err = api.UpdatePages(ctx, repository, request); err != nil {
 					return fmt.Errorf("update Pages for %s: %w", repository, err)
 				}
@@ -592,13 +600,14 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 	if len(desired.BranchProtections) > 0 {
 		for _, item := range desired.BranchProtections {
 			actual, err := api.GetBranchProtection(ctx, repository, item.Branch)
-			if githubapi.IsNotFound(err) {
+			switch {
+			case githubapi.IsNotFound(err):
 				if err := api.SetBranchProtection(ctx, repository, item.Branch, item.Settings); err != nil {
 					return fmt.Errorf("set branch protection %q: %w", item.Branch, err)
 				}
-			} else if err != nil {
+			case err != nil:
 				return fmt.Errorf("get branch protection %q: %w", item.Branch, err)
-			} else if !jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)) {
+			case !jsonEqual(item.Settings, githubapi.NormalizeBranchProtection(actual)):
 				if err := api.SetBranchProtection(ctx, repository, item.Branch, item.Settings); err != nil {
 					return fmt.Errorf("set branch protection %q: %w", item.Branch, err)
 				}

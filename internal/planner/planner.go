@@ -1093,7 +1093,7 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 	if desired.OIDCSubjectCustomization != nil {
 		api, ok := e.service.(oidcCustomizationService)
 		if !ok {
-			return errors.New("Actions OIDC subject customization API is unavailable")
+			return errors.New("the Actions OIDC subject customization API is unavailable")
 		}
 		current, err := api.GetOIDCSubjectCustomization(ctx, repository)
 		if err != nil {
@@ -1930,16 +1930,18 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 			}
 		}
 		for _, environment := range desired.Environments {
-			state, summary := ChangeUpdate, "converge Actions environment settings"
+			var state ChangeState
+			summary := "converge Actions environment settings"
 			if known {
 				state = ChangeCreate
 				if actual, ok := existing[environment.Name]; ok {
 					matches, compareErr := environmentSettingsMatch(ctx, service, repository, environment, actual)
-					if compareErr != nil {
+					switch {
+					case compareErr != nil:
 						state, summary = ChangeBlocked, capabilityError(compareErr)
-					} else if matches {
+					case matches:
 						state, summary = ChangeNoop, "environment settings already converged"
-					} else {
+					default:
 						state, summary = ChangeUpdate, "converge Actions environment settings"
 					}
 				}
@@ -1952,11 +1954,12 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 				if actual, ok := existing[environment.Name]; known && ok {
 					if api, available := service.(environmentService); available {
 						policies, listErr := api.ListEnvironmentBranchPolicies(ctx, repository, environment.Name)
-						if listErr != nil {
+						switch {
+						case listErr != nil:
 							summary = capabilityError(listErr)
-						} else if environmentBranchPoliciesMatch(environment.BranchPolicies, policies) {
+						case environmentBranchPoliciesMatch(environment.BranchPolicies, policies):
 							state, summary = ChangeNoop, "deployment branch patterns already converged"
-						} else {
+						default:
 							state, summary = ChangeUpdate, "converge deployment branch patterns"
 						}
 					} else {
@@ -1977,11 +1980,12 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 					state = ChangeBlocked
 				} else {
 					rules, listErr := api.ListDeploymentProtectionRules(ctx, repository, environment.Name)
-					if listErr != nil {
+					switch {
+					case listErr != nil:
 						summary = capabilityError(listErr)
-					} else if customDeploymentProtectionRulesMatch(*environment.CustomProtectionRules, rules) {
+					case customDeploymentProtectionRulesMatch(*environment.CustomProtectionRules, rules):
 						state, summary = ChangeNoop, "custom deployment protection rules already converged"
-					} else {
+					default:
 						missing := missingCustomProtectionSlugs(*environment.CustomProtectionRules, rules)
 						if len(missing) == 0 {
 							state, summary = ChangeUpdate, "converge custom deployment protection rules"

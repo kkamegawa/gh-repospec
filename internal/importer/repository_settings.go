@@ -19,11 +19,12 @@ func importRepositorySettings(ctx context.Context, reader Reader, repository git
 	if err != nil {
 		return nil, nil, fmt.Errorf("get repository interaction limit for %s: %w", repository, err)
 	}
-	if interactionLimit.Limit == "" {
+	switch {
+	case interactionLimit.Limit == "":
 		settings.InteractionLimit = &config.InteractionLimitConfig{Enabled: false}
-	} else if interactionLimit.Origin != "repository" {
+	case interactionLimit.Origin != "repository":
 		diagnostics = append(diagnostics, Diagnostic{Resource: "settings.interactionLimit", Message: "interaction limit is inherited from the user or organization and cannot be imported as a repository setting"})
-	} else {
+	default:
 		expiry, err := interactionExpiryPreset(interactionLimit.ExpiresAt, time.Now().UTC())
 		if err != nil {
 			return nil, nil, fmt.Errorf("map repository interaction limit expiry for %s: %w", repository, err)

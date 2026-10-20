@@ -226,9 +226,10 @@ func TestRepositoryInteractionSettingsEndpoints(t *testing.T) {
 		}
 		switch r.URL.Path {
 		case "/repos/octo/demo/interaction-limits":
-			if r.Method == http.MethodDelete {
+			switch r.Method {
+			case http.MethodDelete:
 				w.WriteHeader(http.StatusNoContent)
-			} else if r.Method == http.MethodPut {
+			case http.MethodPut:
 				var body RepositoryInteractionLimitRequest
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					t.Errorf("decode interaction limit request: %v", err)
@@ -236,7 +237,7 @@ func TestRepositoryInteractionSettingsEndpoints(t *testing.T) {
 					t.Errorf("interaction limit request = %#v", body)
 				}
 				_ = json.NewEncoder(w).Encode(RepositoryInteractionLimit{Limit: "contributors_only", Origin: "repository"})
-			} else {
+			default:
 				_ = json.NewEncoder(w).Encode(RepositoryInteractionLimit{Limit: "contributors_only", Origin: "repository", ExpiresAt: "2030-01-01T00:00:00Z"})
 			}
 		case "/repos/octo/demo/interaction-limits/pulls/creation-cap":
