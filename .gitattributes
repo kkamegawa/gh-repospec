@@ -1,0 +1,13 @@
+# Store and check out every text file with LF line endings, whatever the
+# local core.autocrlf setting. Text files are UTF-8 without a BOM; see
+# .editorconfig for the editor-side encoding setting.
+* text=auto eol=lf
+
+# Binary files are never converted.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.exe binary
