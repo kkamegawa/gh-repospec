@@ -460,6 +460,9 @@ func isAnyAppID(value any) bool {
 	return false
 }
 
+// dropDefaultValues descends into nested objects only, never into arrays: an
+// app_id null inside required_status_checks.checks means "any app", not a
+// default, and must stay distinct from a check pinned to an app.
 func dropDefaultValues(values map[string]any) {
 	for key, value := range values {
 		switch value := value.(type) {
