@@ -30,7 +30,11 @@ type repositorySettingsMemory struct {
 	protections           map[string]map[string]any
 	signatures            map[string]bool
 	oidc                  githubapi.OIDCSubjectCustomization
-	nextID                int64
+	oidcWrites            []githubapi.OIDCSubjectCustomization
+	// stickyImmutableSubject models a repository created after 2026-07-15,
+	// where GitHub keeps the immutable subject claim enabled.
+	stickyImmutableSubject bool
+	nextID                 int64
 }
 
 func (s *repositorySettingsMemory) GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error) {
@@ -314,7 +318,19 @@ func (s *repositorySettingsMemory) GetOIDCSubjectCustomization(context.Context, 
 	return s.oidc, nil
 }
 
+// SetOIDCSubjectCustomization follows GitHub: an omitted
+// use_immutable_subject keeps the current value, and with
+// stickyImmutableSubject an enabled immutable subject stays enabled whatever
+// the request says.
 func (s *repositorySettingsMemory) SetOIDCSubjectCustomization(_ context.Context, _ githubapi.Repository, settings githubapi.OIDCSubjectCustomization) error {
+	s.oidcWrites = append(s.oidcWrites, settings)
+	current := s.oidc.UseImmutableSubject
+	switch {
+	case settings.UseImmutableSubject == nil:
+		settings.UseImmutableSubject = current
+	case s.stickyImmutableSubject && current != nil && *current:
+		settings.UseImmutableSubject = current
+	}
 	s.oidc = settings
 	return nil
 }
@@ -389,9 +405,77 @@ func TestActionsOIDCSubjectCustomizationApplyThenPlanHasNoDrift(t *testing.T) {
 		t.Fatalf("applyActions() error = %v", err)
 	}
 	plan := Plan{}
-	appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{})
+	appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
 	if !hasChange(plan, "actions.oidcSubjectCustomization", ChangeNoop) {
 		t.Fatalf("post-apply actions plan = %#v, want OIDC customization no-op", plan.Changes)
+	}
+}
+
+func TestActionsOIDCImmutableSubjectThatGitHubKeepsIsManualAndNeverWrittenOff(t *testing.T) {
+	enabled := true
+	disabled := false
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+	for _, tc := range []struct {
+		name       string
+		desired    config.OIDCSubjectCustomizationConfig
+		wantWrites int
+	}{
+		// The configuration imported from an older repository matches apart
+		// from the immutable subject, so nothing needs to be written.
+		{name: "only the immutable subject differs", desired: config.OIDCSubjectCustomizationConfig{UseDefault: true, UseImmutableSubject: &disabled}, wantWrites: 0},
+		// The claim keys still converge; only the field GitHub keeps is dropped.
+		{name: "claim keys differ too", desired: config.OIDCSubjectCustomizationConfig{UseDefault: false, IncludeClaimKeys: []string{"repo", "context"}, UseImmutableSubject: &disabled}, wantWrites: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newRepositorySettingsMemory()
+			service.stickyImmutableSubject = true
+			service.oidc = githubapi.OIDCSubjectCustomization{UseDefault: true, UseImmutableSubject: &enabled}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired := &config.ActionsConfig{OIDCSubjectCustomization: &tc.desired}
+
+			before := Plan{}
+			appendActionsChanges(context.Background(), service, &before, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+			if !hasChange(before, "actions.oidcSubjectCustomization.useImmutableSubject", ChangeManual) {
+				t.Fatalf("plan = %#v, want the kept immutable subject reported as manual", before.Changes)
+			}
+			if err := engine.applyActions(context.Background(), repository, desired, Options{}); err != nil {
+				t.Fatalf("applyActions() error = %v", err)
+			}
+			if len(service.oidcWrites) != tc.wantWrites {
+				t.Fatalf("OIDC writes = %#v, want %d", service.oidcWrites, tc.wantWrites)
+			}
+			for _, write := range service.oidcWrites {
+				if write.UseImmutableSubject != nil {
+					t.Fatalf("OIDC write = %#v, want use_immutable_subject omitted", write)
+				}
+			}
+			after := Plan{}
+			appendActionsChanges(context.Background(), service, &after, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+			if after.HasDrift() || after.HasBlocked() || !hasChange(after, "actions.oidcSubjectCustomization", ChangeNoop) {
+				t.Fatalf("post-apply plan = %#v, want no drift and the customization converged", after.Changes)
+			}
+		})
+	}
+}
+
+func TestActionsOIDCImmutableSubjectCanBeTurnedOn(t *testing.T) {
+	enabled := true
+	disabled := false
+	service := newRepositorySettingsMemory()
+	service.oidc = githubapi.OIDCSubjectCustomization{UseDefault: true, UseImmutableSubject: &disabled}
+	desired := &config.ActionsConfig{OIDCSubjectCustomization: &config.OIDCSubjectCustomizationConfig{UseDefault: true, UseImmutableSubject: &enabled}}
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+
+	plan := Plan{}
+	appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+	if !hasChange(plan, "actions.oidcSubjectCustomization", ChangeUpdate) {
+		t.Fatalf("plan = %#v, want an update turning the immutable subject on", plan.Changes)
+	}
+	if _, ok := findChange(plan, "actions.oidcSubjectCustomization.useImmutableSubject"); ok {
+		t.Fatalf("plan = %#v, want no manual entry when the subject can be enabled", plan.Changes)
 	}
 }
 
@@ -410,7 +494,7 @@ func TestCustomEnvironmentProtectionRulesApplyThenPlanHasNoDrift(t *testing.T) {
 		t.Fatalf("applyActions() error = %v", err)
 	}
 	plan := Plan{}
-	appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{})
+	appendActionsChanges(context.Background(), service, &plan, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
 	if !hasChange(plan, "actions.environment.production.customProtectionRules", ChangeNoop) {
 		t.Fatalf("post-apply actions plan = %#v, want custom protection rules no-op", plan.Changes)
 	}
@@ -422,7 +506,7 @@ func TestCustomEnvironmentProtectionPlanBlocksUnavailableApp(t *testing.T) {
 	rules := []string{"approval-app"}
 	desired := &config.ActionsConfig{Environments: []config.Environment{{Name: "production", CustomProtectionRules: &rules}}}
 	plan := Plan{}
-	appendActionsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, config.RepositoryConfig{})
+	appendActionsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
 	change, ok := findChange(plan, "actions.environment.production.customProtectionRules")
 	if !ok || change.State != ChangeBlocked {
 		t.Fatalf("custom protection change = %#v, want blocked when app is unavailable", change)

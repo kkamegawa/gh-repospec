@@ -1111,7 +1111,7 @@ func TestApplyForceSecretsStillRequiresSourceEnvironmentVariable(t *testing.T) {
 func TestApplyWorkflowRepositoryAccess(t *testing.T) {
 	t.Parallel()
 	service := &recordingService{fakeService: fakeService{
-		repository:               githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		repository:               githubapi.RepositoryInfo{ID: 1, Visibility: "private", Private: true},
 		workflowRepositoryAccess: githubapi.WorkflowRepositoryAccess{AccessLevel: "none"},
 	}}
 	engine, err := New(service)
@@ -1120,7 +1120,7 @@ func TestApplyWorkflowRepositoryAccess(t *testing.T) {
 	}
 	plan, err := engine.Apply(context.Background(), &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
-		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "private"},
 		Actions:       &config.ActionsConfig{WorkflowAccessLevel: "organization"},
 	}, Options{})
 	if err != nil {
@@ -1131,5 +1131,69 @@ func TestApplyWorkflowRepositoryAccess(t *testing.T) {
 	}
 	if !hasChange(plan, "actions.workflowAccessLevel", ChangeUpdate) {
 		t.Fatalf("plan = %#v, want an update for workflow access", plan.Changes)
+	}
+}
+
+func TestPlanBlocksWorkflowRepositoryAccessOnPublicRepositoryWithoutReading(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := engine.Build(context.Background(), &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Actions:       &config.ActionsConfig{WorkflowAccessLevel: "organization"},
+	}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	change, ok := findChange(plan, "actions.workflowAccessLevel")
+	if !ok || change.State != ChangeBlocked || !strings.Contains(change.Summary, "private and internal") {
+		t.Fatalf("workflow access change = %#v, want blocked with the visibility reason rather than a failed read", change)
+	}
+}
+
+func TestApplyWorkflowRepositoryAccessAfterVisibilityChange(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository:               githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		workflowRepositoryAccess: githubapi.WorkflowRepositoryAccess{AccessLevel: "none"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "private", AllowVisibilityChange: true},
+		Actions:       &config.ActionsConfig{WorkflowAccessLevel: "organization"},
+	}
+	plan, err := engine.Build(context.Background(), cfg, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasChange(plan, "actions.workflowAccessLevel", ChangeUpdate) || plan.HasBlocked() {
+		t.Fatalf("plan = %#v, want an unblocked update planned after the visibility change", plan.Changes)
+	}
+	if _, err := engine.Apply(context.Background(), cfg, Options{}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if service.workflowRepositoryAccess.AccessLevel != "organization" {
+		t.Fatalf("workflow access = %#v, want organization once the repository is private", service.workflowRepositoryAccess)
+	}
+}
+
+func TestDeferredWorkflowRepositoryAccessDependsOnDeclaredVisibility(t *testing.T) {
+	t.Parallel()
+	for visibility, want := range map[string]ChangeState{"public": ChangeBlocked, "private": ChangeUpdate} {
+		plan := Plan{}
+		appendWorkflowAccessLevelChange(context.Background(), &fakeService{}, &plan, &config.ActionsConfig{WorkflowAccessLevel: "user"}, config.RepositoryConfig{Visibility: visibility}, githubapi.Repository{Owner: "octo", Name: "demo"}, nil)
+		if !hasChange(plan, "actions.workflowAccessLevel", want) {
+			t.Fatalf("%s: plan = %#v, want %s", visibility, plan.Changes, want)
+		}
 	}
 }

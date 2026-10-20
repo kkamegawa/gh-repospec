@@ -145,6 +145,11 @@ func (f *fakeReader) GetForkPullRequestApproval(context.Context, githubapi.Repos
 	return f.forkApproval, f.getForkApprovalErr
 }
 func (f *fakeReader) GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error) {
+	// GitHub answers 422 for a public repository, so the fake does too: a
+	// test can then only pass if the importer skips the read.
+	if !f.repository.Private && f.repository.Visibility != "internal" {
+		return githubapi.WorkflowRepositoryAccess{}, &githubapi.APIError{StatusCode: 422, Method: "GET", Message: "Access policy only applies to internal and private repositories"}
+	}
 	return f.workflowAccess, nil
 }
 func (f *fakeReader) ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error) {
@@ -332,8 +337,11 @@ func TestImportMapsRepositorySettings(t *testing.T) {
 	if repo.MergeCommitTitle != "PR_TITLE" {
 		t.Fatalf("MergeCommitTitle = %q", repo.MergeCommitTitle)
 	}
-	if result.Config.Actions == nil || result.Config.Actions.WorkflowAccessLevel != "organization" {
-		t.Fatalf("Actions.WorkflowAccessLevel = %#v, want organization", result.Config.Actions)
+	if result.Config.Actions == nil || result.Config.Actions.WorkflowAccessLevel != "" {
+		t.Fatalf("Actions.WorkflowAccessLevel = %#v, want unset for a public repository", result.Config.Actions)
+	}
+	if !hasDiagnostic(result.Diagnostics, "actions.workflowAccessLevel") {
+		t.Fatalf("Diagnostics = %#v, want one for actions.workflowAccessLevel", result.Diagnostics)
 	}
 	if repo.AllowForking == nil || !*repo.AllowForking || repo.HasPullRequests == nil || !*repo.HasPullRequests || repo.HasDownloads == nil || *repo.HasDownloads {
 		t.Fatalf("general repository settings were not imported: %#v", repo)
@@ -677,6 +685,30 @@ func TestImportSkipsForkApprovalForPrivateRepositoryAndReportsWhy(t *testing.T) 
 	}
 	if !hasDiagnostic(result.Diagnostics, "actions.forkPullRequestApproval") {
 		t.Fatalf("Diagnostics = %#v, want one for actions.forkPullRequestApproval", result.Diagnostics)
+	}
+}
+
+func TestImportReadsWorkflowAccessLevelOnlyForPrivateOrInternalRepository(t *testing.T) {
+	t.Parallel()
+	for _, info := range []githubapi.RepositoryInfo{
+		{Visibility: "private", Private: true},
+		{Visibility: "internal", Private: true},
+	} {
+		reader := newFakeReader()
+		reader.repository = info
+		reader.getForkApprovalErr = errors.New("not read for a private repository")
+		reader.workflowAccess = githubapi.WorkflowRepositoryAccess{AccessLevel: "organization"}
+
+		result, err := Import(context.Background(), reader, testRepo())
+		if err != nil {
+			t.Fatalf("%s: Import() error = %v", info.Visibility, err)
+		}
+		if result.Config.Actions.WorkflowAccessLevel != "organization" {
+			t.Fatalf("%s: WorkflowAccessLevel = %q, want organization", info.Visibility, result.Config.Actions.WorkflowAccessLevel)
+		}
+		if hasDiagnostic(result.Diagnostics, "actions.workflowAccessLevel") {
+			t.Fatalf("%s: Diagnostics = %#v, want none for actions.workflowAccessLevel", info.Visibility, result.Diagnostics)
+		}
 	}
 }
 

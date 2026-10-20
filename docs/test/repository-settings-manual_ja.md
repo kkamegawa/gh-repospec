@@ -19,7 +19,9 @@
 go test ./internal/planner -run '^TestEmptyRepositoryInitializationAndCommandsRunOnce$' -count=1 -v
 ```
 
-初回applyで`README.md`とVisualStudioの`.gitignore`を作成し、`main`を初期化し、Relaypublisherと同じtargets・dependenciesを持つ`name: repotest1`の`apm.yml`を出力すること、command完了状態を記録すること、2回目のapplyでcommandを再実行しないことを確認します。
+初回applyで`README.md`とVisualStudioの`.gitignore`を作成し、`main`を初期化し、決定的なhelper commandが書いた`apm.yml`をcommitすること、command完了状態を記録すること、2回目のapplyでcommandを再実行しないことを確認します。helperはRelaypublisherのtargets・dependenciesを持つ`name: repotest1`の固定ファイルを書きます。この内容はhelperのものであり、`apm init`の出力ではありません。
+
+同じpackageの`TestFailedCommandReportsRedactedOutput`は、失敗したcommandの出力が報告されるエラーに含まれ、宣言されたsecretの値が`***`に置き換えられることを確認します。
 
 全自動テストは次のコマンドです。
 
@@ -43,10 +45,14 @@ commands:
     args: [init, --yes]
     cwd: .
     timeout: 5m
-    environment: [APM_NONINTERACTIVE]
+    environment: [APM_NONINTERACTIVE, PATH, HOME, USERPROFILE]
 ```
 
-初回applyには`--approve-command apm-init`を指定します。生成した`apm.yml`で、Relaypublisherと同じ`targets`・`dependencies`と`name: repotest1`になっていることを確認します。ローカル回帰テストは決定的なhelper commandで同じファイルを書き、commandが一度だけ実行されることを確認します。
+環境変数allowlistは厳密です。`apm`は`git`を起動し、ホームディレクトリを読むため、`PATH`とホームディレクトリの変数(macOSとLinuxでは`HOME`、Windowsでは`USERPROFILE`)が必要です。列挙した変数が未設定ならスキップされるため、同じリストをすべてのプラットフォームで使えます。`APM_NONINTERACTIVE`だけでは`apm`が`git`を見つけられずに失敗し、`apply`はエラーの下にcommandの出力を表示します。
+
+初回applyには`--approve-command apm-init`を指定します。`apm init --yes`はstaging workspaceに既定の`apm.yml`を作成します。Relaypublisherの`targets`や`dependencies`はコピーせず、プロジェクト名はdestinationリポジトリではなくstaging directoryの名前(`name: seed`)になります。初回commitに`apm.yml`が存在することを確認し、Relaypublisherのtargets・dependenciesが必要な場合は後続のcommitで内容を編集します。
+
+source importは標準エラーにdiagnosticを出力します。publicなsourceでは、GitHubがworkflow accessポリシーをprivateとinternalのリポジトリにのみ適用するため`actions.workflowAccessLevel`が含まれ、secret値は返されないためsecret名ごとに1行が含まれます。
 
 ### Bash
 
@@ -92,9 +98,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Apply failed.' }
 ## 結果の確認
 
 1. targetにdefault branchがあり、初回commitに`README.md`、`.gitignore`、生成した`apm.yml`が含まれることを確認します。
-2. 初期化commandの完了markerがcommitされていることを確認します。2回目の`plan`と`apply`ではcommandを承認せずに実行し、完了済みとして表示されて再実行されないことを確認します。
-3. destinationを別ファイルにimportし、正規化された設定を確認します。repository identityと下記の明示的な対象外を考慮してsourceと比較します。
-4. destinationのimport結果に対する`plan`で、適用可能な差分およびblockedな設定がないことを確認します。secret値はこの比較から除外します。
+2. 初期化commandの完了marker `.gh-repospec/command-state.json`がcommitされ、`apm-init`を含むことを確認します。2回目の`plan`と`apply`ではcommandを承認せずに実行し、完了済みとして表示されて再実行されないことを確認します。
+3. source importを使ってdestinationに対する`plan`を再度実行します。blockedなエントリがないことを確認します。残る想定のエントリは次のとおりです。
+   - すべてのrulesetの`ruleset.<name>`と`ruleset.<name>.bypassActors`がUPDATE。rulesetは比較せず常に書き込むためです。
+   - `actions.forkPullRequestApproval`がUPDATE。比較せず常に書き込むためです。
+   - 招待がまだ承諾されていないcollaboratorごとの`settings.collaborator.<login>`がCREATE。GitHubは承諾待ちの招待相手をcollaboratorではなく招待として返します。
+   - sourceが`useImmutableSubject: false`を宣言している場合の`actions.oidcSubjectCustomization.useImmutableSubject`がMANUAL。GitHubは2026-07-15以降に作成または名前変更されたすべてのリポジトリで不変のsubject claimを有効にし、有効のまま維持します。
+   - `seed`と各commandのMANUALエントリ。
+4. destinationを別ファイルにimportし、正規化された設定を確認します。repository identityと下記の明示的な対象外を考慮してsourceと比較します。続いてdestinationのimport結果を使ってdestinationに対する`plan`を実行します。blockedなエントリがなく、createまたはupdateが手順3のrulesetと`actions.forkPullRequestApproval`のエントリだけであることを確認します。これらは常に報告されるため、この設定では`plan --ci`が`2`で終了します。終了コードは合否の基準にできないため、列挙したエントリと比較します。secret値はこの比較から除外します。
 5. GitHub SettingsのGeneral、Rules、Branches、Actions、Environments、Security、Pages、Webhooks、Deploy keys、Manage accessを確認し、以下の`gh api`のsnapshotと照合します。
 
 ```sh
@@ -182,7 +193,7 @@ foreach ($apiPath in $apiPaths) {
 | Immutable releases | 専用endpointで取得・更新 | 読み取りの404はimmutable releasesが無効であることを示します。 |
 | Repository rulesets | list/detail取得、対応するruleとbypass actorのcreate/update/delete | GitHubの権限とプランによる制約があります。 |
 | Classic branch protection | protected branch一覧、protection取得・更新、署名必須設定の取得・更新 | rulesetだけで保護されたbranchはclassic protectionではなくrulesetsにimportします。 |
-| ActionsとEnvironments | repository Actions policy、selected-actions許可リスト、OIDC subject customization、workflow token権限、fork承認policy、workflow repository access、environment protection、custom branch pattern、インストール済みcustom app protection rule、variables、secret metadata | secret値は意図的にimportと一致確認の対象外です。custom protection appはdestination repoで利用可能である必要があります。private repositoryではfork承認endpointが使えないためdiagnosticになります。 |
+| ActionsとEnvironments | repository Actions policy、selected-actions許可リスト、OIDC subject customization、workflow token権限、fork承認policy、workflow repository access、environment protection、custom branch pattern、インストール済みcustom app protection rule、variables、secret metadata | secret値は意図的にimportと一致確認の対象外です。custom protection appはdestination repoで利用可能である必要があります。private repositoryではfork承認endpoint、public repositoryではworkflow repository access endpointが使えないため、それぞれdiagnosticになります。GitHubが有効のまま維持する不変のOIDC subjectはmanualとして報告します。 |
 | Security | `security_and_analysis`、Dependabot alerts/security updates、private vulnerability reporting、CodeQL default setup、GitHubが値を公開する場合のAI pull-request scan | dependency graphの状態にはread endpointがありません。値が取得不能・権限不足の場合、falseと断定せずdiagnosticまたはblocked planにします。 |
 | Pages | 有効状態、build type、source、custom domain、HTTPS enforcement | domain verificationとbuild/deployment履歴はrepository設定ではありません。 |
 | Webhooks | URL、event一覧、active状態、content type、TLS検証設定 | GitHubはwebhook secret値を返さないため除外します。 |
@@ -201,5 +212,5 @@ foreach ($apiPath in $apiPaths) {
 - 初回commit、default branch、README、VisualStudio `.gitignore`を確認した。
 - APM初期化が一度だけ実行され、2回目のapplyで再実行されなかった。
 - Settings画面と`gh api`の比較を完了した。
-- destinationの再importと2回目のplanに説明できない差分がなかった。
+- destinationの再importと2回目のplanが、手順4に列挙した想定のエントリだけを示した。
 - diagnosticまたはblocked項目を解決したか、明示した対象外として記録した。

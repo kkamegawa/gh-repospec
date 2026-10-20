@@ -1387,6 +1387,10 @@ func (f *fakeService) CreateRepository(_ context.Context, request githubapi.Crea
 
 func (f *fakeService) UpdateRepository(_ context.Context, _ githubapi.Repository, request githubapi.UpdateRepositoryRequest) (githubapi.RepositoryInfo, error) {
 	f.updateRepositoryCalls++
+	if request.Visibility != "" {
+		f.repository.Visibility = request.Visibility
+		f.repository.Private = request.Visibility != "public"
+	}
 	if request.Description != nil {
 		f.repository.Description = *request.Description
 	}
@@ -1486,11 +1490,26 @@ func (*fakeService) SetForkPullRequestApproval(context.Context, githubapi.Reposi
 	return nil
 }
 
+// workflowAccessUnavailable mirrors GitHub, which answers the workflow access
+// endpoints with 422 for a public repository.
+func (f *fakeService) workflowAccessUnavailable() error {
+	if !f.repository.Private && f.repository.Visibility != "internal" {
+		return &githubapi.APIError{StatusCode: 422, Message: "Access policy only applies to internal and private repositories"}
+	}
+	return nil
+}
+
 func (f *fakeService) GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error) {
+	if err := f.workflowAccessUnavailable(); err != nil {
+		return githubapi.WorkflowRepositoryAccess{}, err
+	}
 	return f.workflowRepositoryAccess, nil
 }
 
 func (f *fakeService) UpdateWorkflowRepositoryAccess(_ context.Context, _ githubapi.Repository, access githubapi.WorkflowRepositoryAccess) error {
+	if err := f.workflowAccessUnavailable(); err != nil {
+		return err
+	}
 	f.workflowRepositoryAccess = access
 	return nil
 }

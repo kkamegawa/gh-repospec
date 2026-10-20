@@ -269,7 +269,7 @@ func (e *Engine) build(ctx context.Context, cfg *config.Config, options Options)
 	appendReleaseImmutabilityChanges(ctx, e.service, &plan, cfg.Repository, repository)
 	appendLabelChanges(ctx, e.service, &plan, cfg.Labels, repository)
 	appendMilestoneChanges(ctx, e.service, &plan, cfg.Milestones, repository)
-	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository)
+	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository, info)
 	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository, resolver)
 	appendSecurityChanges(ctx, e.service, &plan, cfg.Security, repository, info, true)
 	appendRepositorySettingsChanges(ctx, e.service, &plan, cfg.Settings, repository, true, info.DefaultBranch == "")
@@ -721,11 +721,12 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 		if timeoutErr != nil {
 			return fmt.Errorf("command %q timeout: %w", command.ID, timeoutErr)
 		}
-		if _, runErr := seed.RunApprovedCommand(ctx, commandWorkspace, seed.Command{
+		result, runErr := seed.RunApprovedCommand(ctx, commandWorkspace, seed.Command{
 			ID: command.ID, Program: command.Program, Args: command.Args,
 			CWD: command.CWD, Timeout: timeout, Environment: command.Environment,
-		}, seed.CommandOptions{ApprovedCommandIDs: options.ApprovedCommandIDs, OutputLimit: 64 << 10}); runErr != nil {
-			return runErr
+		}, seed.CommandOptions{ApprovedCommandIDs: options.ApprovedCommandIDs, Redactions: secretRedactions(cfg), OutputLimit: 64 << 10})
+		if runErr != nil {
+			return commandFailure(command.ID, result, runErr)
 		}
 		completed[command.ID] = true
 		newlyCompleted = append(newlyCompleted, command.ID)
@@ -835,6 +836,40 @@ func materializeInitialization(ctx context.Context, service ContentService, repo
 		}
 	}
 	return nil
+}
+
+// secretRedactions returns the value of every declared secret whose source
+// environment variable is set, so command output never repeats one. An
+// allowlisted environment variable can carry the same value into a command.
+func secretRedactions(cfg *config.Config) []string {
+	var secrets []config.SecretRef
+	if cfg.Actions != nil {
+		secrets = append(secrets, cfg.Actions.Secrets...)
+	}
+	if cfg.Agents != nil {
+		secrets = append(secrets, cfg.Agents.Secrets...)
+	}
+	redactions := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		if value, ok := os.LookupEnv(secret.SourceEnv); ok && value != "" {
+			redactions = append(redactions, value)
+		}
+	}
+	return redactions
+}
+
+// commandFailure attaches a failed command's captured, already redacted
+// output to its error. Without it the user sees only an exit status and has
+// no way to tell why the program failed.
+func commandFailure(id string, result seed.CommandResult, err error) error {
+	output := strings.TrimRight(result.Output, "\r\n")
+	if output == "" {
+		return err
+	}
+	if result.OutputTrimmed {
+		output += "\n[output truncated at the limit]"
+	}
+	return fmt.Errorf("%w\ncommand %q output:\n%s", err, id, output)
 }
 
 func readCompletedCommands(ctx context.Context, service Service, repository githubapi.Repository, branch string) (map[string]bool, error) {
@@ -1064,7 +1099,7 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 		if err != nil {
 			return fmt.Errorf("get Actions OIDC subject customization for %s: %w", repository, err)
 		}
-		wanted := oidcCustomizationRequest(desired.OIDCSubjectCustomization)
+		wanted, _ := oidcCustomizationWrite(desired.OIDCSubjectCustomization, current)
 		if !oidcCustomizationMatches(wanted, current) {
 			if err := api.SetOIDCSubjectCustomization(ctx, repository, wanted); err != nil {
 				return fmt.Errorf("set Actions OIDC subject customization for %s: %w", repository, err)
@@ -1089,6 +1124,9 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 		}
 	}
 	if desired.WorkflowAccessLevel != "" {
+		// Build already blocks this field on a public repository, because
+		// GitHub rejects the endpoint outright (HTTP 422) in that case; a
+		// visibility change to private has been applied before this stage.
 		current, err := e.service.GetWorkflowRepositoryAccess(ctx, repository)
 		if err != nil {
 			return fmt.Errorf("get workflow repository access for %s: %w", repository, err)
@@ -1799,7 +1837,7 @@ func appendMilestoneChanges(ctx context.Context, service Service, plan *Plan, de
 	}
 }
 
-func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository, desiredRepository config.RepositoryConfig) {
+func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository, desiredRepository config.RepositoryConfig, info githubapi.RepositoryInfo) {
 	if desired == nil {
 		return
 	}
@@ -1835,28 +1873,27 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 	}
 	if desired.OIDCSubjectCustomization != nil {
 		state, summary := ChangeBlocked, "Actions OIDC subject customization API is unavailable"
+		immutableSubjectKept := false
 		if api, ok := service.(oidcCustomizationService); ok {
 			current, err := api.GetOIDCSubjectCustomization(ctx, repository)
 			if err != nil {
 				summary = capabilityError(err)
-			} else if oidcCustomizationMatches(oidcCustomizationRequest(desired.OIDCSubjectCustomization), current) {
-				state, summary = ChangeNoop, "Actions OIDC subject customization already converged"
 			} else {
-				state, summary = ChangeUpdate, "update Actions OIDC subject customization"
+				var wanted githubapi.OIDCSubjectCustomization
+				wanted, immutableSubjectKept = oidcCustomizationWrite(desired.OIDCSubjectCustomization, current)
+				if oidcCustomizationMatches(wanted, current) {
+					state, summary = ChangeNoop, "Actions OIDC subject customization already converged"
+				} else {
+					state, summary = ChangeUpdate, "update Actions OIDC subject customization"
+				}
 			}
 		}
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.oidcSubjectCustomization", State: state, Summary: summary})
-	}
-	if desired.WorkflowAccessLevel != "" {
-		current, err := service.GetWorkflowRepositoryAccess(ctx, repository)
-		if err != nil {
-			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowAccessLevel", State: ChangeBlocked, Summary: capabilityError(err)})
-		} else if current.AccessLevel != desired.WorkflowAccessLevel {
-			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowAccessLevel", State: ChangeUpdate, Summary: desired.WorkflowAccessLevel})
-		} else {
-			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.workflowAccessLevel", State: ChangeNoop, Summary: "already set to " + desired.WorkflowAccessLevel})
+		if immutableSubjectKept {
+			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.oidcSubjectCustomization.useImmutableSubject", State: ChangeManual, Summary: "GitHub keeps the immutable subject claim enabled and ignores a write turning it off; change it in the repository settings if GitHub allows it"})
 		}
 	}
+	appendWorkflowAccessLevelChange(ctx, service, plan, desired, desiredRepository, repository, &info)
 	appendForkPullRequestApprovalChange(plan, desired, desiredRepository, true)
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
@@ -2018,6 +2055,22 @@ func oidcCustomizationRequest(desired *config.OIDCSubjectCustomizationConfig) gi
 		UseDefault: desired.UseDefault, IncludeClaimKeys: append([]string(nil), desired.IncludeClaimKeys...),
 		UseImmutableSubject: desired.UseImmutableSubject,
 	}
+}
+
+// oidcCustomizationWrite returns the customization apply writes. GitHub
+// enables the immutable subject claim for every repository created or renamed
+// after 2026-07-15 and answers a write turning it off with success while
+// keeping it on, so a declared false against a live true is dropped from the
+// request — the field is omitted on the wire and ignored by
+// oidcCustomizationMatches — and kept reports that it was, for plan to show
+// as manual instead of an update that never converges.
+func oidcCustomizationWrite(desired *config.OIDCSubjectCustomizationConfig, current githubapi.OIDCSubjectCustomization) (request githubapi.OIDCSubjectCustomization, kept bool) {
+	request = oidcCustomizationRequest(desired)
+	if request.UseImmutableSubject != nil && !*request.UseImmutableSubject && current.UseImmutableSubject != nil && *current.UseImmutableSubject {
+		request.UseImmutableSubject = nil
+		return request, true
+	}
+	return request, false
 }
 
 func oidcCustomizationMatches(desired, actual githubapi.OIDCSubjectCustomization) bool {
@@ -2396,6 +2449,42 @@ func appendForkPullRequestApprovalChange(plan *Plan, desired *config.ActionsConf
 	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeUpdate, Summary: summary})
 }
 
+// appendWorkflowAccessLevelChange evaluates actions.workflowAccessLevel. GitHub
+// applies the workflow access policy only to private and internal
+// repositories and answers HTTP 422 for a public one — the inverse of
+// appendForkPullRequestApprovalChange — so a declaration on a public
+// repository is blocked before any network call. A repository that this run
+// changes from public to private cannot be read yet either, so it is planned
+// as an update that apply makes after the visibility change. live is nil when
+// the repository does not exist yet.
+func appendWorkflowAccessLevelChange(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, desiredRepository config.RepositoryConfig, repository githubapi.Repository, live *githubapi.RepositoryInfo) {
+	if desired.WorkflowAccessLevel == "" {
+		return
+	}
+	const resource = "actions.workflowAccessLevel"
+	if desiredRepository.Visibility == "public" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeBlocked, Summary: "GitHub applies workflow access only to private and internal repositories"})
+		return
+	}
+	if live == nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: "configure after repository creation"})
+		return
+	}
+	if !live.Private && live.Visibility != "internal" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: "set to " + desired.WorkflowAccessLevel + " after the visibility change"})
+		return
+	}
+	current, err := service.GetWorkflowRepositoryAccess(ctx, repository)
+	switch {
+	case err != nil:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeBlocked, Summary: capabilityError(err)})
+	case current.AccessLevel != desired.WorkflowAccessLevel:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: desired.WorkflowAccessLevel})
+	default:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeNoop, Summary: "already set to " + desired.WorkflowAccessLevel})
+	}
+}
+
 func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository, resolver *bypassResolver) {
 	if len(desired) == 0 {
 		return
@@ -2532,6 +2621,7 @@ func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg
 	}
 	if cfg.Actions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
+		appendWorkflowAccessLevelChange(ctx, service, plan, cfg.Actions, cfg.Repository, repository, nil)
 		appendForkPullRequestApprovalChange(plan, cfg.Actions, cfg.Repository, false)
 	}
 	appendRepositorySettingsChanges(ctx, service, plan, cfg.Settings, repository, false, true)

@@ -19,7 +19,9 @@ Run this test before the live repository test. It uses an in-memory GitHub API a
 go test ./internal/planner -run '^TestEmptyRepositoryInitializationAndCommandsRunOnce$' -count=1 -v
 ```
 
-The test verifies that the first apply creates `README.md` and the VisualStudio `.gitignore`, initializes `main`, writes an `apm.yml` named `repotest1` with the Relaypublisher targets and dependencies, records command completion, and does not run the command again on the second apply.
+The test verifies that the first apply creates `README.md` and the VisualStudio `.gitignore`, initializes `main`, commits the `apm.yml` that its deterministic helper command writes, records command completion, and does not run the command again on the second apply. The helper writes a fixed file named `repotest1` with the Relaypublisher targets and dependencies; that content belongs to the helper, not to `apm init`.
+
+`TestFailedCommandReportsRedactedOutput` in the same package verifies that a failing command's output is part of the reported error, with declared secret values replaced by `***`.
 
 The complete automated test suite is:
 
@@ -43,10 +45,14 @@ commands:
     args: [init, --yes]
     cwd: .
     timeout: 5m
-    environment: [APM_NONINTERACTIVE]
+    environment: [APM_NONINTERACTIVE, PATH, HOME, USERPROFILE]
 ```
 
-The first apply must include `--approve-command apm-init`. Verify that the generated `apm.yml` uses the Relaypublisher `targets` and `dependencies` with `name: repotest1`. The local regression test uses a deterministic helper command to write that exact file and verifies that the command runs only once.
+The environment allowlist is exact. `apm` starts `git` and reads the home directory, so it needs `PATH` and the home directory variable: `HOME` on macOS and Linux, `USERPROFILE` on Windows. A listed variable that is not set is skipped, so the same list works on every platform. With only `APM_NONINTERACTIVE`, `apm` fails because it cannot find `git`, and `apply` reports the command's output under the error.
+
+The first apply must include `--approve-command apm-init`. `apm init --yes` creates a default `apm.yml` in the staging workspace; it does not copy Relaypublisher's `targets` or `dependencies`, and it names the project after the staging directory (`name: seed`), not after the destination repository. Verify that `apm.yml` exists in the initial commit; edit its content in a later commit if the project needs the Relaypublisher targets and dependencies.
+
+The source import emits diagnostics on standard error. For a public source, they include `actions.workflowAccessLevel`, because GitHub applies the workflow access policy only to private and internal repositories, and one line per secret name, because secret values are never returned.
 
 ### Bash
 
@@ -92,9 +98,14 @@ if ($LASTEXITCODE -ne 0) { throw 'Apply failed.' }
 ## Verify the result
 
 1. Confirm the target has a default branch and the initial commit contains `README.md`, `.gitignore`, and the generated `apm.yml`.
-2. Confirm the initialization command's completion marker was committed. Run `plan` and `apply` a second time without approving the command; the command must be reported as already completed and must not execute again.
-3. Import the destination into a separate file and inspect its normalized settings. Compare source and destination after accounting for the repository identity and the documented exclusions below.
-4. Run `plan` against the destination using the destination import. The plan must have no converged changes and no blocked settings. Secret values are excluded from this pass.
+2. Confirm the initialization command's completion marker, `.gh-repospec/command-state.json`, was committed and lists `apm-init`. Run `plan` and `apply` a second time without approving the command; the command must be reported as already completed and must not execute again.
+3. Run `plan` with the source import against the destination again. It must have no blocked entry. The expected remaining entries are:
+   - `ruleset.<name>` and `ruleset.<name>.bypassActors` as UPDATE for every ruleset, because rulesets are always written rather than compared.
+   - `actions.forkPullRequestApproval` as UPDATE, because it is always written rather than compared.
+   - `settings.collaborator.<login>` as CREATE for each collaborator whose invitation has not been accepted yet; GitHub lists a pending invitee as an invitation, not as a collaborator.
+   - `actions.oidcSubjectCustomization.useImmutableSubject` as MANUAL when the source declares `useImmutableSubject: false`. GitHub enables the immutable subject claim for every repository created or renamed after 2026-07-15 and keeps it on.
+   - MANUAL entries for `seed` and each command.
+4. Import the destination into a separate file and inspect its normalized settings. Compare source and destination after accounting for the repository identity and the documented exclusions below. Then run `plan` with the destination import against the destination. It must have no blocked entry, and its only creates or updates must be the ruleset and `actions.forkPullRequestApproval` entries listed in step 3. Because those are always reported, `plan --ci` exits `2` for this configuration, so its exit code cannot be the acceptance criterion; compare the listed entries instead. Secret values are excluded from this pass.
 5. In GitHub Settings, inspect General, Rules, Branches, Actions, Environments, Security, Pages, Webhooks, Deploy keys, and Manage access. Cross-check the corresponding API snapshot with `gh api` as shown below.
 
 ```sh
@@ -182,7 +193,7 @@ For every protected branch returned by the last branch query, inspect its classi
 | Immutable releases | Dedicated immutable-releases read and write endpoints | A 404 from the read endpoint means immutability is disabled. |
 | Repository rulesets | List and detail reads; create/update/delete convergence for supported rules and bypass actors | Ruleset permissions and GitHub plan availability still apply. |
 | Classic branch protection | Protected branch listing, protection read/write, and required-signature read/write | Ruleset-only branches are represented by rulesets, not classic branch-protection records. |
-| Actions and environments | Repository Actions policy, selected-actions allowlist, OIDC subject customization, workflow token permissions, fork approval policy, workflow repository access, environment protection, custom branch patterns, installed custom-app protection rules, variables, and secret metadata | Secret values are intentionally outside the import and parity test. A custom protection app must be available to the destination repository. The private-repository fork approval endpoint is unavailable and is reported as a diagnostic. |
+| Actions and environments | Repository Actions policy, selected-actions allowlist, OIDC subject customization, workflow token permissions, fork approval policy, workflow repository access, environment protection, custom branch patterns, installed custom-app protection rules, variables, and secret metadata | Secret values are intentionally outside the import and parity test. A custom protection app must be available to the destination repository. The fork approval endpoint is unavailable for a private repository and the workflow repository access endpoint for a public one; each is reported as a diagnostic. An immutable OIDC subject that GitHub keeps enabled is reported as manual. |
 | Security | `security_and_analysis`, Dependabot alerts and security updates, private vulnerability reporting, CodeQL default setup, and AI pull-request scan where GitHub exposes a readable value | Dependency-graph status has no read endpoint. Unavailable or permission-denied values must appear as diagnostics or blocked plan entries, not as a confirmed false value. |
 | Pages | Site enabled state, build type, source, custom domain, and HTTPS enforcement | Domain verification and build/deployment history are not repository configuration. |
 | Webhooks | URL, event list, active state, content type, and TLS verification setting | GitHub never returns webhook secret values; they are excluded. |
@@ -201,5 +212,5 @@ This matrix describes repository-level settings represented by the current schem
 - Initial commit, default branch, README, and VisualStudio `.gitignore` verified.
 - One-time APM initialization ran once; second apply did not run it again.
 - Settings-page and `gh api` comparisons completed.
-- Destination re-import and second plan showed no unexplained differences.
+- Destination re-import and second plan showed only the expected entries listed in step 4.
 - Every diagnostic or blocked item was resolved or recorded as an explicit exclusion.

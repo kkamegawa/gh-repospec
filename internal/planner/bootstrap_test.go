@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,6 +82,61 @@ func TestEmptyRepositoryInitializationAndCommandsRunOnce(t *testing.T) {
 	if got := strings.Count(string(count), "run\n"); got != 1 {
 		t.Fatalf("command invocation count = %d, want exactly one; content %q", got, count)
 	}
+}
+
+func TestFailedCommandReportsRedactedOutput(t *testing.T) {
+	const secretValue = "s3cr3t-token-value"
+	t.Setenv("GO_WANT_FAILING_COMMAND_HELPER", "1")
+	t.Setenv("BOOTSTRAP_TEST_SECRET", secretValue)
+	service := &bootstrapRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{Name: "repotest1", Visibility: "public"}}},
+		files:            map[string][]byte{},
+		blobs:            map[string][]byte{},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commandProgram, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository: config.RepositoryConfig{
+			Owner: "octo", Name: "repotest1", Visibility: "public", DefaultBranch: "main",
+		},
+		Seed: &config.SeedConfig{Initialize: &config.InitializeSeed{}},
+		Actions: &config.ActionsConfig{Secrets: []config.SecretRef{
+			{Name: "RELEASE_TOKEN", SourceEnv: "BOOTSTRAP_TEST_SECRET"},
+		}},
+		Commands: []config.CommandConfig{{
+			ID: "apm-init", Program: commandProgram,
+			Args: []string{"-test.run=^TestFailingBootstrapCommandHelper$"},
+			CWD:  ".", Timeout: "30s",
+			Environment: []string{"GO_WANT_FAILING_COMMAND_HELPER", "BOOTSTRAP_TEST_SECRET"},
+		}},
+	}
+	_, err = engine.Apply(context.Background(), cfg, Options{ApprovedCommandIDs: map[string]bool{"apm-init": true}})
+	if err == nil {
+		t.Fatal("Apply() error = nil, want the failing command reported")
+	}
+	message := err.Error()
+	if !strings.Contains(message, "apm-init") || !strings.Contains(message, "home directory is not set") {
+		t.Fatalf("Apply() error = %q, want the command's own output", message)
+	}
+	if strings.Contains(message, secretValue) || !strings.Contains(message, "token=***") {
+		t.Fatalf("Apply() error = %q, want the secret value redacted", message)
+	}
+}
+
+func TestFailingBootstrapCommandHelper(t *testing.T) {
+	if os.Getenv("GO_WANT_FAILING_COMMAND_HELPER") != "1" {
+		return
+	}
+	fmt.Println("error: home directory is not set")
+	fmt.Println("token=" + os.Getenv("BOOTSTRAP_TEST_SECRET"))
+	os.Exit(1)
 }
 
 func TestOneTimeBootstrapCommandHelper(t *testing.T) {

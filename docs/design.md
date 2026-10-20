@@ -87,6 +87,30 @@ endpoint outright on a private repository; declaring it alongside
 `repository.visibility: private` is reported as blocked rather than
 attempted.
 
+`actions.workflowAccessLevel` (`none`, `user`, or `organization`) controls
+which other repositories may use this repository's workflows. GitHub applies
+that access policy only to private and internal repositories and answers a
+read or write for a public one with HTTP 422, the inverse of the fork approval
+case. `import` therefore reads it only from a private or internal repository
+and reports a diagnostic for a public one. `plan` evaluates the effective
+visibility — the declared `repository.visibility`, or the live one when it is
+not declared — and reports a declaration on a public repository as blocked
+without attempting the read; a repository this run changes from public to
+private or internal is planned as an update applied after the visibility
+change.
+
+`actions.oidcSubjectCustomization` sets the repository's Actions OIDC subject
+claim template. Its `useImmutableSubject` selects the immutable claim format,
+which carries the owner and repository IDs. GitHub enables that format for
+every repository created or renamed after 2026-07-15 and accepts a write that
+turns it off without changing the value, so a declared `false` against a live
+`true` can never converge. `plan` reports that difference as a separate
+manual entry, `actions.oidcSubjectCustomization.useImmutableSubject`, with the
+reason; the rest of the customization converges as usual, and `apply` writes
+it without the field. A declared `true` against a live `false` is an ordinary
+update. This keeps a configuration imported from an older repository
+applicable to a new one instead of reporting an update on every run.
+
 `security.dependabotSecurityUpdates` requires Dependabot alerts to be
 effectively enabled, because the GitHub API rejects it otherwise. The
 dependency is evaluated during `plan` against both the configuration and the
@@ -298,7 +322,14 @@ servers, Copilot licenses or seats, organization policies, and inherited
 organization rulesets have no supported repository-level automation path and
 are reported as manual work. Command processes are not OS-sandboxed; the tool
 limits them to an approved executable, argv, repository workspace, bounded
-output, timeout, and an environment allowlist.
+output, timeout, and an environment allowlist. The allowlist is exact: `PATH`
+and the home directory variable (`HOME`, or `USERPROFILE` on Windows) are not
+inherited implicitly, so a program that starts other programs or reads its
+home directory needs them listed. Only `SystemRoot` is always passed on
+Windows, because processes cannot start reliably without it. When a command
+fails, times out, or exceeds its output limit, the error includes its captured
+output, with the value of every declared secret source environment variable
+replaced by `***`.
 
 ## Relationship to gh-infra
 

@@ -13,8 +13,9 @@ import (
 // (only meaningful when allowedActions is "selected"), default workflow
 // permissions, the fork pull request approval policy, variables, secret
 // names, and environment names. GitHub rejects the fork approval endpoint
-// outright for a private repository, so it is skipped rather than attempted
-// and reported as a diagnostic instead of a failed request.
+// outright for a private repository, and the workflow repository access
+// endpoint for a public one (HTTP 422), so each is skipped rather than
+// attempted and reported as a diagnostic instead of a failed request.
 func importActions(ctx context.Context, reader Reader, repository githubapi.Repository, info githubapi.RepositoryInfo) (*config.ActionsConfig, []Diagnostic, error) {
 	permissions, err := reader.GetActionsPermissions(ctx, repository)
 	if err != nil {
@@ -43,11 +44,20 @@ func importActions(ctx context.Context, reader Reader, repository githubapi.Repo
 	}
 	cfg.DefaultWorkflowPermissions = workflowPermissions.DefaultWorkflowPermissions
 	cfg.CanApprovePullRequestWorkflows = boolPtr(workflowPermissions.CanApprovePullRequest)
-	workflowAccess, err := reader.GetWorkflowRepositoryAccess(ctx, repository)
-	if err != nil {
-		return nil, nil, fmt.Errorf("get workflow repository access for %s: %w", repository, err)
+
+	var diagnostics []Diagnostic
+	if info.Private || info.Visibility == "internal" {
+		workflowAccess, err := reader.GetWorkflowRepositoryAccess(ctx, repository)
+		if err != nil {
+			return nil, nil, fmt.Errorf("get workflow repository access for %s: %w", repository, err)
+		}
+		cfg.WorkflowAccessLevel = workflowAccess.AccessLevel
+	} else {
+		diagnostics = append(diagnostics, Diagnostic{
+			Resource: "actions.workflowAccessLevel",
+			Message:  "GitHub applies this access policy only to private and internal repositories; not imported",
+		})
 	}
-	cfg.WorkflowAccessLevel = workflowAccess.AccessLevel
 	oidc, err := reader.GetOIDCSubjectCustomization(ctx, repository)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get Actions OIDC subject customization for %s: %w", repository, err)
@@ -57,7 +67,6 @@ func importActions(ctx context.Context, reader Reader, repository githubapi.Repo
 		UseImmutableSubject: oidc.UseImmutableSubject,
 	}
 
-	var diagnostics []Diagnostic
 	if info.Private {
 		diagnostics = append(diagnostics, Diagnostic{
 			Resource: "actions.forkPullRequestApproval",
