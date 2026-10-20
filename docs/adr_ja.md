@@ -8,7 +8,8 @@ record 7は日付2026-09-10、追跡は
 [Issue #30](https://github.com/kkamegawa/gh-repospec/issues/30)（ドリフト検出のドキュメント）
 です。record 8は日付2026-09-11、追跡は
 [Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35)（AI Scan for pull requests）
-です。record 9と10も同じIssueを追跡し、record 10の日付は2026-10-20です。
+です。record 9と10も同じIssueを追跡し、record 10の日付は2026-10-20です。record 11は日付2026-10-20、追跡は
+[Issue #40](https://github.com/kkamegawa/gh-repospec/issues/40)（リポジトリ設定のimport）です。
 
 ## 1. importはスキーマとファイルが既に宣言したものだけを管理する
 
@@ -200,3 +201,22 @@ AI Scanが有効なまま残ることを防げます。
 noopとして報告されるため、その宣言ではこのドリフトを検出できません。有効にする宣言は引き続き
 blockedになります。GitHubがプレビューAPIを廃止したことによるAI Scanエンドポイントの404は、
 失敗ではなく「利用できない」として報告されます。
+
+## 11. GitHubが有効のまま維持する不変のOIDC subjectはmanualとして報告する
+
+**決定。** `actions.oidcSubjectCustomization.useImmutableSubject`が`false`と宣言され、
+GitHubが`true`を報告する場合、`plan`はupdateを報告しません。理由を付けた独立したmanual
+エントリ`actions.oidcSubjectCustomization.useImmutableSubject`を追加し、カスタマイズの残りは
+通常どおり評価します。`apply`はこのフィールドを除いてカスタマイズを書き込むため、`false`を
+送信することはありません。宣言が`true`でライブが`false`の場合は引き続き通常のupdateです。
+
+**理由。** GitHubは2026-07-15以降に作成または名前変更されたすべてのリポジトリで不変のsubject
+形式を有効にします。無効化する書き込みは成功を返しますが値は変わらないため、updateとして
+報告すると、すべてのplanがドリフトを示し、すべてのapplyが同じ書き込みを繰り返していました。
+古いリポジトリからimportした設定は`false`を宣言し、それを新しいリポジトリへ適用することが
+`import`の主な用途であるため、blockedにすると`apply`がそのplanを丸ごと拒否します。manual
+エントリは`plan --ci`の判定から除外されるため、どの`apply`でも変えられない差分に適合します。
+
+**結果。** オプトイン済みでまだオプトアウトできる古いリポジトリでも、ツールはこの形式を
+無効化しなくなります。その場合はmanualエントリを手がかりに、利用者がリポジトリ設定で
+無効化します。GitHubが今後APIによる無効化を許可した場合は、このrecordを見直す必要があります。

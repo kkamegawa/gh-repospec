@@ -9,6 +9,9 @@ Record 7 is dated 2026-09-10 and tracks
 for drift detection). Record 8 is dated 2026-09-11 and tracks
 [Issue #35](https://github.com/kkamegawa/gh-repospec/issues/35) (AI Scan for pull
 requests). Records 9 and 10 track the same issue; record 10 is dated 2026-10-20.
+Record 11 is dated 2026-10-20 and tracks
+[Issue #40](https://github.com/kkamegawa/gh-repospec/issues/40) (repository
+settings import).
 
 ## 1. Import manages only what the schema and the file already declare
 
@@ -222,3 +225,25 @@ feature is actually enabled is now reported as a noop for a disabling declaratio
 declaration does not detect such drift; a declaration that enables the feature is still
 blocked. A 404 from the AI Scan endpoint caused by GitHub withdrawing the preview API is
 reported as unavailable rather than failing.
+
+## 11. An immutable OIDC subject that GitHub keeps on is reported as manual
+
+**Decision.** When `actions.oidcSubjectCustomization.useImmutableSubject` is declared
+`false` and GitHub reports `true`, `plan` does not report an update. It adds a separate
+manual entry, `actions.oidcSubjectCustomization.useImmutableSubject`, with the reason,
+and evaluates the rest of the customization as usual. `apply` writes the customization
+without the field, so it never sends `false`. A declared `true` against a live `false`
+remains an ordinary update.
+
+**Rationale.** GitHub enables the immutable subject format for every repository created
+or renamed after 2026-07-15. A write that turns it off is answered with success but
+leaves the value unchanged, so reporting an update made every plan show drift and every
+apply repeat the write. A configuration imported from an older repository declares
+`false`, and applying it to a new repository is the primary use of `import`, so a
+blocked entry would make `apply` refuse that plan outright. Manual entries are excluded
+from `plan --ci`, which matches a difference no `apply` can change.
+
+**Consequences.** On an older repository that opted in and could still opt out, the tool
+no longer turns the format off; the user does that in the repository settings, prompted
+by the manual entry. If GitHub later allows turning it off through the API, this record
+has to be revisited.

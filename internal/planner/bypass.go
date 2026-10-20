@@ -145,6 +145,12 @@ func (r *bypassResolver) resolve(ctx context.Context, actor config.BypassActorCo
 			return githubapi.BypassActor{}, err
 		}
 		return githubapi.BypassActor{ActorID: id, ActorType: "Integration", BypassMode: actor.BypassMode}, nil
+	case actor.User != "":
+		id, found, err := config.ParseBypassActorID(actor.User)
+		if !found || err != nil {
+			return githubapi.BypassActor{}, fmt.Errorf("bypass actor user %q must use id:<number>", actor.User)
+		}
+		return githubapi.BypassActor{ActorID: id, ActorType: "User", BypassMode: actor.BypassMode}, nil
 	case actor.CustomRole != "":
 		if r.personal {
 			return githubapi.BypassActor{}, fmt.Errorf("bypass actor customRole %q requires an organization-owned repository", actor.CustomRole)

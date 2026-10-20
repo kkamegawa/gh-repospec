@@ -76,6 +76,25 @@ private リポジトリに対してこのエンドポイントを拒否するた
 `repository.visibility: private`と同時に指定した場合は適用を試みず、blockedとして
 報告します。
 
+`actions.workflowAccessLevel`(`none`、`user`、`organization`)は、他のどのリポジトリが
+このリポジトリのworkflowを利用できるかを制御します。GitHubはこのアクセスポリシーを
+privateとinternalのリポジトリにのみ適用し、publicリポジトリに対する読み取りと書き込みには
+HTTP 422を返します。fork承認とは逆の条件です。そのため`import`はprivateまたはinternalの
+リポジトリからのみ読み取り、publicリポジトリではdiagnosticを報告します。`plan`は宣言された
+`repository.visibility`を評価し、`public`と同時に指定した場合は読み取りを試みずにblocked
+として報告します。この実行でpublicから`private`へ変更するリポジトリでは、visibility変更の
+後に適用するupdateとして計画します。
+
+`actions.oidcSubjectCustomization`は、リポジトリのActions OIDC subject claimテンプレートを
+設定します。`useImmutableSubject`は、ownerとリポジトリのIDを含む不変のclaim形式を選択します。
+GitHubは2026-07-15以降に作成または名前変更されたすべてのリポジトリでこの形式を有効にし、
+無効化する書き込みを受け付けても値を変更しないため、宣言が`false`でライブが`true`の差分は
+収束しません。`plan`はこの差分を独立したmanualエントリ
+`actions.oidcSubjectCustomization.useImmutableSubject`として理由とともに報告します。
+カスタマイズの残りは通常どおり収束し、`apply`はこのフィールドを除いて書き込みます。
+宣言が`true`でライブが`false`の場合は通常のupdateです。これにより、古いリポジトリから
+importした設定を、毎回updateを報告することなく新しいリポジトリへ適用できます。
+
 `security.dependabotSecurityUpdates`は、Dependabot alertが実効的に有効であることを
 要求します。GitHub APIがそれ以外を拒否するためです。依存関係は`plan`時に設定と
 ライブ状態の両方から評価します。同一ファイルで両方を有効にした場合はalertを先に適用し、
@@ -253,6 +272,12 @@ seed内容です。Copilot MCP serverのrepository設定、Copilot license/seat�
 継承した組織rulesetには、対応するrepository-level自動化経路がなく、手動作業として
 レポートします。commandプロセスはOS sandboxではありません。ツールは承認済み実行ファイル、
 argv、repository workspace、出力上限、timeout、環境変数allowlistに制限します。
+allowlistは厳密で、`PATH`とホームディレクトリの変数(`HOME`、Windowsでは`USERPROFILE`)も
+暗黙には引き継がないため、他のプログラムを起動したりホームディレクトリを読んだりする
+プログラムではこれらを列挙する必要があります。Windowsで常に渡すのは`SystemRoot`だけで、
+これがないとプロセスを安定して起動できないためです。commandが失敗、timeout、または出力上限
+超過となった場合、エラーには取得した出力を含め、宣言されたすべてのsecretのsource環境変数の
+値を`***`に置き換えます。
 
 ## gh-infraとの関係
 

@@ -16,7 +16,8 @@
     "agents": { "$ref": "#/$defs/agents" },
     "labels": { "type": "array", "items": { "$ref": "#/$defs/label" } },
     "milestones": { "type": "array", "items": { "$ref": "#/$defs/milestone" } },
-    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } }
+    "commands": { "type": "array", "items": { "$ref": "#/$defs/command" } },
+    "settings": { "$ref": "#/$defs/settings" }
   },
   "$defs": {
     "repository": {
@@ -38,6 +39,14 @@
         "allowRebaseMerge": { "type": "boolean" },
         "allowAutoMerge": { "type": "boolean" },
         "deleteBranchOnMerge": { "type": "boolean" },
+        "hasDownloads": { "type": "boolean" },
+        "allowForking": { "type": "boolean" },
+        "hasPullRequests": { "type": "boolean" },
+        "pullRequestCreationPolicy": { "enum": ["all", "collaborators_only"] },
+        "isTemplate": { "type": "boolean" },
+        "allowUpdateBranch": { "type": "boolean" },
+        "useSquashPRTitleAsDefault": { "type": "boolean" },
+        "webCommitSignoffRequired": { "type": "boolean" },
         "mergeCommitTitle": { "enum": ["MERGE_MESSAGE", "PR_TITLE"] },
         "mergeCommitMessage": { "enum": ["PR_TITLE", "PR_BODY", "BLANK"] },
         "squashMergeCommitTitle": { "enum": ["PR_TITLE", "COMMIT_OR_PR_TITLE"] },
@@ -48,13 +57,19 @@
     },
     "seed": {
       "type": "object", "additionalProperties": false,
-      "oneOf": [
-        { "required": ["template"] }, { "required": ["directory"] }, { "required": ["zip"] }
+      "anyOf": [
+        { "oneOf": [
+          { "required": ["template"], "not": { "anyOf": [{ "required": ["directory"] }, { "required": ["zip"] }] } },
+          { "required": ["directory"], "not": { "anyOf": [{ "required": ["template"] }, { "required": ["zip"] }] } },
+          { "required": ["zip"], "not": { "anyOf": [{ "required": ["template"] }, { "required": ["directory"] }] } }
+        ] },
+        { "required": ["initialize"], "not": { "anyOf": [{ "required": ["template"] }, { "required": ["directory"] }, { "required": ["zip"] }] } }
       ],
       "properties": {
         "template": { "type": "object", "additionalProperties": false, "required": ["repository"], "properties": { "repository": { "type": "string", "minLength": 1 } } },
         "directory": { "type": "object", "additionalProperties": false, "required": ["path"], "properties": { "path": { "type": "string", "minLength": 1 } } },
         "zip": { "type": "object", "additionalProperties": false, "required": ["path"], "properties": { "path": { "type": "string", "minLength": 5, "pattern": "\\.[zZ][iI][pP]$" } } },
+        "initialize": { "type": "object", "additionalProperties": false, "properties": { "gitignoreTemplate": { "type": "string", "minLength": 1 }, "readme": { "type": "boolean" } } },
         "overwrite": { "$ref": "#/$defs/stringList" }
       }
     },
@@ -64,10 +79,12 @@
         "enabled": { "type": "boolean" },
         "allowedActions": { "enum": ["all", "local_only", "selected"] },
         "selectedActions": { "$ref": "#/$defs/selectedActions" },
+        "oidcSubjectCustomization": { "$ref": "#/$defs/oidcSubjectCustomization" },
         "requireSHAForGitHubActions": { "type": "boolean" },
         "defaultWorkflowPermissions": { "enum": ["read", "write"] },
         "canApprovePullRequestWorkflows": { "type": "boolean" },
         "forkPullRequestApproval": { "enum": ["first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors"] },
+        "workflowAccessLevel": { "enum": ["none", "user", "organization"] },
         "variables": { "type": "array", "items": { "$ref": "#/$defs/variable" } },
         "secrets": { "type": "array", "items": { "$ref": "#/$defs/secret" } },
         "environments": { "type": "array", "items": { "$ref": "#/$defs/environment" } }
@@ -82,9 +99,29 @@
         "patternsAllowed": { "$ref": "#/$defs/stringList" }
       }
     },
+    "oidcSubjectCustomization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["useDefault"],
+      "properties": {
+        "useDefault": { "type": "boolean" },
+        "includeClaimKeys": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_]+$" } },
+        "useImmutableSubject": { "type": "boolean" }
+      }
+    },
     "variable": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } },
     "secret": { "type": "object", "additionalProperties": false, "required": ["name", "sourceEnv"], "properties": { "name": { "type": "string", "minLength": 1 }, "sourceEnv": { "type": "string", "minLength": 1 }, "updatePolicy": { "enum": ["createOnly", "always"] } } },
-    "environment": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 } } },
+    "environment": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "waitTimer": { "type": "integer", "minimum": 0, "maximum": 43200 }, "preventSelfReview": { "type": "boolean" }, "reviewers": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["type", "id"], "properties": { "type": { "enum": ["User", "Team"] }, "id": { "type": "integer", "minimum": 1 } } } }, "deploymentBranchPolicy": { "type": "object", "additionalProperties": false, "properties": { "allowAllBranches": { "type": "boolean" }, "protectedBranches": { "type": "boolean" }, "customBranchPolicies": { "type": "boolean" } } }, "branchPolicies": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["name", "type"], "properties": { "name": { "type": "string", "minLength": 1 }, "type": { "enum": ["branch", "tag"] } } } }, "customProtectionRules": { "type": "array", "uniqueItems": true, "items": { "type": "string", "minLength": 1 } } } },
+    "settings": { "type": "object", "additionalProperties": false, "properties": { "pages": { "$ref": "#/$defs/pages" }, "webhooks": { "type": "array", "items": { "$ref": "#/$defs/webhook" } }, "autolinks": { "type": "array", "items": { "$ref": "#/$defs/autolink" } }, "deployKeys": { "type": "array", "items": { "$ref": "#/$defs/deployKey" } }, "collaborators": { "type": "array", "items": { "$ref": "#/$defs/collaborator" } }, "teams": { "type": "array", "items": { "$ref": "#/$defs/teamAccess" } }, "customProperties": { "type": "array", "items": { "$ref": "#/$defs/customProperty" } }, "branchProtections": { "type": "array", "items": { "$ref": "#/$defs/branchProtection" } }, "interactionLimit": { "$ref": "#/$defs/interactionLimit" }, "pullRequestCreationCap": { "$ref": "#/$defs/pullRequestCreationCap" } } },
+    "interactionLimit": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "limit": { "enum": ["existing_users", "contributors_only", "collaborators_only"] }, "expiry": { "enum": ["one_day", "three_days", "one_week", "one_month", "six_months"] } } },
+    "pullRequestCreationCap": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "maxOpenPullRequests": { "type": "integer", "minimum": 1 }, "includeDrafts": { "type": "boolean" }, "bypassUsers": { "$ref": "#/$defs/stringList" } } },
+    "pages": { "type": "object", "additionalProperties": false, "required": ["enabled"], "properties": { "enabled": { "type": "boolean" }, "buildType": { "enum": ["legacy", "workflow"] }, "source": { "type": "object", "additionalProperties": false, "required": ["branch", "path"], "properties": { "branch": { "type": "string", "minLength": 1 }, "path": { "enum": ["/", "/docs"] } } }, "cname": { "type": "string" }, "httpsRequired": { "type": "boolean" } } },
+    "webhook": { "type": "object", "additionalProperties": false, "required": ["url", "contentType", "events", "active"], "properties": { "url": { "type": "string", "minLength": 1 }, "contentType": { "enum": ["json", "form"] }, "insecureSsl": { "enum": ["0", "1"] }, "events": { "$ref": "#/$defs/stringList" }, "active": { "type": "boolean" } } },
+    "autolink": { "type": "object", "additionalProperties": false, "required": ["keyPrefix", "urlTemplate", "isAlphanumeric"], "properties": { "keyPrefix": { "type": "string", "minLength": 1 }, "urlTemplate": { "type": "string", "minLength": 1 }, "isAlphanumeric": { "type": "boolean" } } },
+    "deployKey": { "type": "object", "additionalProperties": false, "required": ["title", "key", "readOnly"], "properties": { "title": { "type": "string", "minLength": 1 }, "key": { "type": "string", "minLength": 1 }, "readOnly": { "type": "boolean" } } },
+    "collaborator": { "type": "object", "additionalProperties": false, "required": ["login", "permission"], "properties": { "login": { "type": "string", "minLength": 1 }, "permission": { "type": "string", "minLength": 1 } } },
+    "teamAccess": { "type": "object", "additionalProperties": false, "required": ["slug", "permission"], "properties": { "slug": { "type": "string", "minLength": 1 }, "permission": { "enum": ["pull", "triage", "push", "maintain", "admin"] } } },
+    "customProperty": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string", "minLength": 1 }, "value": {} } },
+    "branchProtection": { "type": "object", "additionalProperties": false, "required": ["branch", "settings"], "properties": { "branch": { "type": "string", "minLength": 1 }, "settings": { "type": "object", "additionalProperties": true }, "requireSignedCommits": { "type": "boolean" } } },
     "ruleset": {
       "type": "object", "additionalProperties": false,
       "required": ["name", "enforcement", "target", "include", "rules"],
@@ -113,12 +150,13 @@
       "type": "object", "additionalProperties": false,
       "required": ["bypassMode"],
       "oneOf": [
-        { "required": ["role"] }, { "required": ["team"] }, { "required": ["app"] }, { "required": ["orgAdmin"] }, { "required": ["customRole"] }
+        { "required": ["role"] }, { "required": ["team"] }, { "required": ["app"] }, { "required": ["user"] }, { "required": ["orgAdmin"] }, { "required": ["customRole"] }
       ],
       "properties": {
         "role": { "enum": ["admin", "write", "maintain"] },
         "team": { "type": "string", "minLength": 1 },
         "app": { "type": "string", "minLength": 1 },
+        "user": { "type": "string", "pattern": "^id:[1-9][0-9]*$" },
         "orgAdmin": { "const": true },
         "customRole": { "type": "string", "minLength": 1 },
         "bypassMode": { "enum": ["always", "pull_request"] }
@@ -128,7 +166,7 @@
     "security": {
       "type": "object", "additionalProperties": false,
       "properties": {
-        "dependencyGraph": { "$ref": "#/$defs/feature" }, "dependabotAlerts": { "$ref": "#/$defs/feature" }, "dependabotSecurityUpdates": { "$ref": "#/$defs/feature" }, "secretScanning": { "$ref": "#/$defs/feature" }, "pushProtection": { "$ref": "#/$defs/feature" }, "codeqlDefaultSetup": { "$ref": "#/$defs/feature" }, "aiPullRequestScan": { "$ref": "#/$defs/feature" }, "privateVulnerabilityReporting": { "$ref": "#/$defs/feature" }
+        "dependencyGraph": { "$ref": "#/$defs/feature" }, "dependabotAlerts": { "$ref": "#/$defs/feature" }, "dependabotSecurityUpdates": { "$ref": "#/$defs/feature" }, "advancedSecurity": { "$ref": "#/$defs/feature" }, "codeSecurity": { "$ref": "#/$defs/feature" }, "secretScanning": { "$ref": "#/$defs/feature" }, "pushProtection": { "$ref": "#/$defs/feature" }, "secretScanningAIDetection": { "$ref": "#/$defs/feature" }, "secretScanningNonProviderPatterns": { "$ref": "#/$defs/feature" }, "secretScanningDelegatedAlertDismissal": { "$ref": "#/$defs/feature" }, "secretScanningDelegatedBypass": { "$ref": "#/$defs/feature" }, "delegatedBypassReviewers": { "type": "array", "items": { "type": "object", "additionalProperties": false, "required": ["reviewerId", "reviewerType"], "properties": { "reviewerId": { "type": "integer", "minimum": 1 }, "reviewerType": { "enum": ["TEAM", "ROLE"] }, "mode": { "enum": ["ALWAYS", "EXEMPT"] } } } }, "codeqlDefaultSetup": { "$ref": "#/$defs/feature" }, "aiPullRequestScan": { "$ref": "#/$defs/feature" }, "privateVulnerabilityReporting": { "$ref": "#/$defs/feature" }
       }
     },
     "agents": {

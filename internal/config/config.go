@@ -12,16 +12,100 @@ const CurrentSchemaVersion = 1
 
 // Config is the complete schemaVersion 1 bootstrap document.
 type Config struct {
-	SchemaVersion int               `json:"schemaVersion" yaml:"schemaVersion"`
-	Repository    RepositoryConfig  `json:"repository" yaml:"repository"`
-	Seed          *SeedConfig       `json:"seed,omitempty" yaml:"seed,omitempty"`
-	Actions       *ActionsConfig    `json:"actions,omitempty" yaml:"actions,omitempty"`
-	Rulesets      []RulesetConfig   `json:"rulesets,omitempty" yaml:"rulesets,omitempty"`
-	Security      *SecurityConfig   `json:"security,omitempty" yaml:"security,omitempty"`
-	Agents        *AgentsConfig     `json:"agents,omitempty" yaml:"agents,omitempty"`
-	Labels        []LabelConfig     `json:"labels,omitempty" yaml:"labels,omitempty"`
-	Milestones    []MilestoneConfig `json:"milestones,omitempty" yaml:"milestones,omitempty"`
-	Commands      []CommandConfig   `json:"commands,omitempty" yaml:"commands,omitempty"`
+	SchemaVersion int                 `json:"schemaVersion" yaml:"schemaVersion"`
+	Repository    RepositoryConfig    `json:"repository" yaml:"repository"`
+	Seed          *SeedConfig         `json:"seed,omitempty" yaml:"seed,omitempty"`
+	Actions       *ActionsConfig      `json:"actions,omitempty" yaml:"actions,omitempty"`
+	Rulesets      []RulesetConfig     `json:"rulesets,omitempty" yaml:"rulesets,omitempty"`
+	Security      *SecurityConfig     `json:"security,omitempty" yaml:"security,omitempty"`
+	Agents        *AgentsConfig       `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Labels        []LabelConfig       `json:"labels,omitempty" yaml:"labels,omitempty"`
+	Milestones    []MilestoneConfig   `json:"milestones,omitempty" yaml:"milestones,omitempty"`
+	Commands      []CommandConfig     `json:"commands,omitempty" yaml:"commands,omitempty"`
+	Settings      *RepositorySettings `json:"settings,omitempty" yaml:"settings,omitempty"`
+}
+
+// RepositorySettings contains REST settings that are not part of the core
+// repository update endpoint. Collections are declarative snapshots imported
+// from the source repository; the planner creates or updates matching entries.
+type RepositorySettings struct {
+	Pages                  *PagesConfig                  `json:"pages,omitempty" yaml:"pages,omitempty"`
+	Webhooks               []WebhookConfig               `json:"webhooks,omitempty" yaml:"webhooks,omitempty"`
+	Autolinks              []AutolinkConfig              `json:"autolinks,omitempty" yaml:"autolinks,omitempty"`
+	DeployKeys             []DeployKeyConfig             `json:"deployKeys,omitempty" yaml:"deployKeys,omitempty"`
+	Collaborators          []CollaboratorConfig          `json:"collaborators,omitempty" yaml:"collaborators,omitempty"`
+	Teams                  []TeamAccessConfig            `json:"teams,omitempty" yaml:"teams,omitempty"`
+	CustomProperties       []CustomPropertyConfig        `json:"customProperties,omitempty" yaml:"customProperties,omitempty"`
+	BranchProtections      []BranchProtectionConfig      `json:"branchProtections,omitempty" yaml:"branchProtections,omitempty"`
+	InteractionLimit       *InteractionLimitConfig       `json:"interactionLimit,omitempty" yaml:"interactionLimit,omitempty"`
+	PullRequestCreationCap *PullRequestCreationCapConfig `json:"pullRequestCreationCap,omitempty" yaml:"pullRequestCreationCap,omitempty"`
+}
+
+type InteractionLimitConfig struct {
+	Enabled bool   `json:"enabled" yaml:"enabled"`
+	Limit   string `json:"limit,omitempty" yaml:"limit,omitempty"`
+	Expiry  string `json:"expiry,omitempty" yaml:"expiry,omitempty"`
+}
+
+type PullRequestCreationCapConfig struct {
+	Enabled             bool      `json:"enabled" yaml:"enabled"`
+	MaxOpenPullRequests int       `json:"maxOpenPullRequests,omitempty" yaml:"maxOpenPullRequests,omitempty"`
+	IncludeDrafts       bool      `json:"includeDrafts,omitempty" yaml:"includeDrafts,omitempty"`
+	BypassUsers         *[]string `json:"bypassUsers,omitempty" yaml:"bypassUsers,omitempty"`
+}
+
+type PagesConfig struct {
+	Enabled       bool         `json:"enabled" yaml:"enabled"`
+	BuildType     string       `json:"buildType,omitempty" yaml:"buildType,omitempty"`
+	Source        *PagesSource `json:"source,omitempty" yaml:"source,omitempty"`
+	CNAME         *string      `json:"cname,omitempty" yaml:"cname,omitempty"`
+	HTTPSRequired *bool        `json:"httpsRequired,omitempty" yaml:"httpsRequired,omitempty"`
+}
+
+type PagesSource struct {
+	Branch string `json:"branch" yaml:"branch"`
+	Path   string `json:"path" yaml:"path"`
+}
+
+type WebhookConfig struct {
+	URL         string   `json:"url" yaml:"url"`
+	ContentType string   `json:"contentType" yaml:"contentType"`
+	InsecureSSL string   `json:"insecureSsl,omitempty" yaml:"insecureSsl,omitempty"`
+	Events      []string `json:"events" yaml:"events"`
+	Active      bool     `json:"active" yaml:"active"`
+}
+
+type AutolinkConfig struct {
+	KeyPrefix      string `json:"keyPrefix" yaml:"keyPrefix"`
+	URLTemplate    string `json:"urlTemplate" yaml:"urlTemplate"`
+	IsAlphanumeric bool   `json:"isAlphanumeric" yaml:"isAlphanumeric"`
+}
+
+type DeployKeyConfig struct {
+	Title    string `json:"title" yaml:"title"`
+	Key      string `json:"key" yaml:"key"`
+	ReadOnly bool   `json:"readOnly" yaml:"readOnly"`
+}
+
+type CollaboratorConfig struct {
+	Login      string `json:"login" yaml:"login"`
+	Permission string `json:"permission" yaml:"permission"`
+}
+
+type TeamAccessConfig struct {
+	Slug       string `json:"slug" yaml:"slug"`
+	Permission string `json:"permission" yaml:"permission"`
+}
+
+type CustomPropertyConfig struct {
+	Name  string `json:"name" yaml:"name"`
+	Value any    `json:"value" yaml:"value"`
+}
+
+type BranchProtectionConfig struct {
+	Branch               string         `json:"branch" yaml:"branch"`
+	Settings             map[string]any `json:"settings" yaml:"settings"`
+	RequireSignedCommits *bool          `json:"requireSignedCommits,omitempty" yaml:"requireSignedCommits,omitempty"`
 }
 
 type RepositoryConfig struct {
@@ -38,18 +122,26 @@ type RepositoryConfig struct {
 	AllowVisibilityChange bool    `json:"allowVisibilityChange,omitempty" yaml:"allowVisibilityChange,omitempty"`
 	DefaultBranch         string  `json:"defaultBranch,omitempty" yaml:"defaultBranch,omitempty"`
 	// Archived is reversible: false unarchives a previously archived repository.
-	Archived                 *bool               `json:"archived,omitempty" yaml:"archived,omitempty"`
-	Topics                   []string            `json:"topics,omitempty" yaml:"topics,omitempty"`
-	Features                 *RepositoryFeatures `json:"features,omitempty" yaml:"features,omitempty"`
-	AllowMergeCommit         *bool               `json:"allowMergeCommit,omitempty" yaml:"allowMergeCommit,omitempty"`
-	AllowSquashMerge         *bool               `json:"allowSquashMerge,omitempty" yaml:"allowSquashMerge,omitempty"`
-	AllowRebaseMerge         *bool               `json:"allowRebaseMerge,omitempty" yaml:"allowRebaseMerge,omitempty"`
-	AllowAutoMerge           *bool               `json:"allowAutoMerge,omitempty" yaml:"allowAutoMerge,omitempty"`
-	DeleteBranchOnMerge      *bool               `json:"deleteBranchOnMerge,omitempty" yaml:"deleteBranchOnMerge,omitempty"`
-	MergeCommitTitle         string              `json:"mergeCommitTitle,omitempty" yaml:"mergeCommitTitle,omitempty"`
-	MergeCommitMessage       string              `json:"mergeCommitMessage,omitempty" yaml:"mergeCommitMessage,omitempty"`
-	SquashMergeCommitTitle   string              `json:"squashMergeCommitTitle,omitempty" yaml:"squashMergeCommitTitle,omitempty"`
-	SquashMergeCommitMessage string              `json:"squashMergeCommitMessage,omitempty" yaml:"squashMergeCommitMessage,omitempty"`
+	Archived                  *bool               `json:"archived,omitempty" yaml:"archived,omitempty"`
+	Topics                    []string            `json:"topics,omitempty" yaml:"topics,omitempty"`
+	Features                  *RepositoryFeatures `json:"features,omitempty" yaml:"features,omitempty"`
+	AllowMergeCommit          *bool               `json:"allowMergeCommit,omitempty" yaml:"allowMergeCommit,omitempty"`
+	AllowSquashMerge          *bool               `json:"allowSquashMerge,omitempty" yaml:"allowSquashMerge,omitempty"`
+	AllowRebaseMerge          *bool               `json:"allowRebaseMerge,omitempty" yaml:"allowRebaseMerge,omitempty"`
+	AllowAutoMerge            *bool               `json:"allowAutoMerge,omitempty" yaml:"allowAutoMerge,omitempty"`
+	DeleteBranchOnMerge       *bool               `json:"deleteBranchOnMerge,omitempty" yaml:"deleteBranchOnMerge,omitempty"`
+	HasDownloads              *bool               `json:"hasDownloads,omitempty" yaml:"hasDownloads,omitempty"`
+	AllowForking              *bool               `json:"allowForking,omitempty" yaml:"allowForking,omitempty"`
+	HasPullRequests           *bool               `json:"hasPullRequests,omitempty" yaml:"hasPullRequests,omitempty"`
+	PullRequestCreationPolicy string              `json:"pullRequestCreationPolicy,omitempty" yaml:"pullRequestCreationPolicy,omitempty"`
+	IsTemplate                *bool               `json:"isTemplate,omitempty" yaml:"isTemplate,omitempty"`
+	AllowUpdateBranch         *bool               `json:"allowUpdateBranch,omitempty" yaml:"allowUpdateBranch,omitempty"`
+	UseSquashPRTitleAsDefault *bool               `json:"useSquashPRTitleAsDefault,omitempty" yaml:"useSquashPRTitleAsDefault,omitempty"`
+	WebCommitSignoffRequired  *bool               `json:"webCommitSignoffRequired,omitempty" yaml:"webCommitSignoffRequired,omitempty"`
+	MergeCommitTitle          string              `json:"mergeCommitTitle,omitempty" yaml:"mergeCommitTitle,omitempty"`
+	MergeCommitMessage        string              `json:"mergeCommitMessage,omitempty" yaml:"mergeCommitMessage,omitempty"`
+	SquashMergeCommitTitle    string              `json:"squashMergeCommitTitle,omitempty" yaml:"squashMergeCommitTitle,omitempty"`
+	SquashMergeCommitMessage  string              `json:"squashMergeCommitMessage,omitempty" yaml:"squashMergeCommitMessage,omitempty"`
 	// ReleaseImmutability is applied through a dedicated endpoint, not the
 	// repository update call, because GitHub does not accept it there.
 	ReleaseImmutability *bool `json:"releaseImmutability,omitempty" yaml:"releaseImmutability,omitempty"`
@@ -84,10 +176,19 @@ type MilestoneConfig struct {
 // SeedConfig has exactly one source. Files explicitly listed in Overwrite may
 // replace differing files in an existing repository.
 type SeedConfig struct {
-	Template  *TemplateSeed  `json:"template,omitempty" yaml:"template,omitempty"`
-	Directory *DirectorySeed `json:"directory,omitempty" yaml:"directory,omitempty"`
-	ZIP       *ZIPSeed       `json:"zip,omitempty" yaml:"zip,omitempty"`
-	Overwrite []string       `json:"overwrite,omitempty" yaml:"overwrite,omitempty"`
+	Template   *TemplateSeed   `json:"template,omitempty" yaml:"template,omitempty"`
+	Directory  *DirectorySeed  `json:"directory,omitempty" yaml:"directory,omitempty"`
+	ZIP        *ZIPSeed        `json:"zip,omitempty" yaml:"zip,omitempty"`
+	Initialize *InitializeSeed `json:"initialize,omitempty" yaml:"initialize,omitempty"`
+	Overwrite  []string        `json:"overwrite,omitempty" yaml:"overwrite,omitempty"`
+}
+
+// InitializeSeed describes standard files to create when bootstrapping an
+// otherwise empty repository. A blank gitignoreTemplate disables .gitignore;
+// README.md is generated by default unless Readme is explicitly false.
+type InitializeSeed struct {
+	GitignoreTemplate string `json:"gitignoreTemplate,omitempty" yaml:"gitignoreTemplate,omitempty"`
+	Readme            *bool  `json:"readme,omitempty" yaml:"readme,omitempty"`
 }
 
 type TemplateSeed struct {
@@ -103,18 +204,28 @@ type ZIPSeed struct {
 }
 
 type ActionsConfig struct {
-	Enabled                        *bool                  `json:"enabled,omitempty" yaml:"enabled,omitempty"`
-	AllowedActions                 string                 `json:"allowedActions,omitempty" yaml:"allowedActions,omitempty"`
-	SelectedActions                *SelectedActionsConfig `json:"selectedActions,omitempty" yaml:"selectedActions,omitempty"`
-	RequireSHAForGitHubActions     *bool                  `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
-	DefaultWorkflowPermissions     string                 `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
-	CanApprovePullRequestWorkflows *bool                  `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
+	Enabled                        *bool                           `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	AllowedActions                 string                          `json:"allowedActions,omitempty" yaml:"allowedActions,omitempty"`
+	SelectedActions                *SelectedActionsConfig          `json:"selectedActions,omitempty" yaml:"selectedActions,omitempty"`
+	OIDCSubjectCustomization       *OIDCSubjectCustomizationConfig `json:"oidcSubjectCustomization,omitempty" yaml:"oidcSubjectCustomization,omitempty"`
+	RequireSHAForGitHubActions     *bool                           `json:"requireSHAForGitHubActions,omitempty" yaml:"requireSHAForGitHubActions,omitempty"`
+	DefaultWorkflowPermissions     string                          `json:"defaultWorkflowPermissions,omitempty" yaml:"defaultWorkflowPermissions,omitempty"`
+	CanApprovePullRequestWorkflows *bool                           `json:"canApprovePullRequestWorkflows,omitempty" yaml:"canApprovePullRequestWorkflows,omitempty"`
 	// ForkPullRequestApproval selects when a fork pull request workflow run
 	// requires manual approval. GitHub rejects this on private repositories.
 	ForkPullRequestApproval string        `json:"forkPullRequestApproval,omitempty" yaml:"forkPullRequestApproval,omitempty"`
+	WorkflowAccessLevel     string        `json:"workflowAccessLevel,omitempty" yaml:"workflowAccessLevel,omitempty"`
 	Variables               []VariableRef `json:"variables,omitempty" yaml:"variables,omitempty"`
 	Secrets                 []SecretRef   `json:"secrets,omitempty" yaml:"secrets,omitempty"`
 	Environments            []Environment `json:"environments,omitempty" yaml:"environments,omitempty"`
+}
+
+// OIDCSubjectCustomizationConfig describes the repository-level Actions OIDC
+// subject claim template, independently of organization and enterprise policy.
+type OIDCSubjectCustomizationConfig struct {
+	UseDefault          bool     `json:"useDefault" yaml:"useDefault"`
+	IncludeClaimKeys    []string `json:"includeClaimKeys,omitempty" yaml:"includeClaimKeys,omitempty"`
+	UseImmutableSubject *bool    `json:"useImmutableSubject,omitempty" yaml:"useImmutableSubject,omitempty"`
 }
 
 // SelectedActionsConfig is required when AllowedActions is "selected". Without it,
@@ -139,7 +250,29 @@ type SecretRef struct {
 }
 
 type Environment struct {
+	Name                   string                     `json:"name" yaml:"name"`
+	WaitTimer              *int                       `json:"waitTimer,omitempty" yaml:"waitTimer,omitempty"`
+	PreventSelfReview      *bool                      `json:"preventSelfReview,omitempty" yaml:"preventSelfReview,omitempty"`
+	Reviewers              *[]EnvironmentReviewer     `json:"reviewers,omitempty" yaml:"reviewers,omitempty"`
+	DeploymentBranchPolicy *DeploymentBranchPolicy    `json:"deploymentBranchPolicy,omitempty" yaml:"deploymentBranchPolicy,omitempty"`
+	BranchPolicies         *[]EnvironmentBranchPolicy `json:"branchPolicies,omitempty" yaml:"branchPolicies,omitempty"`
+	CustomProtectionRules  *[]string                  `json:"customProtectionRules,omitempty" yaml:"customProtectionRules,omitempty"`
+}
+
+type EnvironmentReviewer struct {
+	Type string `json:"type" yaml:"type"`
+	ID   int64  `json:"id" yaml:"id"`
+}
+
+type DeploymentBranchPolicy struct {
+	AllowAllBranches     bool `json:"allowAllBranches,omitempty" yaml:"allowAllBranches,omitempty"`
+	ProtectedBranches    bool `json:"protectedBranches" yaml:"protectedBranches"`
+	CustomBranchPolicies bool `json:"customBranchPolicies" yaml:"customBranchPolicies"`
+}
+
+type EnvironmentBranchPolicy struct {
 	Name string `json:"name" yaml:"name"`
+	Type string `json:"type" yaml:"type"`
 }
 
 type RulesetConfig struct {
@@ -156,14 +289,14 @@ type RulesetConfig struct {
 }
 
 // BypassActorConfig identifies one actor allowed to bypass a ruleset. Exactly
-// one of Role, Team, App, OrgAdmin, or CustomRole must be set. Team, App, and
-// CustomRole also accept the resolved "id:<number>" form ParseBypassActorID
-// recognises, so import output can be applied again unchanged even for a
-// private GitHub App whose slug the authenticated user cannot resolve.
+// one of Role, Team, App, User, OrgAdmin, or CustomRole must be set. Team, App,
+// and CustomRole accept the resolved "id:<number>" form; User requires it so
+// import output can be applied again without looking up an account by name.
 type BypassActorConfig struct {
 	Role       string `json:"role,omitempty" yaml:"role,omitempty"`
 	Team       string `json:"team,omitempty" yaml:"team,omitempty"`
 	App        string `json:"app,omitempty" yaml:"app,omitempty"`
+	User       string `json:"user,omitempty" yaml:"user,omitempty"`
 	OrgAdmin   bool   `json:"orgAdmin,omitempty" yaml:"orgAdmin,omitempty"`
 	CustomRole string `json:"customRole,omitempty" yaml:"customRole,omitempty"`
 	BypassMode string `json:"bypassMode,omitempty" yaml:"bypassMode,omitempty"`
@@ -239,14 +372,27 @@ type RulesetRule struct {
 }
 
 type SecurityConfig struct {
-	DependencyGraph               *FeatureSetting `json:"dependencyGraph,omitempty" yaml:"dependencyGraph,omitempty"`
-	DependabotAlerts              *FeatureSetting `json:"dependabotAlerts,omitempty" yaml:"dependabotAlerts,omitempty"`
-	DependabotSecurityUpdates     *FeatureSetting `json:"dependabotSecurityUpdates,omitempty" yaml:"dependabotSecurityUpdates,omitempty"`
-	SecretScanning                *FeatureSetting `json:"secretScanning,omitempty" yaml:"secretScanning,omitempty"`
-	PushProtection                *FeatureSetting `json:"pushProtection,omitempty" yaml:"pushProtection,omitempty"`
-	CodeQLDefaultSetup            *FeatureSetting `json:"codeqlDefaultSetup,omitempty" yaml:"codeqlDefaultSetup,omitempty"`
-	AIPullRequestScan             *FeatureSetting `json:"aiPullRequestScan,omitempty" yaml:"aiPullRequestScan,omitempty"`
-	PrivateVulnerabilityReporting *FeatureSetting `json:"privateVulnerabilityReporting,omitempty" yaml:"privateVulnerabilityReporting,omitempty"`
+	DependencyGraph                       *FeatureSetting            `json:"dependencyGraph,omitempty" yaml:"dependencyGraph,omitempty"`
+	DependabotAlerts                      *FeatureSetting            `json:"dependabotAlerts,omitempty" yaml:"dependabotAlerts,omitempty"`
+	DependabotSecurityUpdates             *FeatureSetting            `json:"dependabotSecurityUpdates,omitempty" yaml:"dependabotSecurityUpdates,omitempty"`
+	AdvancedSecurity                      *FeatureSetting            `json:"advancedSecurity,omitempty" yaml:"advancedSecurity,omitempty"`
+	CodeSecurity                          *FeatureSetting            `json:"codeSecurity,omitempty" yaml:"codeSecurity,omitempty"`
+	SecretScanning                        *FeatureSetting            `json:"secretScanning,omitempty" yaml:"secretScanning,omitempty"`
+	PushProtection                        *FeatureSetting            `json:"pushProtection,omitempty" yaml:"pushProtection,omitempty"`
+	SecretScanningAIDetection             *FeatureSetting            `json:"secretScanningAIDetection,omitempty" yaml:"secretScanningAIDetection,omitempty"`
+	SecretScanningNonProviderPatterns     *FeatureSetting            `json:"secretScanningNonProviderPatterns,omitempty" yaml:"secretScanningNonProviderPatterns,omitempty"`
+	SecretScanningDelegatedAlertDismissal *FeatureSetting            `json:"secretScanningDelegatedAlertDismissal,omitempty" yaml:"secretScanningDelegatedAlertDismissal,omitempty"`
+	SecretScanningDelegatedBypass         *FeatureSetting            `json:"secretScanningDelegatedBypass,omitempty" yaml:"secretScanningDelegatedBypass,omitempty"`
+	DelegatedBypassReviewers              *[]DelegatedBypassReviewer `json:"delegatedBypassReviewers,omitempty" yaml:"delegatedBypassReviewers,omitempty"`
+	CodeQLDefaultSetup                    *FeatureSetting            `json:"codeqlDefaultSetup,omitempty" yaml:"codeqlDefaultSetup,omitempty"`
+	AIPullRequestScan                     *FeatureSetting            `json:"aiPullRequestScan,omitempty" yaml:"aiPullRequestScan,omitempty"`
+	PrivateVulnerabilityReporting         *FeatureSetting            `json:"privateVulnerabilityReporting,omitempty" yaml:"privateVulnerabilityReporting,omitempty"`
+}
+
+type DelegatedBypassReviewer struct {
+	ReviewerID   int64  `json:"reviewerId" yaml:"reviewerId"`
+	ReviewerType string `json:"reviewerType" yaml:"reviewerType"`
+	Mode         string `json:"mode,omitempty" yaml:"mode,omitempty"`
 }
 
 type FeatureSetting struct {

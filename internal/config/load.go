@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -103,6 +104,9 @@ func validate(cfg *Config, checkSeedFilesystem bool) error {
 	if err := validateRulesets(cfg.Rulesets); err != nil {
 		return err
 	}
+	if err := validateSecurity(cfg.Security); err != nil {
+		return err
+	}
 	if err := validateAgents(cfg.Agents); err != nil {
 		return err
 	}
@@ -112,7 +116,125 @@ func validate(cfg *Config, checkSeedFilesystem bool) error {
 	if err := validateMilestones(cfg.Milestones); err != nil {
 		return err
 	}
+	if err := validateRepositorySettings(cfg.Settings); err != nil {
+		return err
+	}
 	return validateCommands(cfg.Commands)
+}
+
+func validateRepositorySettings(settings *RepositorySettings) error {
+	if settings == nil {
+		return nil
+	}
+	if interaction := settings.InteractionLimit; interaction != nil && interaction.Enabled {
+		if !oneOf(interaction.Limit, "existing_users", "contributors_only", "collaborators_only") {
+			return errors.New("settings.interactionLimit.limit must be existing_users, contributors_only, or collaborators_only")
+		}
+		if !oneOf(interaction.Expiry, "one_day", "three_days", "one_week", "one_month", "six_months") {
+			return errors.New("settings.interactionLimit.expiry must be one_day, three_days, one_week, one_month, or six_months")
+		}
+	}
+	if cap := settings.PullRequestCreationCap; cap != nil {
+		if cap.Enabled && cap.MaxOpenPullRequests < 1 {
+			return errors.New("settings.pullRequestCreationCap.maxOpenPullRequests must be positive when enabled")
+		}
+		if cap.BypassUsers != nil {
+			if !cap.Enabled && len(*cap.BypassUsers) > 0 {
+				return errors.New("settings.pullRequestCreationCap bypassUsers require the cap to be enabled")
+			}
+			for _, login := range *cap.BypassUsers {
+				if login == "" {
+					return errors.New("settings.pullRequestCreationCap.bypassUsers cannot contain empty logins")
+				}
+			}
+			if err := validateUnique("settings.pullRequestCreationCap.bypassUsers", *cap.BypassUsers); err != nil {
+				return err
+			}
+			if len(*cap.BypassUsers) > 100 {
+				return errors.New("settings.pullRequestCreationCap.bypassUsers cannot exceed 100 entries")
+			}
+		}
+	}
+	if settings.Pages != nil {
+		pages := settings.Pages
+		if pages.Enabled && pages.BuildType != "workflow" && pages.Source == nil {
+			return errors.New("settings.pages.source is required when Pages is enabled")
+		}
+		if pages.Source != nil && (pages.Source.Branch == "" || !oneOf(pages.Source.Path, "/", "/docs")) {
+			return errors.New("settings.pages.source requires a branch and path / or /docs")
+		}
+		if pages.BuildType != "" && !oneOf(pages.BuildType, "legacy", "workflow") {
+			return errors.New("settings.pages.buildType must be legacy or workflow")
+		}
+	}
+	for _, webhook := range settings.Webhooks {
+		if webhook.URL == "" || len(webhook.Events) == 0 {
+			return errors.New("settings.webhooks requires url and at least one event")
+		}
+		events := append([]string(nil), webhook.Events...)
+		sort.Strings(events)
+		if err := validateUnique("settings.webhooks events", events); err != nil {
+			return err
+		}
+	}
+	autolinkKeys := make([]string, 0, len(settings.Autolinks))
+	for _, autolink := range settings.Autolinks {
+		if autolink.KeyPrefix == "" || autolink.URLTemplate == "" {
+			return errors.New("settings.autolinks requires keyPrefix and urlTemplate")
+		}
+		autolinkKeys = append(autolinkKeys, autolink.KeyPrefix)
+	}
+	if err := validateUnique("settings.autolinks", autolinkKeys); err != nil {
+		return err
+	}
+	deployKeyTitles := make([]string, 0, len(settings.DeployKeys))
+	for _, key := range settings.DeployKeys {
+		if key.Title == "" || key.Key == "" {
+			return errors.New("settings.deployKeys requires title and key")
+		}
+		deployKeyTitles = append(deployKeyTitles, key.Title)
+	}
+	if err := validateUnique("settings.deployKeys", deployKeyTitles); err != nil {
+		return err
+	}
+	collaborators := make([]string, 0, len(settings.Collaborators))
+	for _, collaborator := range settings.Collaborators {
+		if collaborator.Login == "" || collaborator.Permission == "" {
+			return errors.New("settings.collaborators requires login and permission")
+		}
+		collaborators = append(collaborators, strings.ToLower(collaborator.Login))
+	}
+	if err := validateUnique("settings.collaborators", collaborators); err != nil {
+		return err
+	}
+	teamSlugs := make([]string, 0, len(settings.Teams))
+	for _, team := range settings.Teams {
+		if team.Slug == "" || !oneOf(team.Permission, "pull", "triage", "push", "maintain", "admin") {
+			return errors.New("settings.teams requires slug and a valid permission")
+		}
+		teamSlugs = append(teamSlugs, strings.ToLower(team.Slug))
+	}
+	if err := validateUnique("settings.teams", teamSlugs); err != nil {
+		return err
+	}
+	propertyNames := make([]string, 0, len(settings.CustomProperties))
+	for _, property := range settings.CustomProperties {
+		if property.Name == "" || property.Value == nil {
+			return errors.New("settings.customProperties requires name and value")
+		}
+		propertyNames = append(propertyNames, property.Name)
+	}
+	if err := validateUnique("settings.customProperties", propertyNames); err != nil {
+		return err
+	}
+	branches := make([]string, 0, len(settings.BranchProtections))
+	for _, protection := range settings.BranchProtections {
+		if protection.Branch == "" || protection.Settings == nil {
+			return errors.New("settings.branchProtections requires branch and settings")
+		}
+		branches = append(branches, protection.Branch)
+	}
+	return validateUnique("settings.branchProtections", branches)
 }
 
 func validateRepository(r RepositoryConfig) error {
@@ -133,6 +255,9 @@ func validateRepository(r RepositoryConfig) error {
 	}
 	if r.SquashMergeCommitMessage != "" && !oneOf(r.SquashMergeCommitMessage, "COMMIT_MESSAGES", "PR_BODY", "BLANK") {
 		return errors.New("repository.squashMergeCommitMessage must be COMMIT_MESSAGES, PR_BODY, or BLANK")
+	}
+	if r.PullRequestCreationPolicy != "" && !oneOf(r.PullRequestCreationPolicy, "all", "collaborators_only") {
+		return errors.New("repository.pullRequestCreationPolicy must be all or collaborators_only")
 	}
 	return validateUnique("repository.topics", r.Topics)
 }
@@ -225,7 +350,12 @@ func validateSeed(seed *SeedConfig, checkSeedFilesystem bool) error {
 			}
 		}
 	}
-	if count != 1 {
+	if seed.Initialize != nil {
+		if seed.Initialize.GitignoreTemplate != "" && strings.TrimSpace(seed.Initialize.GitignoreTemplate) != seed.Initialize.GitignoreTemplate {
+			return errors.New("seed.initialize.gitignoreTemplate must not contain leading or trailing whitespace")
+		}
+	}
+	if count != 1 && (count != 0 || seed.Initialize == nil) {
 		return errors.New("seed must define exactly one of template, directory, or zip")
 	}
 	for _, path := range seed.Overwrite {
@@ -233,7 +363,10 @@ func validateSeed(seed *SeedConfig, checkSeedFilesystem bool) error {
 			return err
 		}
 	}
-	return validateUnique("seed.overwrite", seed.Overwrite)
+	if err := validateUnique("seed.overwrite", seed.Overwrite); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateLocalSeedPath(field, path string, zip bool) error {
@@ -274,11 +407,29 @@ func validateActions(actions *ActionsConfig) error {
 			return err
 		}
 	}
+	if customization := actions.OIDCSubjectCustomization; customization != nil {
+		if err := validateUnique("actions.oidcSubjectCustomization.includeClaimKeys", customization.IncludeClaimKeys); err != nil {
+			return err
+		}
+		for _, claim := range customization.IncludeClaimKeys {
+			if claim == "" {
+				return errors.New("actions.oidcSubjectCustomization.includeClaimKeys must not contain empty values")
+			}
+			for _, character := range claim {
+				if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') && (character < '0' || character > '9') && character != '_' {
+					return fmt.Errorf("actions.oidcSubjectCustomization.includeClaimKeys contains invalid key %q", claim)
+				}
+			}
+		}
+	}
 	if actions.DefaultWorkflowPermissions != "" && !oneOf(actions.DefaultWorkflowPermissions, "read", "write") {
 		return errors.New("actions.defaultWorkflowPermissions must be read or write")
 	}
 	if actions.ForkPullRequestApproval != "" && !oneOf(actions.ForkPullRequestApproval, "first_time_contributors_new_to_github", "first_time_contributors", "all_external_contributors") {
 		return errors.New("actions.forkPullRequestApproval must be first_time_contributors_new_to_github, first_time_contributors, or all_external_contributors")
+	}
+	if actions.WorkflowAccessLevel != "" && !oneOf(actions.WorkflowAccessLevel, "none", "user", "organization") {
+		return errors.New("actions.workflowAccessLevel must be none, user, or organization")
 	}
 	if err := validateVariables("actions.variables", actions.Variables); err != nil {
 		return err
@@ -332,6 +483,12 @@ func validateBypassActors(rulesetName string, actors []BypassActorConfig) error 
 				return err
 			}
 		}
+		if actor.User != "" {
+			set++
+			if _, found, err := ParseBypassActorID(actor.User); !found || err != nil {
+				return fmt.Errorf("ruleset %q bypassActors[%d] user must use id:<number>", rulesetName, index)
+			}
+		}
 		if actor.OrgAdmin {
 			set++
 		}
@@ -342,7 +499,7 @@ func validateBypassActors(rulesetName string, actors []BypassActorConfig) error 
 			}
 		}
 		if set != 1 {
-			return fmt.Errorf("ruleset %q bypassActors[%d] must set exactly one of role, team, app, orgAdmin, or customRole", rulesetName, index)
+			return fmt.Errorf("ruleset %q bypassActors[%d] must set exactly one of role, team, app, user, orgAdmin, or customRole", rulesetName, index)
 		}
 		// docs/design.md requires every entry to carry a bypassMode alongside
 		// its actor selector.
@@ -421,8 +578,73 @@ func validateEnvironmentNames(environments []Environment) error {
 			return errors.New("actions.environments contains an environment without name")
 		}
 		names = append(names, environment.Name)
+		if environment.WaitTimer != nil && (*environment.WaitTimer < 0 || *environment.WaitTimer > 43200) {
+			return fmt.Errorf("environment %q waitTimer must be between 0 and 43200 minutes", environment.Name)
+		}
+		if environment.DeploymentBranchPolicy != nil {
+			policy := environment.DeploymentBranchPolicy
+			if policy.AllowAllBranches {
+				if policy.ProtectedBranches || policy.CustomBranchPolicies {
+					return fmt.Errorf("environment %q allowAllBranches cannot be combined with a deployment branch policy", environment.Name)
+				}
+			} else if policy.ProtectedBranches == policy.CustomBranchPolicies {
+				return fmt.Errorf("environment %q deploymentBranchPolicy must enable exactly one policy or allowAllBranches", environment.Name)
+			}
+			if policy.CustomBranchPolicies && environment.BranchPolicies == nil {
+				return fmt.Errorf("environment %q custom deployment branch policies require branchPolicies", environment.Name)
+			}
+		}
+		if environment.Reviewers != nil {
+			for _, reviewer := range *environment.Reviewers {
+				if !oneOf(reviewer.Type, "User", "Team") || reviewer.ID <= 0 {
+					return fmt.Errorf("environment %q reviewers require type User or Team and a positive id", environment.Name)
+				}
+			}
+		}
+		if environment.BranchPolicies != nil {
+			policies := make([]string, 0, len(*environment.BranchPolicies))
+			for _, policy := range *environment.BranchPolicies {
+				if policy.Name == "" || !oneOf(policy.Type, "branch", "tag") {
+					return fmt.Errorf("environment %q branchPolicies require name and type branch or tag", environment.Name)
+				}
+				policies = append(policies, policy.Type+":"+policy.Name)
+			}
+			if err := validateUnique("environment "+environment.Name+" branchPolicies", policies); err != nil {
+				return err
+			}
+		}
+		if environment.CustomProtectionRules != nil {
+			for _, slug := range *environment.CustomProtectionRules {
+				if slug == "" {
+					return fmt.Errorf("environment %q customProtectionRules require non-empty app slugs", environment.Name)
+				}
+			}
+			if err := validateUnique("environment "+environment.Name+" customProtectionRules", *environment.CustomProtectionRules); err != nil {
+				return err
+			}
+		}
 	}
 	return validateUnique("actions.environments", names)
+}
+
+func validateSecurity(security *SecurityConfig) error {
+	if security == nil {
+		return nil
+	}
+	if security.DelegatedBypassReviewers == nil {
+		return nil
+	}
+	keys := make([]string, 0, len(*security.DelegatedBypassReviewers))
+	for index, reviewer := range *security.DelegatedBypassReviewers {
+		if reviewer.ReviewerID <= 0 || !oneOf(reviewer.ReviewerType, "TEAM", "ROLE") {
+			return fmt.Errorf("security.delegatedBypassReviewers[%d] requires positive reviewerId and reviewerType TEAM or ROLE", index)
+		}
+		if reviewer.Mode != "" && !oneOf(reviewer.Mode, "ALWAYS", "EXEMPT") {
+			return fmt.Errorf("security.delegatedBypassReviewers[%d] mode must be ALWAYS or EXEMPT", index)
+		}
+		keys = append(keys, fmt.Sprintf("%d:%s", reviewer.ReviewerID, reviewer.ReviewerType))
+	}
+	return validateUnique("security.delegatedBypassReviewers", keys)
 }
 
 func validateCommands(commands []CommandConfig) error {

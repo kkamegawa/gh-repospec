@@ -109,6 +109,60 @@ func TestValidateRequiresSelectedActionsOnlyWithSelectedAllowedActions(t *testin
 	}
 }
 
+func TestValidateEnvironmentCustomProtectionRules(t *testing.T) {
+	t.Parallel()
+	stringSlicePointer := func(values []string) *[]string { return &values }
+	base := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+	}
+	valid := base
+	valid.Actions = &ActionsConfig{Environments: []Environment{{Name: "production", CustomProtectionRules: stringSlicePointer([]string{"approval-app"})}}}
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want valid custom protection app slug accepted", err)
+	}
+
+	for name, slugs := range map[string][]string{
+		"empty slug":     {""},
+		"duplicate slug": {"approval-app", "approval-app"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := base
+			invalid.Actions = &ActionsConfig{Environments: []Environment{{Name: "production", CustomProtectionRules: stringSlicePointer(slugs)}}}
+			if err := Validate(&invalid); err == nil {
+				t.Fatalf("Validate() unexpectedly accepted custom protection slugs %v", slugs)
+			}
+		})
+	}
+}
+
+func TestValidateRepositoryInteractionSettings(t *testing.T) {
+	t.Parallel()
+	users := []string{"octocat"}
+	valid := Config{
+		SchemaVersion: CurrentSchemaVersion,
+		Repository:    RepositoryConfig{Owner: "octo-org", Name: "example", Visibility: "public"},
+		Settings: &RepositorySettings{
+			InteractionLimit:       &InteractionLimitConfig{Enabled: true, Limit: "contributors_only", Expiry: "one_week"},
+			PullRequestCreationCap: &PullRequestCreationCapConfig{Enabled: true, MaxOpenPullRequests: 3, BypassUsers: &users},
+		},
+	}
+	if err := Validate(&valid); err != nil {
+		t.Fatalf("Validate() error = %v, want valid repository interaction settings accepted", err)
+	}
+
+	invalid := valid
+	invalid.Settings = &RepositorySettings{InteractionLimit: &InteractionLimitConfig{Enabled: true, Limit: "contributors_only"}}
+	if err := Validate(&invalid); err == nil {
+		t.Fatal("Validate() unexpectedly accepted enabled interaction limit without expiry")
+	}
+	invalid = valid
+	invalid.Settings = &RepositorySettings{PullRequestCreationCap: &PullRequestCreationCapConfig{Enabled: true}}
+	if err := Validate(&invalid); err == nil {
+		t.Fatal("Validate() unexpectedly accepted enabled pull request creation cap without a positive limit")
+	}
+}
+
 func TestValidateRejectsShellCommands(t *testing.T) {
 	t.Parallel()
 	err := Validate(&Config{
@@ -319,10 +373,21 @@ func TestValidateBypassActorResolvedIDForm(t *testing.T) {
 			{Team: "id:42", BypassMode: "always"},
 			{App: "id:7", BypassMode: "always"},
 			{CustomRole: "id:19", BypassMode: "always"},
+			{User: "id:1450745", BypassMode: "always"},
 		},
 	}}
 	if err := Validate(&resolved); err != nil {
-		t.Fatalf("Validate() error = %v, want the resolved id:<number> form accepted for team, app, and customRole", err)
+		t.Fatalf("Validate() error = %v, want the resolved id:<number> form accepted for team, app, customRole, and user", err)
+	}
+
+	userByLogin := base
+	userByLogin.Rulesets = []RulesetConfig{{
+		Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+		Rules:        []RulesetRule{{Type: "deletion"}},
+		BypassActors: []BypassActorConfig{{User: "octocat", BypassMode: "always"}},
+	}}
+	if err := Validate(&userByLogin); err == nil {
+		t.Fatal("Validate() unexpectedly accepted a username selector; imported User actors require a stable id:<number>")
 	}
 
 	for _, malformed := range []string{"id:", "id:abc", "id:-1", "id:0"} {

@@ -34,22 +34,43 @@ func importSecurity(ctx context.Context, reader Reader, repository githubapi.Rep
 	}
 	cfg.DependabotSecurityUpdates = &config.FeatureSetting{Enabled: securityUpdatesEnabled}
 
-	if info.SecurityAndAnalysis != nil && info.SecurityAndAnalysis.SecretScanning != nil {
-		cfg.SecretScanning = &config.FeatureSetting{Enabled: info.SecurityAndAnalysis.SecretScanning.Status == "enabled"}
+	if info.SecurityAndAnalysis != nil {
+		statusFields := []struct {
+			name   string
+			field  *githubapi.SecurityFeature
+			assign func(*config.FeatureSetting)
+		}{
+			{"advancedSecurity", info.SecurityAndAnalysis.AdvancedSecurity, func(value *config.FeatureSetting) { cfg.AdvancedSecurity = value }},
+			{"codeSecurity", info.SecurityAndAnalysis.CodeSecurity, func(value *config.FeatureSetting) { cfg.CodeSecurity = value }},
+			{"secretScanning", info.SecurityAndAnalysis.SecretScanning, func(value *config.FeatureSetting) { cfg.SecretScanning = value }},
+			{"pushProtection", info.SecurityAndAnalysis.SecretScanningPushProtect, func(value *config.FeatureSetting) { cfg.PushProtection = value }},
+			{"secretScanningAIDetection", info.SecurityAndAnalysis.SecretScanningAIDetection, func(value *config.FeatureSetting) { cfg.SecretScanningAIDetection = value }},
+			{"secretScanningNonProviderPatterns", info.SecurityAndAnalysis.SecretScanningNonProviderPatterns, func(value *config.FeatureSetting) { cfg.SecretScanningNonProviderPatterns = value }},
+			{"secretScanningDelegatedAlertDismissal", info.SecurityAndAnalysis.SecretScanningDelegatedAlertDismissal, func(value *config.FeatureSetting) { cfg.SecretScanningDelegatedAlertDismissal = value }},
+			{"secretScanningDelegatedBypass", info.SecurityAndAnalysis.SecretScanningDelegatedBypass, func(value *config.FeatureSetting) { cfg.SecretScanningDelegatedBypass = value }},
+		}
+		for _, status := range statusFields {
+			if status.field == nil {
+				diagnostics = append(diagnostics, Diagnostic{Resource: "security." + status.name, Message: "GitHub did not report this security setting in the repository response"})
+				continue
+			}
+			status.assign(featureSetting(status.field))
+		}
+		if options := info.SecurityAndAnalysis.SecretScanningDelegatedBypassOptions; options != nil {
+			reviewers := make([]config.DelegatedBypassReviewer, 0, len(options.Reviewers))
+			for _, reviewer := range options.Reviewers {
+				reviewers = append(reviewers, config.DelegatedBypassReviewer{ReviewerID: reviewer.ReviewerID, ReviewerType: reviewer.ReviewerType, Mode: reviewer.Mode})
+			}
+			cfg.DelegatedBypassReviewers = &reviewers
+		}
 	} else {
-		diagnostics = append(diagnostics, Diagnostic{
-			Resource: "security.secretScanning",
-			Message:  "GitHub did not report secret scanning status for this repository",
-		})
+		for _, name := range []string{"advancedSecurity", "codeSecurity", "secretScanning", "pushProtection", "secretScanningAIDetection", "secretScanningNonProviderPatterns", "secretScanningDelegatedAlertDismissal", "secretScanningDelegatedBypass"} {
+			diagnostics = append(diagnostics, Diagnostic{Resource: "security." + name, Message: "GitHub did not report the security_and_analysis block for this repository"})
+		}
 	}
 
-	if info.SecurityAndAnalysis != nil && info.SecurityAndAnalysis.SecretScanningPushProtect != nil {
-		cfg.PushProtection = &config.FeatureSetting{Enabled: info.SecurityAndAnalysis.SecretScanningPushProtect.Status == "enabled"}
-	} else {
-		diagnostics = append(diagnostics, Diagnostic{
-			Resource: "security.pushProtection",
-			Message:  "GitHub did not report push protection status for this repository",
-		})
+	if info.SecurityAndAnalysis != nil && info.SecurityAndAnalysis.SecretScanningDelegatedBypass != nil && info.SecurityAndAnalysis.SecretScanningDelegatedBypass.Status == "enabled" && info.SecurityAndAnalysis.SecretScanningDelegatedBypassOptions == nil {
+		diagnostics = append(diagnostics, Diagnostic{Resource: "security.delegatedBypassReviewers", Message: "GitHub did not report delegated bypass reviewer options"})
 	}
 
 	codeQL, err := reader.GetCodeQLDefaultSetup(ctx, repository)
@@ -102,4 +123,11 @@ func importSecurity(ctx context.Context, reader Reader, repository githubapi.Rep
 	})
 
 	return cfg, diagnostics, nil
+}
+
+func featureSetting(feature *githubapi.SecurityFeature) *config.FeatureSetting {
+	if feature == nil {
+		return nil
+	}
+	return &config.FeatureSetting{Enabled: feature.Status == "enabled"}
 }

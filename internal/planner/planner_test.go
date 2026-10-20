@@ -699,7 +699,7 @@ func TestBuildAcceptsResolvedBypassActorIDsWithoutLookups(t *testing.T) {
 		Rulesets: []config.RulesetConfig{{
 			Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
 			Rules:        []config.RulesetRule{{Type: "deletion"}},
-			BypassActors: []config.BypassActorConfig{{Team: "id:42", BypassMode: "always"}},
+			BypassActors: []config.BypassActorConfig{{Team: "id:42", BypassMode: "always"}, {User: "id:1450745", BypassMode: "always"}},
 		}},
 	}, Options{})
 	if err != nil {
@@ -1417,6 +1417,7 @@ type fakeService struct {
 	immutableReleases              githubapi.ImmutableReleases
 	forkPullRequestApproval        githubapi.ForkPullRequestApproval
 	forkPullRequestApprovalErr     error
+	workflowRepositoryAccess       githubapi.WorkflowRepositoryAccess
 	vulnerabilityAlertsEnabled     bool
 	vulnerabilityAlertsErr         error
 	automatedSecurityFixesEnabled  bool
@@ -1456,6 +1457,10 @@ func (f *fakeService) CreateRepository(_ context.Context, request githubapi.Crea
 
 func (f *fakeService) UpdateRepository(_ context.Context, _ githubapi.Repository, request githubapi.UpdateRepositoryRequest) (githubapi.RepositoryInfo, error) {
 	f.updateRepositoryCalls++
+	if request.Visibility != "" {
+		f.repository.Visibility = request.Visibility
+		f.repository.Private = request.Visibility != "public"
+	}
 	if request.Description != nil {
 		f.repository.Description = *request.Description
 	}
@@ -1476,6 +1481,27 @@ func (f *fakeService) UpdateRepository(_ context.Context, _ githubapi.Repository
 	}
 	if request.HasDiscussions != nil {
 		f.repository.HasDiscussions = *request.HasDiscussions
+	}
+	if request.AllowForking != nil {
+		f.repository.AllowForking = *request.AllowForking
+	}
+	if request.HasPullRequests != nil {
+		f.repository.HasPullRequests = *request.HasPullRequests
+	}
+	if request.PullRequestCreationPolicy != "" {
+		f.repository.PullRequestCreationPolicy = request.PullRequestCreationPolicy
+	}
+	if request.IsTemplate != nil {
+		f.repository.IsTemplate = *request.IsTemplate
+	}
+	if request.AllowUpdateBranch != nil {
+		f.repository.AllowUpdateBranch = *request.AllowUpdateBranch
+	}
+	if request.UseSquashPRTitleAsDefault != nil {
+		f.repository.UseSquashPRTitleAsDefault = *request.UseSquashPRTitleAsDefault
+	}
+	if request.WebCommitSignoffRequired != nil {
+		f.repository.WebCommitSignoffRequired = *request.WebCommitSignoffRequired
 	}
 	if request.MergeCommitTitle != "" {
 		f.repository.MergeCommitTitle = request.MergeCommitTitle
@@ -1531,6 +1557,30 @@ func (f *fakeService) GetForkPullRequestApproval(context.Context, githubapi.Repo
 }
 
 func (*fakeService) SetForkPullRequestApproval(context.Context, githubapi.Repository, githubapi.ForkPullRequestApproval) error {
+	return nil
+}
+
+// workflowAccessUnavailable mirrors GitHub, which answers the workflow access
+// endpoints with 422 for a public repository.
+func (f *fakeService) workflowAccessUnavailable() error {
+	if !f.repository.Private && f.repository.Visibility != "internal" {
+		return &githubapi.APIError{StatusCode: 422, Message: "Access policy only applies to internal and private repositories"}
+	}
+	return nil
+}
+
+func (f *fakeService) GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error) {
+	if err := f.workflowAccessUnavailable(); err != nil {
+		return githubapi.WorkflowRepositoryAccess{}, err
+	}
+	return f.workflowRepositoryAccess, nil
+}
+
+func (f *fakeService) UpdateWorkflowRepositoryAccess(_ context.Context, _ githubapi.Repository, access githubapi.WorkflowRepositoryAccess) error {
+	if err := f.workflowAccessUnavailable(); err != nil {
+		return err
+	}
+	f.workflowRepositoryAccess = access
 	return nil
 }
 

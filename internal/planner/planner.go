@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -115,6 +116,8 @@ type Service interface {
 	ListEnvironments(context.Context, githubapi.Repository) ([]githubapi.Environment, error)
 	GetForkPullRequestApproval(context.Context, githubapi.Repository) (githubapi.ForkPullRequestApproval, error)
 	SetForkPullRequestApproval(context.Context, githubapi.Repository, githubapi.ForkPullRequestApproval) error
+	GetWorkflowRepositoryAccess(context.Context, githubapi.Repository) (githubapi.WorkflowRepositoryAccess, error)
+	UpdateWorkflowRepositoryAccess(context.Context, githubapi.Repository, githubapi.WorkflowRepositoryAccess) error
 	ListActionVariables(context.Context, githubapi.Repository) (githubapi.ActionVariableList, error)
 	CreateActionVariable(context.Context, githubapi.Repository, githubapi.ActionVariable) error
 	UpdateActionVariable(context.Context, githubapi.Repository, githubapi.ActionVariable) error
@@ -172,6 +175,24 @@ type Engine struct {
 type ContentService interface {
 	CommitFiles(context.Context, githubapi.Repository, string, string, []githubapi.File) (githubapi.CommitResult, error)
 	MaterializeTemplateArchive(context.Context, githubapi.Repository, string, string) error
+}
+
+type environmentService interface {
+	ListEnvironmentBranchPolicies(context.Context, githubapi.Repository, string) ([]githubapi.EnvironmentBranchPolicy, error)
+	CreateEnvironmentBranchPolicy(context.Context, githubapi.Repository, string, githubapi.EnvironmentBranchPolicyRequest) (githubapi.EnvironmentBranchPolicy, error)
+	DeleteEnvironmentBranchPolicy(context.Context, githubapi.Repository, string, int64) error
+}
+
+type oidcCustomizationService interface {
+	GetOIDCSubjectCustomization(context.Context, githubapi.Repository) (githubapi.OIDCSubjectCustomization, error)
+	SetOIDCSubjectCustomization(context.Context, githubapi.Repository, githubapi.OIDCSubjectCustomization) error
+}
+
+type customDeploymentProtectionService interface {
+	ListDeploymentProtectionRules(context.Context, githubapi.Repository, string) ([]githubapi.DeploymentProtectionRule, error)
+	ListAvailableDeploymentProtectionIntegrations(context.Context, githubapi.Repository, string) ([]githubapi.AvailableDeploymentProtectionIntegration, error)
+	EnableDeploymentProtectionIntegration(context.Context, githubapi.Repository, string, int64) (githubapi.DeploymentProtectionRule, error)
+	DisableDeploymentProtectionRule(context.Context, githubapi.Repository, string, int64) error
 }
 
 type treeService interface {
@@ -247,11 +268,12 @@ func (e *Engine) build(ctx context.Context, cfg *config.Config, options Options)
 	appendReleaseImmutabilityChanges(ctx, e.service, &plan, cfg.Repository, repository)
 	appendLabelChanges(ctx, e.service, &plan, cfg.Labels, repository)
 	appendMilestoneChanges(ctx, e.service, &plan, cfg.Milestones, repository)
-	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository)
+	appendActionsChanges(ctx, e.service, &plan, cfg.Actions, repository, cfg.Repository, info)
 	appendRulesetChanges(ctx, e.service, &plan, cfg.Rulesets, repository, resolver)
 	appendSecurityChanges(ctx, e.service, &plan, cfg.Security, repository, info, true)
+	appendRepositorySettingsChanges(ctx, e.service, &plan, cfg.Settings, repository, true, info.DefaultBranch == "")
 	appendAgentChanges(ctx, e.service, &plan, cfg.Agents, repository)
-	appendSeedChanges(&plan, cfg)
+	appendSeedChanges(ctx, e.service, &plan, cfg, repository, info.DefaultBranch, true)
 	return finalize(plan), resolver, nil
 }
 
@@ -296,7 +318,8 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 		}
 		info.Archived = false
 	}
-	if cfg.Repository.DefaultBranch != "" && info.DefaultBranch != cfg.Repository.DefaultBranch {
+	emptyRepository := info.DefaultBranch == ""
+	if cfg.Repository.DefaultBranch != "" && info.DefaultBranch != cfg.Repository.DefaultBranch && !emptyRepository {
 		if branches, ok := e.service.(branchService); ok {
 			if _, branchErr := branches.GetBranchHead(ctx, repository, cfg.Repository.DefaultBranch); githubapi.IsNotFound(branchErr) {
 				base, baseErr := branches.GetBranchHead(ctx, repository, info.DefaultBranch)
@@ -315,7 +338,13 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 		}
 	}
 
-	if err := e.applyRepository(ctx, repository, cfg.Repository, info); err != nil {
+	repositorySettings := cfg.Repository
+	if emptyRepository {
+		// GitHub cannot select a default branch until the first commit creates
+		// that branch. Seed writes it first, then the default branch is updated.
+		repositorySettings.DefaultBranch = ""
+	}
+	if err := e.applyRepository(ctx, repository, repositorySettings, info); err != nil {
 		return plan, err
 	}
 	if err := e.applyReleaseImmutability(ctx, repository, cfg.Repository); err != nil {
@@ -325,6 +354,24 @@ func (e *Engine) Apply(ctx context.Context, cfg *config.Config, options Options)
 		return plan, err
 	}
 	if err := e.applySeed(ctx, repository, info, cfg, options, !created); err != nil {
+		return plan, err
+	}
+	if emptyRepository {
+		branch := cfg.Repository.DefaultBranch
+		if branch == "" {
+			branch = "main"
+		}
+		if cfg.Seed == nil && len(cfg.Commands) == 0 {
+			if cfg.Repository.DefaultBranch != "" {
+				return plan, fmt.Errorf("cannot set default branch %q on an empty repository without seed files or commands", branch)
+			}
+		} else if cfg.Repository.DefaultBranch != "" {
+			if _, err := e.service.UpdateRepository(ctx, repository, githubapi.UpdateRepositoryRequest{DefaultBranch: branch}); err != nil {
+				return plan, fmt.Errorf("set default branch %q after bootstrap: %w", branch, err)
+			}
+		}
+	}
+	if err := e.applyRepositorySettings(ctx, repository, cfg.Settings); err != nil {
 		return plan, err
 	}
 	if err := e.applyLabels(ctx, repository, cfg.Labels); err != nil {
@@ -374,6 +421,8 @@ func createRequest(desired config.RepositoryConfig, repository githubapi.Reposit
 		AllowRebaseMerge:    desired.AllowRebaseMerge,
 		AllowAutoMerge:      desired.AllowAutoMerge,
 		DeleteBranchOnMerge: desired.DeleteBranchOnMerge,
+		HasDownloads:        desired.HasDownloads,
+		IsTemplate:          desired.IsTemplate,
 	}
 }
 
@@ -398,6 +447,34 @@ func (e *Engine) applyRepository(ctx context.Context, repository githubapi.Repos
 	}
 	if desired.DeleteBranchOnMerge != nil && *desired.DeleteBranchOnMerge != actual.DeleteBranchOnMerge {
 		request.DeleteBranchOnMerge = desired.DeleteBranchOnMerge
+		changed = true
+	}
+	if desired.AllowForking != nil && *desired.AllowForking != actual.AllowForking {
+		request.AllowForking = desired.AllowForking
+		changed = true
+	}
+	if desired.HasPullRequests != nil && *desired.HasPullRequests != actual.HasPullRequests {
+		request.HasPullRequests = desired.HasPullRequests
+		changed = true
+	}
+	if desired.PullRequestCreationPolicy != "" && desired.PullRequestCreationPolicy != actual.PullRequestCreationPolicy {
+		request.PullRequestCreationPolicy = desired.PullRequestCreationPolicy
+		changed = true
+	}
+	if desired.IsTemplate != nil && *desired.IsTemplate != actual.IsTemplate {
+		request.IsTemplate = desired.IsTemplate
+		changed = true
+	}
+	if desired.AllowUpdateBranch != nil && *desired.AllowUpdateBranch != actual.AllowUpdateBranch {
+		request.AllowUpdateBranch = desired.AllowUpdateBranch
+		changed = true
+	}
+	if desired.UseSquashPRTitleAsDefault != nil && *desired.UseSquashPRTitleAsDefault != actual.UseSquashPRTitleAsDefault {
+		request.UseSquashPRTitleAsDefault = desired.UseSquashPRTitleAsDefault
+		changed = true
+	}
+	if desired.WebCommitSignoffRequired != nil && *desired.WebCommitSignoffRequired != actual.WebCommitSignoffRequired {
+		request.WebCommitSignoffRequired = desired.WebCommitSignoffRequired
 		changed = true
 	}
 	if desired.Description != nil && *desired.Description != actual.Description {
@@ -577,7 +654,7 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 	defer func() { _ = workspace.Close() }()
 
 	var sourceDir string
-	if cfg.Seed != nil {
+	if cfg.Seed != nil && (cfg.Seed.Template != nil || cfg.Seed.Directory != nil || cfg.Seed.ZIP != nil) {
 		var source seed.Source
 		var materializer seed.TemplateMaterializer
 		switch {
@@ -613,25 +690,13 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 			return err
 		}
 	}
+	if cfg.Seed != nil && cfg.Seed.Initialize != nil {
+		if err := materializeInitialization(ctx, content, repository.Name, sourceDir, cfg.Seed.Initialize); err != nil {
+			return err
+		}
+	}
 
 	commandWorkspace := &seed.Workspace{Root: sourceDir}
-	for _, command := range cfg.Commands {
-		timeout, timeoutErr := command.TimeoutDuration()
-		if timeoutErr != nil {
-			return fmt.Errorf("command %q timeout: %w", command.ID, timeoutErr)
-		}
-		if _, runErr := seed.RunApprovedCommand(ctx, commandWorkspace, seed.Command{
-			ID: command.ID, Program: command.Program, Args: command.Args,
-			CWD: command.CWD, Timeout: timeout, Environment: command.Environment,
-		}, seed.CommandOptions{ApprovedCommandIDs: options.ApprovedCommandIDs, OutputLimit: 64 << 10}); runErr != nil {
-			return runErr
-		}
-	}
-
-	files, err := stagedFiles(sourceDir)
-	if err != nil {
-		return err
-	}
 	branch := info.DefaultBranch
 	if branch == "" {
 		branch = cfg.Repository.DefaultBranch
@@ -639,19 +704,230 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 	if branch == "" {
 		branch = "main"
 	}
+	completed := map[string]bool{}
 	if existing {
-		files, err = filterAndValidateExistingFiles(ctx, e.service, repository, branch, files, overwriteSet(cfg.Seed))
+		completed, err = readCompletedCommands(ctx, e.service, repository, branch)
 		if err != nil {
-			return err
+			return fmt.Errorf("read command completion state: %w", err)
+		}
+	}
+	newlyCompleted := make([]string, 0, len(cfg.Commands))
+	for _, command := range cfg.Commands {
+		if completed[command.ID] {
+			continue
+		}
+		timeout, timeoutErr := command.TimeoutDuration()
+		if timeoutErr != nil {
+			return fmt.Errorf("command %q timeout: %w", command.ID, timeoutErr)
+		}
+		result, runErr := seed.RunApprovedCommand(ctx, commandWorkspace, seed.Command{
+			ID: command.ID, Program: command.Program, Args: command.Args,
+			CWD: command.CWD, Timeout: timeout, Environment: command.Environment,
+		}, seed.CommandOptions{ApprovedCommandIDs: options.ApprovedCommandIDs, Redactions: secretRedactions(cfg), OutputLimit: 64 << 10})
+		if runErr != nil {
+			return commandFailure(command.ID, result, runErr)
+		}
+		completed[command.ID] = true
+		newlyCompleted = append(newlyCompleted, command.ID)
+	}
+	if len(newlyCompleted) > 0 {
+		completedIDs := make([]string, 0, len(completed))
+		for id := range completed {
+			completedIDs = append(completedIDs, id)
+		}
+		sort.Strings(completedIDs)
+		state, marshalErr := json.MarshalIndent(commandCompletionState{Version: 1, Completed: completedIDs}, "", "  ")
+		if marshalErr != nil {
+			return fmt.Errorf("encode command completion state: %w", marshalErr)
+		}
+		statePath := filepath.Join(sourceDir, filepath.FromSlash(commandStatePath))
+		if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+			return fmt.Errorf("create command state directory: %w", err)
+		}
+		if err := os.WriteFile(statePath, append(state, '\n'), 0o600); err != nil {
+			return fmt.Errorf("write command completion state: %w", err)
+		}
+	}
+	files, err := stagedFiles(sourceDir)
+	if err != nil {
+		return err
+	}
+	emptyRepository := false
+	if existing {
+		overwrite := overwriteSet(cfg.Seed)
+		if len(cfg.Commands) > 0 {
+			overwrite[commandStatePath] = true
+		}
+		filteredFiles, filterErr := filterAndValidateExistingFiles(ctx, e.service, repository, branch, files, overwrite)
+		if filterErr != nil {
+			if githubapi.IsEmptyRepository(filterErr) || (info.DefaultBranch == "" && githubapi.IsNotFound(filterErr)) {
+				emptyRepository = true
+			} else {
+				return filterErr
+			}
+		} else {
+			files = filteredFiles
 		}
 	}
 	if len(files) == 0 {
 		return nil
 	}
+	if emptyRepository {
+		contents, ok := e.service.(contentsService)
+		if !ok {
+			return errors.New("GitHub Contents API is unavailable for empty repository initialization")
+		}
+		first := 0
+		for index, file := range files {
+			if file.Path == "README.md" {
+				first = index
+				break
+			}
+		}
+		if err := contents.CreateContentsFile(ctx, repository, files[first], branch, "chore: initialize repository"); err != nil {
+			return fmt.Errorf("initialize empty repository with %q: %w", files[first].Path, err)
+		}
+		files = append(files[:first], files[first+1:]...)
+		if len(files) == 0 {
+			return nil
+		}
+	}
 	if _, err := content.CommitFiles(ctx, repository, branch, "chore: bootstrap repository", files); err != nil {
 		return fmt.Errorf("commit bootstrap files: %w", err)
 	}
 	return nil
+}
+
+const commandStatePath = ".gh-repospec/command-state.json"
+
+type commandCompletionState struct {
+	Version   int      `json:"version"`
+	Completed []string `json:"completed"`
+}
+
+type contentsService interface {
+	CreateContentsFile(context.Context, githubapi.Repository, githubapi.File, string, string) error
+}
+
+type gitignoreTemplateService interface {
+	GetGitignoreTemplate(context.Context, string) (githubapi.GitignoreTemplate, error)
+}
+
+func materializeInitialization(ctx context.Context, service ContentService, repositoryName, sourceDir string, initialize *config.InitializeSeed) error {
+	if initialize.GitignoreTemplate != "" {
+		templates, ok := service.(gitignoreTemplateService)
+		if !ok {
+			return errors.New("GitHub gitignore template API is unavailable")
+		}
+		template, err := templates.GetGitignoreTemplate(ctx, initialize.GitignoreTemplate)
+		if err != nil {
+			return fmt.Errorf("get official %s gitignore template: %w", initialize.GitignoreTemplate, err)
+		}
+		if err := os.WriteFile(filepath.Join(sourceDir, ".gitignore"), []byte(template.Source), 0o600); err != nil {
+			return fmt.Errorf("stage official gitignore template: %w", err)
+		}
+	}
+	readme := initialize.Readme == nil || *initialize.Readme
+	if readme {
+		content := fmt.Sprintf("# %s\n\nRepository initialized with gh-repospec.\n", repositoryName)
+		if err := os.WriteFile(filepath.Join(sourceDir, "README.md"), []byte(content), 0o600); err != nil {
+			return fmt.Errorf("stage default README: %w", err)
+		}
+	}
+	return nil
+}
+
+// secretRedactions returns the value of every declared secret whose source
+// environment variable is set, so command output never repeats one. An
+// allowlisted environment variable can carry the same value into a command.
+func secretRedactions(cfg *config.Config) []string {
+	var secrets []config.SecretRef
+	if cfg.Actions != nil {
+		secrets = append(secrets, cfg.Actions.Secrets...)
+	}
+	if cfg.Agents != nil {
+		secrets = append(secrets, cfg.Agents.Secrets...)
+	}
+	redactions := make([]string, 0, len(secrets))
+	for _, secret := range secrets {
+		if value, ok := os.LookupEnv(secret.SourceEnv); ok && value != "" {
+			redactions = append(redactions, value)
+		}
+	}
+	return redactions
+}
+
+// commandFailure attaches a failed command's captured, already redacted
+// output to its error. Without it the user sees only an exit status and has
+// no way to tell why the program failed.
+func commandFailure(id string, result seed.CommandResult, err error) error {
+	output := strings.TrimRight(result.Output, "\r\n")
+	if output == "" {
+		return err
+	}
+	if result.OutputTrimmed {
+		output += "\n[output truncated at the limit]"
+	}
+	return fmt.Errorf("%w\ncommand %q output:\n%s", err, id, output)
+}
+
+func readCompletedCommands(ctx context.Context, service Service, repository githubapi.Repository, branch string) (map[string]bool, error) {
+	completed := map[string]bool{}
+	trees, ok := service.(treeService)
+	if !ok || branch == "" {
+		return completed, nil
+	}
+	head, err := trees.GetBranchHead(ctx, repository, branch)
+	if githubapi.IsEmptyRepository(err) || githubapi.IsNotFound(err) {
+		return completed, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	commit, err := trees.GetCommit(ctx, repository, head.Object.SHA)
+	if err != nil {
+		return nil, err
+	}
+	tree, err := trees.GetTree(ctx, repository, commit.Tree.SHA, true)
+	if err != nil {
+		return nil, err
+	}
+	if tree.Truncated {
+		return nil, errors.New("repository tree is truncated")
+	}
+	var stateEntry *githubapi.GitTreeEntry
+	for index := range tree.Tree {
+		if tree.Tree[index].Path == commandStatePath && tree.Tree[index].Type == "blob" {
+			stateEntry = &tree.Tree[index]
+			break
+		}
+	}
+	if stateEntry == nil {
+		return completed, nil
+	}
+	blob, err := trees.GetBlob(ctx, repository, stateEntry.SHA)
+	if err != nil {
+		return nil, err
+	}
+	encoded := strings.Join(strings.Fields(blob.Content), "")
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode command state blob: %w", err)
+	}
+	var state commandCompletionState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parse command state: %w", err)
+	}
+	if state.Version != 1 {
+		return nil, fmt.Errorf("unsupported command state version %d", state.Version)
+	}
+	for _, id := range state.Completed {
+		if id == "" {
+			return nil, errors.New("command state contains an empty completion ID")
+		}
+		completed[id] = true
+	}
+	return completed, nil
 }
 
 type templateMaterializer struct {
@@ -813,6 +1089,22 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("update selected Actions and reusable workflows for %s: %w", repository, err)
 		}
 	}
+	if desired.OIDCSubjectCustomization != nil {
+		api, ok := e.service.(oidcCustomizationService)
+		if !ok {
+			return errors.New("the Actions OIDC subject customization API is unavailable")
+		}
+		current, err := api.GetOIDCSubjectCustomization(ctx, repository)
+		if err != nil {
+			return fmt.Errorf("get Actions OIDC subject customization for %s: %w", repository, err)
+		}
+		wanted, _ := oidcCustomizationWrite(desired.OIDCSubjectCustomization, current)
+		if !oidcCustomizationMatches(wanted, current) {
+			if err := api.SetOIDCSubjectCustomization(ctx, repository, wanted); err != nil {
+				return fmt.Errorf("set Actions OIDC subject customization for %s: %w", repository, err)
+			}
+		}
+	}
 	if desired.DefaultWorkflowPermissions != "" || desired.CanApprovePullRequestWorkflows != nil {
 		workflow := githubapi.DefaultWorkflowPermissions{DefaultWorkflowPermissions: desired.DefaultWorkflowPermissions}
 		if desired.CanApprovePullRequestWorkflows != nil {
@@ -830,17 +1122,148 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 			return fmt.Errorf("set fork pull request approval for %s: %w", repository, err)
 		}
 	}
+	if desired.WorkflowAccessLevel != "" {
+		// Build already blocks this field on a public repository, because
+		// GitHub rejects the endpoint outright (HTTP 422) in that case; a
+		// visibility change to private has been applied before this stage.
+		current, err := e.service.GetWorkflowRepositoryAccess(ctx, repository)
+		if err != nil {
+			return fmt.Errorf("get workflow repository access for %s: %w", repository, err)
+		}
+		if current.AccessLevel != desired.WorkflowAccessLevel {
+			if err := e.service.UpdateWorkflowRepositoryAccess(ctx, repository, githubapi.WorkflowRepositoryAccess{AccessLevel: desired.WorkflowAccessLevel}); err != nil {
+				return fmt.Errorf("update workflow repository access for %s: %w", repository, err)
+			}
+		}
+	}
 	if err := e.applyActionVariables(ctx, repository, desired.Variables); err != nil {
 		return err
 	}
+	environmentAPI, hasEnvironmentAPI := e.service.(environmentService)
 	for _, environment := range desired.Environments {
-		if _, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, githubapi.EnvironmentRequest{}); err != nil {
+		request := environmentRequest(environment)
+		if _, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, request); err != nil {
 			return fmt.Errorf("ensure Actions environment %q: %w", environment.Name, err)
+		}
+		if environment.BranchPolicies != nil {
+			if !hasEnvironmentAPI {
+				return errors.New("deployment branch policy operations are unavailable from the configured GitHub service")
+			}
+			if err := applyEnvironmentBranchPolicies(ctx, environmentAPI, repository, environment); err != nil {
+				return err
+			}
+		}
+		if environment.CustomProtectionRules != nil {
+			protectionAPI, ok := e.service.(customDeploymentProtectionService)
+			if !ok {
+				return errors.New("custom deployment protection rule operations are unavailable from the configured GitHub service")
+			}
+			if err := applyCustomDeploymentProtectionRules(ctx, protectionAPI, repository, environment); err != nil {
+				return err
+			}
 		}
 	}
 	if len(desired.Secrets) > 0 {
 		if err := e.applySecrets(ctx, repository, desired.Secrets, secretTargetActions, options); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func environmentRequest(environment config.Environment) githubapi.EnvironmentRequest {
+	request := githubapi.EnvironmentRequest{WaitTimer: environment.WaitTimer, PreventSelfReview: environment.PreventSelfReview}
+	if environment.Reviewers != nil {
+		reviewers := make([]githubapi.EnvironmentReviewer, 0, len(*environment.Reviewers))
+		for _, reviewer := range *environment.Reviewers {
+			reviewers = append(reviewers, githubapi.EnvironmentReviewer{Type: reviewer.Type, ID: reviewer.ID})
+		}
+		request.Reviewers = &reviewers
+	}
+	if environment.DeploymentBranchPolicy != nil {
+		var policy *githubapi.DeploymentBranchPolicy
+		if !environment.DeploymentBranchPolicy.AllowAllBranches {
+			policy = &githubapi.DeploymentBranchPolicy{
+				ProtectedBranches:    environment.DeploymentBranchPolicy.ProtectedBranches,
+				CustomBranchPolicies: environment.DeploymentBranchPolicy.CustomBranchPolicies,
+			}
+		}
+		request.DeploymentBranchPolicy = &policy
+	}
+	return request
+}
+
+func applyEnvironmentBranchPolicies(ctx context.Context, service environmentService, repository githubapi.Repository, desired config.Environment) error {
+	actual, err := service.ListEnvironmentBranchPolicies(ctx, repository, desired.Name)
+	if err != nil {
+		return fmt.Errorf("list deployment branch policies for environment %q: %w", desired.Name, err)
+	}
+	// A pattern is identified by its type and name together: the same name can
+	// target a branch or a tag, and the update endpoint changes only the name,
+	// so a pattern whose type differs is deleted and created again.
+	wanted := make(map[string]bool, len(*desired.BranchPolicies))
+	for _, policy := range *desired.BranchPolicies {
+		wanted[branchPolicyKey(policy.Type, policy.Name)] = true
+	}
+	existing := make(map[string]bool, len(actual))
+	for _, policy := range actual {
+		key := branchPolicyKey(policy.Type, policy.Name)
+		if wanted[key] {
+			existing[key] = true
+			continue
+		}
+		if err := service.DeleteEnvironmentBranchPolicy(ctx, repository, desired.Name, policy.ID); err != nil {
+			return fmt.Errorf("delete deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
+		}
+	}
+	for _, policy := range *desired.BranchPolicies {
+		if existing[branchPolicyKey(policy.Type, policy.Name)] {
+			continue
+		}
+		if _, err := service.CreateEnvironmentBranchPolicy(ctx, repository, desired.Name, githubapi.EnvironmentBranchPolicyRequest{Name: policy.Name, Type: policy.Type}); err != nil {
+			return fmt.Errorf("create deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
+		}
+	}
+	return nil
+}
+
+func branchPolicyKey(policyType, name string) string {
+	return policyType + ":" + name
+}
+
+func applyCustomDeploymentProtectionRules(ctx context.Context, service customDeploymentProtectionService, repository githubapi.Repository, desired config.Environment) error {
+	actual, err := service.ListDeploymentProtectionRules(ctx, repository, desired.Name)
+	if err != nil {
+		return fmt.Errorf("list custom deployment protection rules for environment %q: %w", desired.Name, err)
+	}
+	wanted := make(map[string]bool, len(*desired.CustomProtectionRules))
+	for _, slug := range *desired.CustomProtectionRules {
+		wanted[slug] = true
+	}
+	missing := missingCustomProtectionSlugs(*desired.CustomProtectionRules, actual)
+	bySlug := make(map[string]int64)
+	if len(missing) > 0 {
+		integrations, err := service.ListAvailableDeploymentProtectionIntegrations(ctx, repository, desired.Name)
+		if err != nil {
+			return fmt.Errorf("list available custom deployment protection integrations for environment %q: %w", desired.Name, err)
+		}
+		for _, integration := range integrations {
+			bySlug[integration.Slug] = integration.ID
+		}
+		if unavailable := unavailableCustomProtectionSlugs(missing, integrations); len(unavailable) > 0 {
+			return fmt.Errorf("custom deployment protection integrations are unavailable for environment %q: %s", desired.Name, strings.Join(unavailable, ", "))
+		}
+	}
+	for _, rule := range actual {
+		if rule.Enabled && rule.App.Slug != "" && !wanted[rule.App.Slug] {
+			if err := service.DisableDeploymentProtectionRule(ctx, repository, desired.Name, rule.ID); err != nil {
+				return fmt.Errorf("disable custom deployment protection rule %q for environment %q: %w", rule.App.Slug, desired.Name, err)
+			}
+		}
+	}
+	for _, slug := range missing {
+		if _, err := service.EnableDeploymentProtectionIntegration(ctx, repository, desired.Name, bySlug[slug]); err != nil {
+			return fmt.Errorf("enable custom deployment protection rule %q for environment %q: %w", slug, desired.Name, err)
 		}
 	}
 	return nil
@@ -882,17 +1305,50 @@ func (e *Engine) applyPreContentSecurity(ctx context.Context, repository githuba
 		return nil
 	}
 	request := githubapi.SecurityAndAnalysisRequest{
-		SecretScanning:            securityFeature(desired.SecretScanning),
-		SecretScanningPushProtect: securityFeature(desired.PushProtection),
+		AdvancedSecurity:                      securityFeature(desired.AdvancedSecurity),
+		CodeSecurity:                          securityFeature(desired.CodeSecurity),
+		SecretScanning:                        securityFeature(desired.SecretScanning),
+		SecretScanningPushProtect:             securityFeature(desired.PushProtection),
+		SecretScanningAIDetection:             securityFeature(desired.SecretScanningAIDetection),
+		SecretScanningNonProviderPatterns:     securityFeature(desired.SecretScanningNonProviderPatterns),
+		SecretScanningDelegatedAlertDismissal: securityFeature(desired.SecretScanningDelegatedAlertDismissal),
+		SecretScanningDelegatedBypass:         securityFeature(desired.SecretScanningDelegatedBypass),
 	}
-	if request.SecretScanning != nil || request.SecretScanningPushProtect != nil {
+	if desired.DelegatedBypassReviewers != nil {
+		reviewers := make([]githubapi.SecretScanningDelegatedBypassReviewer, 0, len(*desired.DelegatedBypassReviewers))
+		for _, reviewer := range *desired.DelegatedBypassReviewers {
+			reviewers = append(reviewers, githubapi.SecretScanningDelegatedBypassReviewer{ReviewerID: reviewer.ReviewerID, ReviewerType: reviewer.ReviewerType, Mode: reviewer.Mode})
+		}
+		request.SecretScanningDelegatedBypassOptions = &githubapi.SecretScanningDelegatedBypassOptions{Reviewers: reviewers}
+	}
+	if securityAnalysisRequestSet(request) {
 		if _, err := e.service.UpdateSecurityAndAnalysis(ctx, repository, request); err != nil {
-			if (desired.SecretScanning == nil || !desired.SecretScanning.Optional) && (desired.PushProtection == nil || !desired.PushProtection.Optional) {
+			if securityAnalysisRequired(desired) {
 				return fmt.Errorf("update pre-content security settings for %s: %w", repository, err)
 			}
 		}
 	}
 	return nil
+}
+
+func securityAnalysisRequestSet(request githubapi.SecurityAndAnalysisRequest) bool {
+	return request.AdvancedSecurity != nil || request.CodeSecurity != nil || request.SecretScanning != nil ||
+		request.SecretScanningPushProtect != nil || request.SecretScanningAIDetection != nil ||
+		request.SecretScanningNonProviderPatterns != nil || request.SecretScanningDelegatedAlertDismissal != nil ||
+		request.SecretScanningDelegatedBypass != nil || request.SecretScanningDelegatedBypassOptions != nil
+}
+
+func securityAnalysisRequired(desired *config.SecurityConfig) bool {
+	for _, feature := range []*config.FeatureSetting{
+		desired.AdvancedSecurity, desired.CodeSecurity, desired.SecretScanning, desired.PushProtection,
+		desired.SecretScanningAIDetection, desired.SecretScanningNonProviderPatterns,
+		desired.SecretScanningDelegatedAlertDismissal, desired.SecretScanningDelegatedBypass,
+	} {
+		if feature != nil && !feature.Optional {
+			return true
+		}
+	}
+	return desired.DelegatedBypassReviewers != nil
 }
 
 // applyRemainingSecurity configures Dependabot, CodeQL default setup, AI Scan for
@@ -1279,6 +1735,18 @@ func appendRepositoryChanges(plan *Plan, desired config.RepositoryConfig, actual
 	appendBoolChange(plan, "repository.allowRebaseMerge", desired.AllowRebaseMerge, actual.AllowRebaseMerge)
 	appendBoolChange(plan, "repository.allowAutoMerge", desired.AllowAutoMerge, actual.AllowAutoMerge)
 	appendBoolChange(plan, "repository.deleteBranchOnMerge", desired.DeleteBranchOnMerge, actual.DeleteBranchOnMerge)
+	if desired.HasDownloads != nil && *desired.HasDownloads != actual.HasDownloads {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.hasDownloads", State: ChangeBlocked, Summary: "GitHub's repository update API does not support changing has_downloads on an existing repository"})
+	}
+	appendBoolChange(plan, "repository.allowForking", desired.AllowForking, actual.AllowForking)
+	appendBoolChange(plan, "repository.hasPullRequests", desired.HasPullRequests, actual.HasPullRequests)
+	if desired.PullRequestCreationPolicy != "" && desired.PullRequestCreationPolicy != actual.PullRequestCreationPolicy {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.pullRequestCreationPolicy", State: ChangeUpdate, Summary: desired.PullRequestCreationPolicy})
+	}
+	appendBoolChange(plan, "repository.isTemplate", desired.IsTemplate, actual.IsTemplate)
+	appendBoolChange(plan, "repository.allowUpdateBranch", desired.AllowUpdateBranch, actual.AllowUpdateBranch)
+	appendBoolChange(plan, "repository.useSquashPRTitleAsDefault", desired.UseSquashPRTitleAsDefault, actual.UseSquashPRTitleAsDefault)
+	appendBoolChange(plan, "repository.webCommitSignoffRequired", desired.WebCommitSignoffRequired, actual.WebCommitSignoffRequired)
 	if desired.MergeCommitTitle != "" && desired.MergeCommitTitle != actual.MergeCommitTitle {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.mergeCommitTitle", State: ChangeUpdate, Summary: desired.MergeCommitTitle})
 	}
@@ -1386,7 +1854,7 @@ func appendMilestoneChanges(ctx context.Context, service Service, plan *Plan, de
 	}
 }
 
-func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository, desiredRepository config.RepositoryConfig) {
+func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, repository githubapi.Repository, desiredRepository config.RepositoryConfig, info githubapi.RepositoryInfo) {
 	if desired == nil {
 		return
 	}
@@ -1420,6 +1888,29 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 		}
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.selectedActions", State: state, Summary: summary})
 	}
+	if desired.OIDCSubjectCustomization != nil {
+		state, summary := ChangeBlocked, "Actions OIDC subject customization API is unavailable"
+		immutableSubjectKept := false
+		if api, ok := service.(oidcCustomizationService); ok {
+			current, err := api.GetOIDCSubjectCustomization(ctx, repository)
+			if err != nil {
+				summary = capabilityError(err)
+			} else {
+				var wanted githubapi.OIDCSubjectCustomization
+				wanted, immutableSubjectKept = oidcCustomizationWrite(desired.OIDCSubjectCustomization, current)
+				if oidcCustomizationMatches(wanted, current) {
+					state, summary = ChangeNoop, "Actions OIDC subject customization already converged"
+				} else {
+					state, summary = ChangeUpdate, "update Actions OIDC subject customization"
+				}
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.oidcSubjectCustomization", State: state, Summary: summary})
+		if immutableSubjectKept {
+			plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.oidcSubjectCustomization.useImmutableSubject", State: ChangeManual, Summary: "GitHub keeps the immutable subject claim enabled and ignores a write turning it off; change it in the repository settings if GitHub allows it"})
+		}
+	}
+	appendWorkflowAccessLevelChange(ctx, service, plan, desired, desiredRepository, repository, &info)
 	appendForkPullRequestApprovalChange(plan, desired, desiredRepository, true)
 	variables, err := service.ListActionVariables(ctx, repository)
 	if err != nil {
@@ -1447,38 +1938,297 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 		appendSecretChange(plan, "actions.secret."+secret.Name, secret)
 	}
 	if len(desired.Environments) > 0 {
-		existing := map[string]bool{}
+		existing := map[string]githubapi.Environment{}
 		environments, err := service.ListEnvironments(ctx, repository)
 		known := err == nil
 		if known {
 			for _, environment := range environments {
-				existing[environment.Name] = true
+				existing[environment.Name] = environment
 			}
 		}
 		for _, environment := range desired.Environments {
-			state := ChangeUpdate
+			var state ChangeState
+			summary := "converge Actions environment settings"
 			if known {
 				state = ChangeCreate
-				if existing[environment.Name] {
-					state = ChangeNoop
+				if actual, ok := existing[environment.Name]; ok {
+					matches, compareErr := environmentSettingsMatch(ctx, service, repository, environment, actual)
+					switch {
+					case compareErr != nil:
+						state, summary = ChangeBlocked, capabilityError(compareErr)
+					case matches:
+						state, summary = ChangeNoop, "environment settings already converged"
+					default:
+						state, summary = ChangeUpdate, "converge Actions environment settings"
+					}
 				}
+			} else {
+				state, summary = ChangeBlocked, capabilityError(err)
 			}
-			plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: state, Summary: "ensure Actions environment"})
+			plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name, State: state, Summary: summary})
+			if environment.BranchPolicies != nil {
+				state, summary := ChangeBlocked, "deployment branch policy API is unavailable"
+				if actual, ok := existing[environment.Name]; known && ok {
+					if api, available := service.(environmentService); available {
+						policies, listErr := api.ListEnvironmentBranchPolicies(ctx, repository, environment.Name)
+						switch {
+						case listErr != nil:
+							summary = capabilityError(listErr)
+						case environmentBranchPoliciesMatch(environment.BranchPolicies, policies):
+							state, summary = ChangeNoop, "deployment branch patterns already converged"
+						default:
+							state, summary = ChangeUpdate, "converge deployment branch patterns"
+						}
+					} else {
+						_ = actual
+					}
+				} else if known && !ok {
+					state, summary = ChangeCreate, "create deployment branch patterns"
+				}
+				plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name + ".branchPolicies", State: state, Summary: summary})
+			}
+			if environment.CustomProtectionRules != nil {
+				state, summary := ChangeBlocked, "custom deployment protection rule API is unavailable"
+				if !known {
+					summary = capabilityError(err)
+				} else if _, ok := existing[environment.Name]; !ok {
+					state, summary = ChangeCreate, "create custom deployment protection rules with environment"
+				} else if api, available := service.(customDeploymentProtectionService); !available {
+					state = ChangeBlocked
+				} else {
+					rules, listErr := api.ListDeploymentProtectionRules(ctx, repository, environment.Name)
+					switch {
+					case listErr != nil:
+						summary = capabilityError(listErr)
+					case customDeploymentProtectionRulesMatch(*environment.CustomProtectionRules, rules):
+						state, summary = ChangeNoop, "custom deployment protection rules already converged"
+					default:
+						missing := missingCustomProtectionSlugs(*environment.CustomProtectionRules, rules)
+						if len(missing) == 0 {
+							state, summary = ChangeUpdate, "converge custom deployment protection rules"
+						} else {
+							integrations, integrationErr := api.ListAvailableDeploymentProtectionIntegrations(ctx, repository, environment.Name)
+							if integrationErr != nil {
+								summary = capabilityError(integrationErr)
+							} else if unavailable := unavailableCustomProtectionSlugs(missing, integrations); len(unavailable) > 0 {
+								summary = "custom protection app is unavailable for destination environment: " + strings.Join(unavailable, ", ")
+							} else {
+								state, summary = ChangeUpdate, "converge custom deployment protection rules"
+							}
+						}
+					}
+				}
+				plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: "actions.environment." + environment.Name + ".customProtectionRules", State: state, Summary: summary})
+			}
 		}
 	}
+}
+
+func environmentSettingsMatch(ctx context.Context, service Service, repository githubapi.Repository, desired config.Environment, actual githubapi.Environment) (bool, error) {
+	var actualWait int
+	var actualPrevent bool
+	actualReviewers := make([]config.EnvironmentReviewer, 0)
+	for _, rule := range actual.ProtectionRules {
+		switch rule.Type {
+		case "wait_timer":
+			actualWait = rule.WaitTimer
+		case "required_reviewers":
+			actualPrevent = rule.PreventSelfReview
+			for _, reviewer := range rule.Reviewers {
+				actualReviewers = append(actualReviewers, config.EnvironmentReviewer{Type: reviewer.Type, ID: reviewer.Reviewer.ID})
+			}
+		}
+	}
+	if desired.WaitTimer != nil && *desired.WaitTimer != actualWait || desired.PreventSelfReview != nil && *desired.PreventSelfReview != actualPrevent {
+		return false, nil
+	}
+	if desired.Reviewers != nil && !sameEnvironmentReviewers(*desired.Reviewers, actualReviewers) {
+		return false, nil
+	}
+	if desired.DeploymentBranchPolicy != nil {
+		policy := desired.DeploymentBranchPolicy
+		if policy.AllowAllBranches {
+			if actual.DeploymentBranchPolicy != nil {
+				return false, nil
+			}
+		} else if actual.DeploymentBranchPolicy == nil || actual.DeploymentBranchPolicy.ProtectedBranches != policy.ProtectedBranches || actual.DeploymentBranchPolicy.CustomBranchPolicies != policy.CustomBranchPolicies {
+			return false, nil
+		}
+	}
+	if desired.BranchPolicies != nil {
+		api, ok := service.(environmentService)
+		if !ok {
+			return false, errors.New("deployment branch policy API is unavailable")
+		}
+		actualPolicies, err := api.ListEnvironmentBranchPolicies(ctx, repository, desired.Name)
+		if err != nil {
+			return false, err
+		}
+		if !environmentBranchPoliciesMatch(desired.BranchPolicies, actualPolicies) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func oidcCustomizationRequest(desired *config.OIDCSubjectCustomizationConfig) githubapi.OIDCSubjectCustomization {
+	return githubapi.OIDCSubjectCustomization{
+		UseDefault: desired.UseDefault, IncludeClaimKeys: append([]string(nil), desired.IncludeClaimKeys...),
+		UseImmutableSubject: desired.UseImmutableSubject,
+	}
+}
+
+// oidcCustomizationWrite returns the customization apply writes. GitHub
+// enables the immutable subject claim for every repository created or renamed
+// after 2026-07-15 and answers a write turning it off with success while
+// keeping it on, so a declared false against a live true is dropped from the
+// request — the field is omitted on the wire and ignored by
+// oidcCustomizationMatches — and kept reports that it was, for plan to show
+// as manual instead of an update that never converges.
+func oidcCustomizationWrite(desired *config.OIDCSubjectCustomizationConfig, current githubapi.OIDCSubjectCustomization) (request githubapi.OIDCSubjectCustomization, kept bool) {
+	request = oidcCustomizationRequest(desired)
+	if request.UseImmutableSubject != nil && !*request.UseImmutableSubject && current.UseImmutableSubject != nil && *current.UseImmutableSubject {
+		request.UseImmutableSubject = nil
+		return request, true
+	}
+	return request, false
+}
+
+func oidcCustomizationMatches(desired, actual githubapi.OIDCSubjectCustomization) bool {
+	if desired.UseDefault != actual.UseDefault {
+		return false
+	}
+	if !desired.UseDefault && !sameStrings(desired.IncludeClaimKeys, actual.IncludeClaimKeys) {
+		return false
+	}
+	return desired.UseImmutableSubject == nil || actual.UseImmutableSubject != nil && *desired.UseImmutableSubject == *actual.UseImmutableSubject
+}
+
+func sameEnvironmentReviewers(a, b []config.EnvironmentReviewer) bool {
+	key := func(reviewer config.EnvironmentReviewer) string {
+		return fmt.Sprintf("%s:%d", reviewer.Type, reviewer.ID)
+	}
+	left := make([]string, len(a))
+	right := make([]string, len(b))
+	for i := range a {
+		left[i] = key(a[i])
+	}
+	for i := range b {
+		right[i] = key(b[i])
+	}
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
+}
+
+func environmentBranchPoliciesMatch(desired *[]config.EnvironmentBranchPolicy, actual []githubapi.EnvironmentBranchPolicy) bool {
+	if desired == nil || len(*desired) != len(actual) {
+		return false
+	}
+	wanted := make(map[string]bool, len(*desired))
+	for _, policy := range *desired {
+		wanted[branchPolicyKey(policy.Type, policy.Name)] = true
+	}
+	for _, policy := range actual {
+		key := branchPolicyKey(policy.Type, policy.Name)
+		if !wanted[key] {
+			return false
+		}
+		delete(wanted, key)
+	}
+	return len(wanted) == 0
+}
+
+func customDeploymentProtectionRulesMatch(desired []string, actual []githubapi.DeploymentProtectionRule) bool {
+	active := make([]string, 0, len(actual))
+	for _, rule := range actual {
+		if rule.Enabled && rule.App.Slug != "" {
+			active = append(active, rule.App.Slug)
+		}
+	}
+	return sameStrings(desired, active)
+}
+
+func missingCustomProtectionSlugs(desired []string, actual []githubapi.DeploymentProtectionRule) []string {
+	active := make(map[string]bool, len(actual))
+	for _, rule := range actual {
+		if rule.Enabled && rule.App.Slug != "" {
+			active[rule.App.Slug] = true
+		}
+	}
+	missing := make([]string, 0)
+	for _, slug := range desired {
+		if !active[slug] {
+			missing = append(missing, slug)
+		}
+	}
+	return missing
+}
+
+func unavailableCustomProtectionSlugs(desired []string, available []githubapi.AvailableDeploymentProtectionIntegration) []string {
+	bySlug := make(map[string]bool, len(available))
+	for _, integration := range available {
+		if integration.ID > 0 {
+			bySlug[integration.Slug] = true
+		}
+	}
+	unavailable := make([]string, 0)
+	for _, slug := range desired {
+		if !bySlug[slug] {
+			unavailable = append(unavailable, slug)
+		}
+	}
+	sort.Strings(unavailable)
+	return unavailable
 }
 
 func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, desired *config.SecurityConfig, repository githubapi.Repository, info githubapi.RepositoryInfo, exists bool) {
 	if desired == nil {
 		return
 	}
-	secretScanningCurrent, secretScanningKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanning })
-	appendFeatureChange(plan, StageSecurityPre, "security.secretScanning", desired.SecretScanning, "", secretScanningCurrent, exists && secretScanningKnown)
-
-	pushProtectionCurrent, pushProtectionKnown := securityAndAnalysisFeatureEnabled(info, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
-		return s.SecretScanningPushProtect
-	})
-	appendFeatureChange(plan, StageSecurityPre, "security.pushProtection", desired.PushProtection, "", pushProtectionCurrent, exists && pushProtectionKnown)
+	securityFeatures := []struct {
+		name          string
+		desired       *config.FeatureSetting
+		selectFeature func(*githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature
+	}{
+		{"advancedSecurity", desired.AdvancedSecurity, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.AdvancedSecurity }},
+		{"codeSecurity", desired.CodeSecurity, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.CodeSecurity }},
+		{"secretScanning", desired.SecretScanning, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature { return s.SecretScanning }},
+		{"pushProtection", desired.PushProtection, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+			return s.SecretScanningPushProtect
+		}},
+		{"secretScanningAIDetection", desired.SecretScanningAIDetection, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+			return s.SecretScanningAIDetection
+		}},
+		{"secretScanningNonProviderPatterns", desired.SecretScanningNonProviderPatterns, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+			return s.SecretScanningNonProviderPatterns
+		}},
+		{"secretScanningDelegatedAlertDismissal", desired.SecretScanningDelegatedAlertDismissal, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+			return s.SecretScanningDelegatedAlertDismissal
+		}},
+		{"secretScanningDelegatedBypass", desired.SecretScanningDelegatedBypass, func(s *githubapi.SecurityAndAnalysisStatus) *githubapi.SecurityFeature {
+			return s.SecretScanningDelegatedBypass
+		}},
+	}
+	for _, item := range securityFeatures {
+		current, known := securityAndAnalysisFeatureEnabled(info, item.selectFeature)
+		appendFeatureChange(plan, StageSecurityPre, "security."+item.name, item.desired, "", current, exists && known)
+	}
+	if desired.DelegatedBypassReviewers != nil {
+		state, summary := ChangeBlocked, "GitHub did not report delegated bypass reviewer options"
+		if info.SecurityAndAnalysis != nil && info.SecurityAndAnalysis.SecretScanningDelegatedBypassOptions != nil {
+			actual := info.SecurityAndAnalysis.SecretScanningDelegatedBypassOptions.Reviewers
+			want := make([]githubapi.SecretScanningDelegatedBypassReviewer, 0, len(*desired.DelegatedBypassReviewers))
+			for _, reviewer := range *desired.DelegatedBypassReviewers {
+				want = append(want, githubapi.SecretScanningDelegatedBypassReviewer{ReviewerID: reviewer.ReviewerID, ReviewerType: reviewer.ReviewerType, Mode: reviewer.Mode})
+			}
+			state, summary = ChangeUpdate, "converge delegated bypass reviewers"
+			if sameDelegatedBypassReviewers(actual, want) {
+				state, summary = ChangeNoop, "delegated bypass reviewers already converged"
+			}
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageSecurityPre, Resource: "security.delegatedBypassReviewers", State: state, Summary: summary})
+	}
 
 	// alertsEnabled/alertsKnown answers "will alerts effectively be on once
 	// this run finishes" (declared value takes precedence, since this run may
@@ -1543,6 +2293,28 @@ func appendSecurityChanges(ctx context.Context, service Service, plan *Plan, des
 		}
 	}
 	appendFeatureChange(plan, StageSecurity, "security.privateVulnerabilityReporting", desired.PrivateVulnerabilityReporting, "", privateVRCurrent, privateVRKnown)
+}
+
+func sameDelegatedBypassReviewers(a, b []githubapi.SecretScanningDelegatedBypassReviewer) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	key := func(reviewer githubapi.SecretScanningDelegatedBypassReviewer) string {
+		mode := reviewer.Mode
+		if mode == "" {
+			mode = "ALWAYS"
+		}
+		return fmt.Sprintf("%d|%s|%s", reviewer.ReviewerID, reviewer.ReviewerType, mode)
+	}
+	left := make([]string, len(a))
+	right := make([]string, len(b))
+	for index := range a {
+		left[index] = key(a[index])
+		right[index] = key(b[index])
+	}
+	sort.Strings(left)
+	sort.Strings(right)
+	return slices.Equal(left, right)
 }
 
 // securityAndAnalysisFeatureEnabled reads one feature's status out of a
@@ -1752,6 +2524,42 @@ func appendForkPullRequestApprovalChange(plan *Plan, desired *config.ActionsConf
 	plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions.forkPullRequestApproval", State: ChangeUpdate, Summary: summary})
 }
 
+// appendWorkflowAccessLevelChange evaluates actions.workflowAccessLevel. GitHub
+// applies the workflow access policy only to private and internal
+// repositories and answers HTTP 422 for a public one — the inverse of
+// appendForkPullRequestApprovalChange — so a declaration on a public
+// repository is blocked before any network call. A repository that this run
+// changes from public to private cannot be read yet either, so it is planned
+// as an update that apply makes after the visibility change. live is nil when
+// the repository does not exist yet.
+func appendWorkflowAccessLevelChange(ctx context.Context, service Service, plan *Plan, desired *config.ActionsConfig, desiredRepository config.RepositoryConfig, repository githubapi.Repository, live *githubapi.RepositoryInfo) {
+	if desired.WorkflowAccessLevel == "" {
+		return
+	}
+	const resource = "actions.workflowAccessLevel"
+	if desiredRepository.Visibility == "public" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeBlocked, Summary: "GitHub applies workflow access only to private and internal repositories"})
+		return
+	}
+	if live == nil {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: "configure after repository creation"})
+		return
+	}
+	if !live.Private && live.Visibility != "internal" {
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: "set to " + desired.WorkflowAccessLevel + " after the visibility change"})
+		return
+	}
+	current, err := service.GetWorkflowRepositoryAccess(ctx, repository)
+	switch {
+	case err != nil:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeBlocked, Summary: capabilityError(err)})
+	case current.AccessLevel != desired.WorkflowAccessLevel:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeUpdate, Summary: desired.WorkflowAccessLevel})
+	default:
+		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: resource, State: ChangeNoop, Summary: "already set to " + desired.WorkflowAccessLevel})
+	}
+}
+
 func appendRulesetChanges(ctx context.Context, service Service, plan *Plan, desired []config.RulesetConfig, repository githubapi.Repository, resolver *bypassResolver) {
 	if len(desired) == 0 {
 		return
@@ -1843,18 +2651,36 @@ func appendSecretChange(plan *Plan, resource string, secret config.SecretRef) {
 	plan.Changes = append(plan.Changes, Change{Stage: StageAutomation, Resource: resource, State: ChangeUpdate, Summary: "converge encrypted secret", Opaque: true})
 }
 
-func appendSeedChanges(plan *Plan, cfg *config.Config) {
+func appendSeedChanges(ctx context.Context, service Service, plan *Plan, cfg *config.Config, repository githubapi.Repository, branch string, exists bool) {
 	if cfg.Seed != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageFiles, Resource: "seed", State: ChangeManual, Summary: "seed content will be staged before upload"})
 	}
+	if branch == "" {
+		branch = cfg.Repository.DefaultBranch
+	}
+	if branch == "" {
+		branch = "main"
+	}
+	completed := map[string]bool{}
+	if exists && len(cfg.Commands) > 0 {
+		var err error
+		completed, err = readCompletedCommands(ctx, service, repository, branch)
+		if err != nil {
+			plan.Changes = append(plan.Changes, Change{Stage: StageFiles, Resource: "command.state", State: ChangeBlocked, Summary: "cannot read command completion state: " + err.Error()})
+		}
+	}
 	for _, command := range cfg.Commands {
-		plan.Changes = append(plan.Changes, Change{Stage: StageFiles, Resource: "command." + command.ID, State: ChangeManual, Summary: "requires --approve-command " + command.ID})
+		state, summary := ChangeManual, "requires --approve-command "+command.ID
+		if completed[command.ID] {
+			state, summary = ChangeNoop, "command already completed on this repository"
+		}
+		plan.Changes = append(plan.Changes, Change{Stage: StageFiles, Resource: "command." + command.ID, State: state, Summary: summary})
 	}
 }
 
 func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg *config.Config, repository githubapi.Repository, resolver *bypassResolver) {
 	if cfg.Seed != nil || len(cfg.Commands) > 0 {
-		appendSeedChanges(plan, cfg)
+		appendSeedChanges(ctx, service, plan, cfg, repository, cfg.Repository.DefaultBranch, false)
 	}
 	if cfg.Repository.ReleaseImmutability != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "repository.releaseImmutability", State: ChangeUpdate, Summary: "configure after repository creation"})
@@ -1870,8 +2696,10 @@ func appendDeferredChanges(ctx context.Context, service Service, plan *Plan, cfg
 	}
 	if cfg.Actions != nil {
 		plan.Changes = append(plan.Changes, Change{Stage: StageSettings, Resource: "actions", State: ChangeUpdate, Summary: "configure after repository creation"})
+		appendWorkflowAccessLevelChange(ctx, service, plan, cfg.Actions, cfg.Repository, repository, nil)
 		appendForkPullRequestApprovalChange(plan, cfg.Actions, cfg.Repository, false)
 	}
+	appendRepositorySettingsChanges(ctx, service, plan, cfg.Settings, repository, false, true)
 	appendSecurityChanges(ctx, service, plan, cfg.Security, repository, githubapi.RepositoryInfo{}, false)
 	for _, ruleset := range cfg.Rulesets {
 		plan.Changes = append(plan.Changes, Change{Stage: StageRulesets, Resource: "ruleset." + ruleset.Name, State: ChangeCreate, Summary: "create after repository initialization"})

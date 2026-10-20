@@ -2,6 +2,8 @@
 package githubapi
 
 import (
+	"errors"
+	"strings"
 	"time"
 )
 
@@ -20,30 +22,38 @@ func (r Repository) String() string { return r.Owner + "/" + r.Name }
 // RepositoryInfo is the subset of repository state needed by the planner
 // and the importer.
 type RepositoryInfo struct {
-	ID                       int64    `json:"id"`
-	Owner                    Owner    `json:"owner"`
-	Name                     string   `json:"name"`
-	FullName                 string   `json:"full_name"`
-	Description              string   `json:"description"`
-	Homepage                 string   `json:"homepage"`
-	Private                  bool     `json:"private"`
-	Visibility               string   `json:"visibility"`
-	DefaultBranch            string   `json:"default_branch"`
-	Archived                 bool     `json:"archived"`
-	Topics                   []string `json:"topics"`
-	HasIssues                bool     `json:"has_issues"`
-	HasProjects              bool     `json:"has_projects"`
-	HasWiki                  bool     `json:"has_wiki"`
-	HasDiscussions           bool     `json:"has_discussions"`
-	AllowSquashMerge         bool     `json:"allow_squash_merge"`
-	AllowMergeCommit         bool     `json:"allow_merge_commit"`
-	AllowRebaseMerge         bool     `json:"allow_rebase_merge"`
-	AllowAutoMerge           bool     `json:"allow_auto_merge"`
-	DeleteBranchOnMerge      bool     `json:"delete_branch_on_merge"`
-	MergeCommitTitle         string   `json:"merge_commit_title"`
-	MergeCommitMessage       string   `json:"merge_commit_message"`
-	SquashMergeCommitTitle   string   `json:"squash_merge_commit_title"`
-	SquashMergeCommitMessage string   `json:"squash_merge_commit_message"`
+	ID                        int64    `json:"id"`
+	Owner                     Owner    `json:"owner"`
+	Name                      string   `json:"name"`
+	FullName                  string   `json:"full_name"`
+	Description               string   `json:"description"`
+	Homepage                  string   `json:"homepage"`
+	Private                   bool     `json:"private"`
+	Visibility                string   `json:"visibility"`
+	DefaultBranch             string   `json:"default_branch"`
+	Archived                  bool     `json:"archived"`
+	Topics                    []string `json:"topics"`
+	HasIssues                 bool     `json:"has_issues"`
+	HasProjects               bool     `json:"has_projects"`
+	HasWiki                   bool     `json:"has_wiki"`
+	HasDiscussions            bool     `json:"has_discussions"`
+	AllowSquashMerge          bool     `json:"allow_squash_merge"`
+	AllowMergeCommit          bool     `json:"allow_merge_commit"`
+	AllowRebaseMerge          bool     `json:"allow_rebase_merge"`
+	AllowAutoMerge            bool     `json:"allow_auto_merge"`
+	DeleteBranchOnMerge       bool     `json:"delete_branch_on_merge"`
+	HasDownloads              bool     `json:"has_downloads"`
+	AllowForking              bool     `json:"allow_forking"`
+	HasPullRequests           bool     `json:"has_pull_requests"`
+	PullRequestCreationPolicy string   `json:"pull_request_creation_policy"`
+	IsTemplate                bool     `json:"is_template"`
+	AllowUpdateBranch         bool     `json:"allow_update_branch"`
+	UseSquashPRTitleAsDefault bool     `json:"use_squash_pr_title_as_default"`
+	WebCommitSignoffRequired  bool     `json:"web_commit_signoff_required"`
+	MergeCommitTitle          string   `json:"merge_commit_title"`
+	MergeCommitMessage        string   `json:"merge_commit_message"`
+	SquashMergeCommitTitle    string   `json:"squash_merge_commit_title"`
+	SquashMergeCommitMessage  string   `json:"squash_merge_commit_message"`
 	// SecurityAndAnalysis is nil when GitHub omits the block entirely (a
 	// repository type that does not support it). Import reports secretScanning
 	// and pushProtection as unavailable rather than false in that case.
@@ -54,9 +64,15 @@ type RepositoryInfo struct {
 // Get a repository. Its shape mirrors SecurityAndAnalysisRequest, which is
 // used only for the write.
 type SecurityAndAnalysisStatus struct {
-	AdvancedSecurity          *SecurityFeature `json:"advanced_security,omitempty"`
-	SecretScanning            *SecurityFeature `json:"secret_scanning,omitempty"`
-	SecretScanningPushProtect *SecurityFeature `json:"secret_scanning_push_protection,omitempty"`
+	AdvancedSecurity                      *SecurityFeature                      `json:"advanced_security,omitempty"`
+	CodeSecurity                          *SecurityFeature                      `json:"code_security,omitempty"`
+	SecretScanning                        *SecurityFeature                      `json:"secret_scanning,omitempty"`
+	SecretScanningPushProtect             *SecurityFeature                      `json:"secret_scanning_push_protection,omitempty"`
+	SecretScanningAIDetection             *SecurityFeature                      `json:"secret_scanning_ai_detection,omitempty"`
+	SecretScanningNonProviderPatterns     *SecurityFeature                      `json:"secret_scanning_non_provider_patterns,omitempty"`
+	SecretScanningDelegatedAlertDismissal *SecurityFeature                      `json:"secret_scanning_delegated_alert_dismissal,omitempty"`
+	SecretScanningDelegatedBypass         *SecurityFeature                      `json:"secret_scanning_delegated_bypass,omitempty"`
+	SecretScanningDelegatedBypassOptions  *SecretScanningDelegatedBypassOptions `json:"secret_scanning_delegated_bypass_options,omitempty"`
 }
 
 // Owner identifies the account that owns a repository.
@@ -79,31 +95,40 @@ type CreateRepositoryRequest struct {
 	AllowRebaseMerge    *bool  `json:"allow_rebase_merge,omitempty"`
 	AllowAutoMerge      *bool  `json:"allow_auto_merge,omitempty"`
 	DeleteBranchOnMerge *bool  `json:"delete_branch_on_merge,omitempty"`
+	HasDownloads        *bool  `json:"has_downloads,omitempty"`
+	IsTemplate          *bool  `json:"is_template,omitempty"`
 }
 
 // UpdateRepositoryRequest contains only fields that GitHub's update repository API supports.
 // Pointer and pointer-like fields are sent only when set; false and empty-string
 // values on those fields are meaningful (they clear or disable) rather than absent.
 type UpdateRepositoryRequest struct {
-	Description              *string `json:"description,omitempty"`
-	Homepage                 *string `json:"homepage,omitempty"`
-	Private                  *bool   `json:"private,omitempty"`
-	Visibility               string  `json:"visibility,omitempty"`
-	DefaultBranch            string  `json:"default_branch,omitempty"`
-	Archived                 *bool   `json:"archived,omitempty"`
-	HasIssues                *bool   `json:"has_issues,omitempty"`
-	HasProjects              *bool   `json:"has_projects,omitempty"`
-	HasWiki                  *bool   `json:"has_wiki,omitempty"`
-	HasDiscussions           *bool   `json:"has_discussions,omitempty"`
-	AllowSquashMerge         *bool   `json:"allow_squash_merge,omitempty"`
-	AllowMergeCommit         *bool   `json:"allow_merge_commit,omitempty"`
-	AllowRebaseMerge         *bool   `json:"allow_rebase_merge,omitempty"`
-	AllowAutoMerge           *bool   `json:"allow_auto_merge,omitempty"`
-	DeleteBranchOnMerge      *bool   `json:"delete_branch_on_merge,omitempty"`
-	MergeCommitTitle         string  `json:"merge_commit_title,omitempty"`
-	MergeCommitMessage       string  `json:"merge_commit_message,omitempty"`
-	SquashMergeCommitTitle   string  `json:"squash_merge_commit_title,omitempty"`
-	SquashMergeCommitMessage string  `json:"squash_merge_commit_message,omitempty"`
+	Description               *string `json:"description,omitempty"`
+	Homepage                  *string `json:"homepage,omitempty"`
+	Private                   *bool   `json:"private,omitempty"`
+	Visibility                string  `json:"visibility,omitempty"`
+	DefaultBranch             string  `json:"default_branch,omitempty"`
+	Archived                  *bool   `json:"archived,omitempty"`
+	HasIssues                 *bool   `json:"has_issues,omitempty"`
+	HasProjects               *bool   `json:"has_projects,omitempty"`
+	HasWiki                   *bool   `json:"has_wiki,omitempty"`
+	HasDiscussions            *bool   `json:"has_discussions,omitempty"`
+	AllowSquashMerge          *bool   `json:"allow_squash_merge,omitempty"`
+	AllowMergeCommit          *bool   `json:"allow_merge_commit,omitempty"`
+	AllowRebaseMerge          *bool   `json:"allow_rebase_merge,omitempty"`
+	AllowAutoMerge            *bool   `json:"allow_auto_merge,omitempty"`
+	DeleteBranchOnMerge       *bool   `json:"delete_branch_on_merge,omitempty"`
+	AllowForking              *bool   `json:"allow_forking,omitempty"`
+	HasPullRequests           *bool   `json:"has_pull_requests,omitempty"`
+	PullRequestCreationPolicy string  `json:"pull_request_creation_policy,omitempty"`
+	IsTemplate                *bool   `json:"is_template,omitempty"`
+	AllowUpdateBranch         *bool   `json:"allow_update_branch,omitempty"`
+	UseSquashPRTitleAsDefault *bool   `json:"use_squash_pr_title_as_default,omitempty"`
+	WebCommitSignoffRequired  *bool   `json:"web_commit_signoff_required,omitempty"`
+	MergeCommitTitle          string  `json:"merge_commit_title,omitempty"`
+	MergeCommitMessage        string  `json:"merge_commit_message,omitempty"`
+	SquashMergeCommitTitle    string  `json:"squash_merge_commit_title,omitempty"`
+	SquashMergeCommitMessage  string  `json:"squash_merge_commit_message,omitempty"`
 }
 
 // ActionsPermissions is the repository Actions policy.
@@ -117,6 +142,14 @@ type ActionsPermissions struct {
 type DefaultWorkflowPermissions struct {
 	DefaultWorkflowPermissions string `json:"default_workflow_permissions"`
 	CanApprovePullRequest      bool   `json:"can_approve_pull_request_reviews"`
+}
+
+// OIDCSubjectCustomization is the repository-level Actions OIDC subject
+// claim template returned by GitHub's customization endpoint.
+type OIDCSubjectCustomization struct {
+	UseDefault          bool     `json:"use_default"`
+	IncludeClaimKeys    []string `json:"include_claim_keys,omitempty"`
+	UseImmutableSubject *bool    `json:"use_immutable_subject,omitempty"`
 }
 
 // SelectedActionsRequest configures the Actions and reusable workflows allowed to run
@@ -143,6 +176,12 @@ type SelectedActions struct {
 // the PUT body the way ActionsPermissions.SHAPinningRequired can be.
 type ForkPullRequestApproval struct {
 	ApprovalPolicy string `json:"approval_policy"`
+}
+
+// WorkflowRepositoryAccess controls which repositories may access actions and
+// reusable workflows hosted in this repository.
+type WorkflowRepositoryAccess struct {
+	AccessLevel string `json:"access_level"`
 }
 
 // Team is the subset of an organization team needed to resolve a ruleset
@@ -209,9 +248,25 @@ type BypassActor struct {
 
 // SecurityAndAnalysisRequest is the security_and_analysis block of Update a repository.
 type SecurityAndAnalysisRequest struct {
-	AdvancedSecurity          *SecurityFeature `json:"advanced_security,omitempty"`
-	SecretScanning            *SecurityFeature `json:"secret_scanning,omitempty"`
-	SecretScanningPushProtect *SecurityFeature `json:"secret_scanning_push_protection,omitempty"`
+	AdvancedSecurity                      *SecurityFeature                      `json:"advanced_security,omitempty"`
+	CodeSecurity                          *SecurityFeature                      `json:"code_security,omitempty"`
+	SecretScanning                        *SecurityFeature                      `json:"secret_scanning,omitempty"`
+	SecretScanningPushProtect             *SecurityFeature                      `json:"secret_scanning_push_protection,omitempty"`
+	SecretScanningAIDetection             *SecurityFeature                      `json:"secret_scanning_ai_detection,omitempty"`
+	SecretScanningNonProviderPatterns     *SecurityFeature                      `json:"secret_scanning_non_provider_patterns,omitempty"`
+	SecretScanningDelegatedAlertDismissal *SecurityFeature                      `json:"secret_scanning_delegated_alert_dismissal,omitempty"`
+	SecretScanningDelegatedBypass         *SecurityFeature                      `json:"secret_scanning_delegated_bypass,omitempty"`
+	SecretScanningDelegatedBypassOptions  *SecretScanningDelegatedBypassOptions `json:"secret_scanning_delegated_bypass_options,omitempty"`
+}
+
+type SecretScanningDelegatedBypassOptions struct {
+	Reviewers []SecretScanningDelegatedBypassReviewer `json:"reviewers"`
+}
+
+type SecretScanningDelegatedBypassReviewer struct {
+	ReviewerID   int64  `json:"reviewer_id"`
+	ReviewerType string `json:"reviewer_type"`
+	Mode         string `json:"mode,omitempty"`
 }
 
 // SecurityFeature is a GitHub repository security feature switch.
@@ -299,16 +354,16 @@ func (l *ActionVariableList) pageItems() []ActionVariable { return l.Variables }
 // GitHub's create-or-update environment endpoint. Nil fields are left unchanged
 // by callers that only need to ensure that an environment exists.
 type EnvironmentRequest struct {
-	WaitTimer              *int                    `json:"wait_timer,omitempty"`
-	PreventSelfReview      *bool                   `json:"prevent_self_review,omitempty"`
-	Reviewers              []EnvironmentReviewer   `json:"reviewers,omitempty"`
-	DeploymentBranchPolicy *DeploymentBranchPolicy `json:"deployment_branch_policy,omitempty"`
+	WaitTimer              *int                     `json:"wait_timer,omitempty"`
+	PreventSelfReview      *bool                    `json:"prevent_self_review,omitempty"`
+	Reviewers              *[]EnvironmentReviewer   `json:"reviewers,omitempty"`
+	DeploymentBranchPolicy **DeploymentBranchPolicy `json:"deployment_branch_policy,omitempty"`
 }
 
 // EnvironmentReviewer identifies a user or team required to review a deployment.
 type EnvironmentReviewer struct {
-	Type     string `json:"type"`
-	Reviewer int64  `json:"reviewer"`
+	Type string `json:"type"`
+	ID   int64  `json:"id"`
 }
 
 // DeploymentBranchPolicy controls which branches can deploy to an environment.
@@ -319,13 +374,101 @@ type DeploymentBranchPolicy struct {
 
 // Environment is the subset of a GitHub repository environment returned after an update.
 type Environment struct {
-	ID             int64  `json:"id"`
-	Name           string `json:"name"`
-	URL            string `json:"url"`
-	HTMLURL        string `json:"html_url"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
-	ProtectionRule []any  `json:"protection_rules,omitempty"`
+	ID                     int64                       `json:"id"`
+	Name                   string                      `json:"name"`
+	URL                    string                      `json:"url"`
+	HTMLURL                string                      `json:"html_url"`
+	CreatedAt              string                      `json:"created_at"`
+	UpdatedAt              string                      `json:"updated_at"`
+	ProtectionRules        []EnvironmentProtectionRule `json:"protection_rules,omitempty"`
+	DeploymentBranchPolicy *DeploymentBranchPolicy     `json:"deployment_branch_policy,omitempty"`
+}
+
+type EnvironmentProtectionRule struct {
+	ID                int64                           `json:"id,omitempty"`
+	Type              string                          `json:"type"`
+	WaitTimer         int                             `json:"wait_timer,omitempty"`
+	PreventSelfReview bool                            `json:"prevent_self_review,omitempty"`
+	Reviewers         []EnvironmentProtectionReviewer `json:"reviewers,omitempty"`
+}
+
+type EnvironmentProtectionReviewer struct {
+	Type     string `json:"type"`
+	Reviewer struct {
+		ID int64 `json:"id"`
+	} `json:"reviewer"`
+}
+
+type EnvironmentBranchPolicy struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// Type is "branch" or "tag"; the same name can exist once for each.
+	Type string `json:"type"`
+}
+
+type environmentBranchPolicyList struct {
+	TotalCount     int                       `json:"total_count"`
+	BranchPolicies []EnvironmentBranchPolicy `json:"branch_policies"`
+}
+
+func (l *environmentBranchPolicyList) pageItems() []EnvironmentBranchPolicy { //nolint:unused // see customRepositoryRoleList.pageItems
+	return l.BranchPolicies
+}
+
+type EnvironmentBranchPolicyRequest struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type DeploymentProtectionRule struct {
+	ID      int64 `json:"id"`
+	Enabled bool  `json:"enabled"`
+	App     struct {
+		ID   int64  `json:"id"`
+		Slug string `json:"slug"`
+	} `json:"app"`
+}
+
+type AvailableDeploymentProtectionIntegration struct {
+	ID   int64  `json:"id"`
+	Slug string `json:"slug"`
+}
+
+type deploymentProtectionRuleList struct {
+	TotalCount                      int                        `json:"total_count"`
+	CustomDeploymentProtectionRules []DeploymentProtectionRule `json:"custom_deployment_protection_rules"`
+}
+
+func (l *deploymentProtectionRuleList) pageItems() []DeploymentProtectionRule { //nolint:unused // see customRepositoryRoleList.pageItems
+	return l.CustomDeploymentProtectionRules
+}
+
+type availableDeploymentProtectionIntegrationList struct {
+	TotalCount                                      int                                        `json:"total_count"`
+	AvailableCustomDeploymentProtectionIntegrations []AvailableDeploymentProtectionIntegration `json:"available_custom_deployment_protection_rule_integrations"`
+}
+
+func (l *availableDeploymentProtectionIntegrationList) pageItems() []AvailableDeploymentProtectionIntegration { //nolint:unused // see customRepositoryRoleList.pageItems
+	return l.AvailableCustomDeploymentProtectionIntegrations
+}
+
+type GitignoreTemplate struct {
+	Name     string `json:"name"`
+	Source   string `json:"source"`
+	FileName string `json:"file_name"`
+}
+
+type ContentsFile struct {
+	Path    string `json:"path"`
+	Message string `json:"message"`
+	Content string `json:"content"`
+	Branch  string `json:"branch,omitempty"`
+}
+
+type ContentsCommitResult struct {
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
 }
 
 // environmentList is GitHub's wrapped response for listing repository
@@ -424,6 +567,35 @@ type ImmutableReleases struct {
 	EnforcedByOwner bool `json:"enforced_by_owner"`
 }
 
+// RepositoryInteractionLimit is GitHub's temporary interaction restriction.
+// ExpiresAt is readable state; the write API accepts only a relative duration.
+type RepositoryInteractionLimit struct {
+	Limit     string `json:"limit,omitempty"`
+	Origin    string `json:"origin,omitempty"`
+	ExpiresAt string `json:"expires_at,omitempty"`
+}
+
+type RepositoryInteractionLimitRequest struct {
+	Limit  string `json:"limit"`
+	Expiry string `json:"expiry"`
+}
+
+type PullRequestCreationCap struct {
+	Enabled             bool `json:"enabled"`
+	MaxOpenPullRequests int  `json:"max_open_pull_requests"`
+	IncludeDrafts       bool `json:"include_drafts"`
+}
+
+type PullRequestCreationCapRequest struct {
+	Enabled             bool  `json:"enabled"`
+	MaxOpenPullRequests *int  `json:"max_open_pull_requests,omitempty"`
+	IncludeDrafts       *bool `json:"include_drafts,omitempty"`
+}
+
+type InteractionBypassUser struct {
+	Login string `json:"login"`
+}
+
 // AgentVariable represents a repository Copilot coding agent variable.
 type AgentVariable struct {
 	Name      string    `json:"name"`
@@ -455,4 +627,11 @@ func (e *APIError) Error() string {
 		return e.Method + " " + e.Path + " returned HTTP " + itoa(e.StatusCode)
 	}
 	return e.Method + " " + e.Path + " returned HTTP " + itoa(e.StatusCode) + ": " + e.Message
+}
+
+// IsEmptyRepository reports GitHub's 409 response used when a repository has
+// no commit yet. Wrapped errors are supported.
+func IsEmptyRepository(err error) bool {
+	var apiError *APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == 409 && strings.Contains(strings.ToLower(apiError.Message), "empty")
 }

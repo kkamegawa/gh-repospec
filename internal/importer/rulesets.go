@@ -119,6 +119,8 @@ func mapBypassActor(actor githubapi.BypassActor) (config.BypassActorConfig, erro
 		return config.BypassActorConfig{App: resolvedActorID(actor.ActorID), BypassMode: actor.BypassMode}, nil
 	case "Team":
 		return config.BypassActorConfig{Team: resolvedActorID(actor.ActorID), BypassMode: actor.BypassMode}, nil
+	case "User":
+		return config.BypassActorConfig{User: resolvedActorID(actor.ActorID), BypassMode: actor.BypassMode}, nil
 	case "RepositoryRole":
 		if role, ok := config.RoleNameForActorID(actor.ActorID); ok {
 			return config.BypassActorConfig{Role: role, BypassMode: actor.BypassMode}, nil
