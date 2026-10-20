@@ -2,6 +2,8 @@ package planner
 
 import (
 	"context"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,7 @@ type repositorySettingsMemory struct {
 	teams                 []githubapi.RepositoryTeam
 	properties            []githubapi.CustomPropertyValue
 	customRules           map[string][]githubapi.DeploymentProtectionRule
+	branchPolicies        map[string][]githubapi.EnvironmentBranchPolicy
 	availableIntegrations map[string][]githubapi.AvailableDeploymentProtectionIntegration
 	interactionLimit      githubapi.RepositoryInteractionLimit
 	creationCap           githubapi.PullRequestCreationCap
@@ -99,6 +102,7 @@ func newRepositorySettingsMemory() *repositorySettingsMemory {
 		signatures:            make(map[string]bool),
 		customRules:           make(map[string][]githubapi.DeploymentProtectionRule),
 		availableIntegrations: make(map[string][]githubapi.AvailableDeploymentProtectionIntegration),
+		branchPolicies:        make(map[string][]githubapi.EnvironmentBranchPolicy),
 		nextID:                1,
 	}
 }
@@ -181,6 +185,10 @@ func (s *repositorySettingsMemory) ListWebhooks(context.Context, githubapi.Repos
 }
 
 func (s *repositorySettingsMemory) CreateWebhook(_ context.Context, _ githubapi.Repository, hook githubapi.RepositoryWebhook) (githubapi.RepositoryWebhook, error) {
+	// GitHub rejects a repository webhook whose name is not "web".
+	if hook.Name != "web" {
+		return githubapi.RepositoryWebhook{}, &githubapi.APIError{StatusCode: 422, Message: "Validation Failed: name"}
+	}
 	hook.ID = s.nextID
 	s.nextID++
 	s.webhooks = append(s.webhooks, hook)
@@ -475,6 +483,70 @@ func TestActionsOIDCImmutableSubjectCanBeTurnedOn(t *testing.T) {
 	}
 	if _, ok := findChange(plan, "actions.oidcSubjectCustomization.useImmutableSubject"); ok {
 		t.Fatalf("plan = %#v, want no manual entry when the subject can be enabled", plan.Changes)
+	}
+}
+
+func (s *repositorySettingsMemory) ListEnvironmentBranchPolicies(_ context.Context, _ githubapi.Repository, environment string) ([]githubapi.EnvironmentBranchPolicy, error) {
+	return append([]githubapi.EnvironmentBranchPolicy(nil), s.branchPolicies[environment]...), nil
+}
+
+func (s *repositorySettingsMemory) CreateEnvironmentBranchPolicy(_ context.Context, _ githubapi.Repository, environment string, request githubapi.EnvironmentBranchPolicyRequest) (githubapi.EnvironmentBranchPolicy, error) {
+	for _, policy := range s.branchPolicies[environment] {
+		if policy.Name == request.Name && policy.Type == request.Type {
+			return githubapi.EnvironmentBranchPolicy{}, &githubapi.APIError{StatusCode: 422, Message: "already exists"}
+		}
+	}
+	policy := githubapi.EnvironmentBranchPolicy{ID: s.nextID, Name: request.Name, Type: request.Type}
+	s.nextID++
+	s.branchPolicies[environment] = append(s.branchPolicies[environment], policy)
+	return policy, nil
+}
+
+func (s *repositorySettingsMemory) DeleteEnvironmentBranchPolicy(_ context.Context, _ githubapi.Repository, environment string, id int64) error {
+	kept := s.branchPolicies[environment][:0]
+	for _, policy := range s.branchPolicies[environment] {
+		if policy.ID != id {
+			kept = append(kept, policy)
+		}
+	}
+	s.branchPolicies[environment] = kept
+	return nil
+}
+
+func TestEnvironmentBranchPoliciesConvergeByTypeAndName(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	// The live tag pattern shares its name with the declared branch pattern;
+	// only the type tells them apart.
+	service.environments = []githubapi.Environment{{Name: "production"}}
+	service.branchPolicies["production"] = []githubapi.EnvironmentBranchPolicy{{ID: 90, Name: "release/*", Type: "tag"}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	policies := []config.EnvironmentBranchPolicy{{Name: "release/*", Type: "branch"}, {Name: "v*", Type: "tag"}}
+	desired := &config.ActionsConfig{Environments: []config.Environment{{Name: "production", BranchPolicies: &policies}}}
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+
+	before := Plan{}
+	appendActionsChanges(context.Background(), service, &before, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+	if !hasChange(before, "actions.environment.production.branchPolicies", ChangeUpdate) {
+		t.Fatalf("plan = %#v, want a tag pattern with the declared branch name reported as drift", before.Changes)
+	}
+	if err := engine.applyActions(context.Background(), repository, desired, Options{}); err != nil {
+		t.Fatalf("applyActions() error = %v", err)
+	}
+	got := make([]string, 0, len(service.branchPolicies["production"]))
+	for _, policy := range service.branchPolicies["production"] {
+		got = append(got, policy.Type+":"+policy.Name)
+	}
+	sort.Strings(got)
+	if strings.Join(got, ",") != "branch:release/*,tag:v*" {
+		t.Fatalf("branch policies = %v, want the tag pattern replaced by the declared branch pattern", got)
+	}
+	after := Plan{}
+	appendActionsChanges(context.Background(), service, &after, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+	if !hasChange(after, "actions.environment.production.branchPolicies", ChangeNoop) {
+		t.Fatalf("post-apply plan = %#v, want branch policies converged", after.Changes)
 	}
 }
 

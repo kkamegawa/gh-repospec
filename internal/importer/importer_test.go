@@ -688,6 +688,60 @@ func TestImportSkipsForkApprovalForPrivateRepositoryAndReportsWhy(t *testing.T) 
 	}
 }
 
+func TestImportKeepsEnvironmentBranchPolicyTypes(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.environments = []githubapi.Environment{{Name: "production", DeploymentBranchPolicy: &githubapi.DeploymentBranchPolicy{CustomBranchPolicies: true}}}
+	reader.environmentPolicies = map[string][]githubapi.EnvironmentBranchPolicy{
+		"production": {{ID: 1, Name: "v*", Type: "tag"}, {ID: 2, Name: "release/*", Type: "branch"}},
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := result.Config.Actions.Environments[0]
+	if environment.BranchPolicies == nil {
+		t.Fatalf("BranchPolicies = nil, want both patterns with their types")
+	}
+	got := make([]string, 0, len(*environment.BranchPolicies))
+	for _, policy := range *environment.BranchPolicies {
+		got = append(got, policy.Type+":"+policy.Name)
+	}
+	if strings.Join(got, ",") != "branch:release/*,tag:v*" {
+		t.Fatalf("BranchPolicies = %v, want the tag pattern kept as a tag", got)
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if strings.HasPrefix(diagnostic.Resource, "actions.environment.") {
+			t.Fatalf("Diagnostics = %#v, want none for the environment when every type is reported", result.Diagnostics)
+		}
+	}
+}
+
+func TestImportLeavesBranchPolicyWithUnknownTypeUnmanaged(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reader.environments = []githubapi.Environment{{Name: "production", DeploymentBranchPolicy: &githubapi.DeploymentBranchPolicy{CustomBranchPolicies: true}}}
+	reader.environmentPolicies = map[string][]githubapi.EnvironmentBranchPolicy{
+		"production": {{ID: 1, Name: "v*"}},
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment := result.Config.Actions.Environments[0]
+	if environment.BranchPolicies != nil || environment.DeploymentBranchPolicy != nil {
+		t.Fatalf("environment = %#v, want the deployment branch policy left unmanaged rather than assumed to be a branch", environment)
+	}
+	if !hasDiagnostic(result.Diagnostics, "actions.environment.production.branchPolicies") {
+		t.Fatalf("Diagnostics = %#v, want one for the unknown pattern type", result.Diagnostics)
+	}
+	if err := config.Validate(&result.Config); err != nil {
+		t.Fatalf("imported configuration is invalid: %v", err)
+	}
+}
+
 func TestImportReadsWorkflowAccessLevelOnlyForPrivateOrInternalRepository(t *testing.T) {
 	t.Parallel()
 	for _, info := range []githubapi.RepositoryInfo{

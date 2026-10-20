@@ -180,7 +180,6 @@ type ContentService interface {
 type environmentService interface {
 	ListEnvironmentBranchPolicies(context.Context, githubapi.Repository, string) ([]githubapi.EnvironmentBranchPolicy, error)
 	CreateEnvironmentBranchPolicy(context.Context, githubapi.Repository, string, githubapi.EnvironmentBranchPolicyRequest) (githubapi.EnvironmentBranchPolicy, error)
-	UpdateEnvironmentBranchPolicy(context.Context, githubapi.Repository, string, int64, string) (githubapi.EnvironmentBranchPolicy, error)
 	DeleteEnvironmentBranchPolicy(context.Context, githubapi.Repository, string, int64) error
 }
 
@@ -692,7 +691,7 @@ func (e *Engine) applySeed(ctx context.Context, repository githubapi.Repository,
 		}
 	}
 	if cfg.Seed != nil && cfg.Seed.Initialize != nil {
-		if err := materializeInitialization(ctx, content, cfg.Repository.Name, sourceDir, cfg.Seed.Initialize); err != nil {
+		if err := materializeInitialization(ctx, content, repository.Name, sourceDir, cfg.Seed.Initialize); err != nil {
 			return err
 		}
 	}
@@ -1199,34 +1198,37 @@ func applyEnvironmentBranchPolicies(ctx context.Context, service environmentServ
 	if err != nil {
 		return fmt.Errorf("list deployment branch policies for environment %q: %w", desired.Name, err)
 	}
-	existing := make(map[string]githubapi.EnvironmentBranchPolicy, len(actual))
-	for _, policy := range actual {
-		existing[policy.Name] = policy
-	}
-	wanted := make(map[string]config.EnvironmentBranchPolicy, len(*desired.BranchPolicies))
+	// A pattern is identified by its type and name together: the same name can
+	// target a branch or a tag, and the update endpoint changes only the name,
+	// so a pattern whose type differs is deleted and created again.
+	wanted := make(map[string]bool, len(*desired.BranchPolicies))
 	for _, policy := range *desired.BranchPolicies {
-		wanted[policy.Name] = policy
-		if current, ok := existing[policy.Name]; ok {
-			if current.Name != policy.Name {
-				if _, err := service.UpdateEnvironmentBranchPolicy(ctx, repository, desired.Name, current.ID, policy.Name); err != nil {
-					return fmt.Errorf("update deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
-				}
-			}
-			continue
-		}
-		if _, err := service.CreateEnvironmentBranchPolicy(ctx, repository, desired.Name, githubapi.EnvironmentBranchPolicyRequest{Name: policy.Name, Type: policy.Type}); err != nil {
-			return fmt.Errorf("create deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
-		}
+		wanted[branchPolicyKey(policy.Type, policy.Name)] = true
 	}
+	existing := make(map[string]bool, len(actual))
 	for _, policy := range actual {
-		if _, ok := wanted[policy.Name]; ok {
+		key := branchPolicyKey(policy.Type, policy.Name)
+		if wanted[key] {
+			existing[key] = true
 			continue
 		}
 		if err := service.DeleteEnvironmentBranchPolicy(ctx, repository, desired.Name, policy.ID); err != nil {
 			return fmt.Errorf("delete deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
 		}
 	}
+	for _, policy := range *desired.BranchPolicies {
+		if existing[branchPolicyKey(policy.Type, policy.Name)] {
+			continue
+		}
+		if _, err := service.CreateEnvironmentBranchPolicy(ctx, repository, desired.Name, githubapi.EnvironmentBranchPolicyRequest{Name: policy.Name, Type: policy.Type}); err != nil {
+			return fmt.Errorf("create deployment branch policy %q for environment %q: %w", policy.Name, desired.Name, err)
+		}
+	}
 	return nil
+}
+
+func branchPolicyKey(policyType, name string) string {
+	return policyType + ":" + name
 }
 
 func applyCustomDeploymentProtectionRules(ctx context.Context, service customDeploymentProtectionService, repository githubapi.Repository, desired config.Environment) error {
@@ -2110,13 +2112,14 @@ func environmentBranchPoliciesMatch(desired *[]config.EnvironmentBranchPolicy, a
 	}
 	wanted := make(map[string]bool, len(*desired))
 	for _, policy := range *desired {
-		wanted[policy.Name] = true
+		wanted[branchPolicyKey(policy.Type, policy.Name)] = true
 	}
 	for _, policy := range actual {
-		if !wanted[policy.Name] {
+		key := branchPolicyKey(policy.Type, policy.Name)
+		if !wanted[key] {
 			return false
 		}
-		delete(wanted, policy.Name)
+		delete(wanted, key)
 	}
 	return len(wanted) == 0
 }

@@ -121,15 +121,25 @@ func importActions(ctx context.Context, reader Reader, repository githubapi.Repo
 				return nil, nil, fmt.Errorf("list deployment branch policies for environment %q: %w", environment.Name, err)
 			}
 			branchPolicies := make([]config.EnvironmentBranchPolicy, 0, len(policies))
+			unknownType := ""
 			for _, policy := range policies {
-				// The REST response exposes the pattern but not the branch/tag
-				// discriminator accepted by the write endpoint. Preserve the
-				// supported branch default and report the unreadable distinction.
-				branchPolicies = append(branchPolicies, config.EnvironmentBranchPolicy{Name: policy.Name, Type: "branch"})
+				if policy.Type != "branch" && policy.Type != "tag" {
+					unknownType = policy.Name
+					break
+				}
+				branchPolicies = append(branchPolicies, config.EnvironmentBranchPolicy{Name: policy.Name, Type: policy.Type})
 			}
-			mapped.BranchPolicies = &branchPolicies
-			if len(policies) > 0 {
-				diagnostics = append(diagnostics, Diagnostic{Resource: "actions.environment." + environment.Name + ".branchPolicyTypes", Message: "GitHub's list response omits whether each pattern targets a branch or tag; imported as branch for review"})
+			if unknownType != "" {
+				// Assuming a type would turn a tag pattern into a branch
+				// pattern on the next apply, so the environment's deployment
+				// branch policy is left unmanaged instead.
+				mapped.DeploymentBranchPolicy = nil
+				diagnostics = append(diagnostics, Diagnostic{Resource: "actions.environment." + environment.Name + ".branchPolicies", Message: fmt.Sprintf("GitHub did not report whether pattern %q targets a branch or a tag; the deployment branch policy is not imported", unknownType)})
+			} else {
+				sort.Slice(branchPolicies, func(i, j int) bool {
+					return branchPolicies[i].Type+":"+branchPolicies[i].Name < branchPolicies[j].Type+":"+branchPolicies[j].Name
+				})
+				mapped.BranchPolicies = &branchPolicies
 			}
 		}
 		secrets, err := reader.ListEnvironmentSecrets(ctx, repository, environment.Name)

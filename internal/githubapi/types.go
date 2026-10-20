@@ -402,6 +402,8 @@ type EnvironmentProtectionReviewer struct {
 type EnvironmentBranchPolicy struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
+	// Type is "branch" or "tag"; the same name can exist once for each.
+	Type string `json:"type"`
 }
 
 type environmentBranchPolicyList struct {

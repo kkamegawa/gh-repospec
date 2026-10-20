@@ -84,6 +84,32 @@ func TestEmptyRepositoryInitializationAndCommandsRunOnce(t *testing.T) {
 	}
 }
 
+func TestSeededReadmeUsesTheResolvedTargetRepositoryName(t *testing.T) {
+	service := &bootstrapRecordingService{
+		recordingService: recordingService{fakeService: fakeService{repository: githubapi.RepositoryInfo{Name: "repotest1", Visibility: "public"}}},
+		files:            map[string][]byte{},
+		blobs:            map[string][]byte{},
+	}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An imported configuration still names its source repository; --repo
+	// selects the target that the README belongs to.
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "Relaypublisher", Visibility: "public", DefaultBranch: "main"},
+		Seed:          &config.SeedConfig{Initialize: &config.InitializeSeed{}},
+	}
+	if _, err := engine.Apply(context.Background(), cfg, Options{RepositoryOverride: "octo/repotest1"}); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	readme := string(service.files["README.md"])
+	if !strings.HasPrefix(readme, "# repotest1\n") {
+		t.Fatalf("README.md = %q, want it titled with the target repository name", readme)
+	}
+}
+
 func TestFailedCommandReportsRedactedOutput(t *testing.T) {
 	const secretValue = "s3cr3t-token-value"
 	t.Setenv("GO_WANT_FAILING_COMMAND_HELPER", "1")

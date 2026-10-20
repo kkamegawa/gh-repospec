@@ -464,6 +464,10 @@ func (e *Engine) applyRepositorySettings(ctx context.Context, repository githuba
 				return fmt.Errorf("update webhook %q: %w", item.URL, err)
 			}
 		} else {
+			// GitHub requires name "web" to create a repository webhook. It
+			// identifies the hook kind rather than describing configuration,
+			// so it is sent only on create and never compared.
+			request.Name = "web"
 			if _, err := api.CreateWebhook(ctx, repository, request); err != nil {
 				return fmt.Errorf("create webhook %q: %w", item.URL, err)
 			}
