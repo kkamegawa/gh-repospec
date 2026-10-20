@@ -104,7 +104,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Apply failed.' }
    - `actions.forkPullRequestApproval`がUPDATE。比較せず常に書き込むためです。
    - 招待がまだ承諾されていないcollaboratorごとの`settings.collaborator.<login>`がCREATE。GitHubは承諾待ちの招待相手をcollaboratorではなく招待として返します。
    - sourceが`useImmutableSubject: false`を宣言している場合の`actions.oidcSubjectCustomization.useImmutableSubject`がMANUAL。GitHubは2026-07-15以降に作成または名前変更されたすべてのリポジトリで不変のsubject claimを有効にし、有効のまま維持します。
-   - `seed`と各commandのMANUALエントリ。
+   - `seed`がMANUAL。実行済みのcommandはNOOP(完了済み)で、まだ実行していないcommandだけが承認されるまでMANUALです。
 4. destinationを別ファイルにimportし、正規化された設定を確認します。repository identityと下記の明示的な対象外を考慮してsourceと比較します。続いてdestinationのimport結果を使ってdestinationに対する`plan`を実行します。blockedなエントリがなく、createまたはupdateが手順3のrulesetと`actions.forkPullRequestApproval`のエントリだけであることを確認します。これらは常に報告されるため、この設定では`plan --ci`が`2`で終了します。終了コードは合否の基準にできないため、列挙したエントリと比較します。secret値はこの比較から除外します。
 5. GitHub SettingsのGeneral、Rules、Branches、Actions、Environments、Security、Pages、Webhooks、Deploy keys、Manage accessを確認し、以下の`gh api`のsnapshotと照合します。
 

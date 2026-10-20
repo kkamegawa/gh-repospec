@@ -104,7 +104,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Apply failed.' }
    - `actions.forkPullRequestApproval` as UPDATE, because it is always written rather than compared.
    - `settings.collaborator.<login>` as CREATE for each collaborator whose invitation has not been accepted yet; GitHub lists a pending invitee as an invitation, not as a collaborator.
    - `actions.oidcSubjectCustomization.useImmutableSubject` as MANUAL when the source declares `useImmutableSubject: false`. GitHub enables the immutable subject claim for every repository created or renamed after 2026-07-15 and keeps it on.
-   - MANUAL entries for `seed` and each command.
+   - `seed` as MANUAL. A command that has already run is NOOP (already completed); only a command that has not run yet is MANUAL until it is approved.
 4. Import the destination into a separate file and inspect its normalized settings. Compare source and destination after accounting for the repository identity and the documented exclusions below. Then run `plan` with the destination import against the destination. It must have no blocked entry, and its only creates or updates must be the ruleset and `actions.forkPullRequestApproval` entries listed in step 3. Because those are always reported, `plan --ci` exits `2` for this configuration, so its exit code cannot be the acceptance criterion; compare the listed entries instead. Secret values are excluded from this pass.
 5. In GitHub Settings, inspect General, Rules, Branches, Actions, Environments, Security, Pages, Webhooks, Deploy keys, and Manage access. Cross-check the corresponding API snapshot with `gh api` as shown below.
 

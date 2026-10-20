@@ -80,11 +80,10 @@ private リポジトリに対してこのエンドポイントを拒否するた
 このリポジトリのworkflowを利用できるかを制御します。GitHubはこのアクセスポリシーを
 privateとinternalのリポジトリにのみ適用し、publicリポジトリに対する読み取りと書き込みには
 HTTP 422を返します。fork承認とは逆の条件です。そのため`import`はprivateまたはinternalの
-リポジトリからのみ読み取り、publicリポジトリではdiagnosticを報告します。`plan`は実効的な
-visibility(宣言された`repository.visibility`、未宣言ならライブの値)を評価し、public
-リポジトリへの宣言は読み取りを試みずにblockedとして報告します。この実行でpublicから
-privateまたはinternalへ変更するリポジトリでは、visibility変更の後に適用するupdateとして
-計画します。
+リポジトリからのみ読み取り、publicリポジトリではdiagnosticを報告します。`plan`は宣言された
+`repository.visibility`を評価し、`public`と同時に指定した場合は読み取りを試みずにblocked
+として報告します。この実行でpublicから`private`へ変更するリポジトリでは、visibility変更の
+後に適用するupdateとして計画します。
 
 `actions.oidcSubjectCustomization`は、リポジトリのActions OIDC subject claimテンプレートを
 設定します。`useImmutableSubject`は、ownerとリポジトリのIDを含む不変のclaim形式を選択します。

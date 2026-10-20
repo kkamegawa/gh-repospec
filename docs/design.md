@@ -92,11 +92,10 @@ which other repositories may use this repository's workflows. GitHub applies
 that access policy only to private and internal repositories and answers a
 read or write for a public one with HTTP 422, the inverse of the fork approval
 case. `import` therefore reads it only from a private or internal repository
-and reports a diagnostic for a public one. `plan` evaluates the effective
-visibility — the declared `repository.visibility`, or the live one when it is
-not declared — and reports a declaration on a public repository as blocked
-without attempting the read; a repository this run changes from public to
-private or internal is planned as an update applied after the visibility
+and reports a diagnostic for a public one. `plan` evaluates the declared
+`repository.visibility`: a declaration alongside `public` is reported as
+blocked without attempting the read, and a repository this run changes from
+public to `private` is planned as an update applied after the visibility
 change.
 
 `actions.oidcSubjectCustomization` sets the repository's Actions OIDC subject
