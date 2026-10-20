@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
 	"github.com/kkamegawa/gh-repospec/internal/githubapi"
@@ -755,12 +756,13 @@ func TestApplyAIPullRequestScanAfterOptionalCodeQLWriteFailure(t *testing.T) {
 	}
 }
 
-// TestApplySkipsCodeScanningWritesWhenUnavailable guards docs/adr.md record 9
-// on the apply side: when GitHub refuses the CodeQL default setup read with
-// 403, neither CodeQL default setup nor AI Scan is written. An optional
-// declaration is skipped silently; a required one — reachable when the
-// repository was created in this run, before plan could read it — stops the
-// run with GitHub's message. The rest of the stage still runs when skipped.
+// TestApplySkipsCodeScanningWritesWhenUnavailable guards docs/adr.md records 9
+// and 10 on the apply side: when GitHub refuses the CodeQL default setup read
+// with 403, neither CodeQL default setup nor AI Scan is written. A disabling
+// declaration already holds and an optional one is skipped silently; a
+// required enabling one — reachable when the repository was created in this
+// run, before plan could read it — stops the run with GitHub's message. The
+// rest of the stage still runs when skipped.
 func TestApplySkipsCodeScanningWritesWhenUnavailable(t *testing.T) {
 	t.Parallel()
 	const message = "Code scanning is not enabled for this repository. Please enable code scanning in the repository settings."
@@ -772,6 +774,7 @@ func TestApplySkipsCodeScanningWritesWhenUnavailable(t *testing.T) {
 	}{
 		{name: "both optional", codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}},
 		{name: "ai scan disabled, optional", aiScan: &config.FeatureSetting{Enabled: false, Optional: true}},
+		{name: "both disabled, required", codeQL: &config.FeatureSetting{Enabled: false}, aiScan: &config.FeatureSetting{Enabled: false}},
 		{name: "codeql required", codeQL: &config.FeatureSetting{Enabled: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantErr: "configure CodeQL default setup"},
 		{name: "ai scan required", codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantErr: "set AI Scan for pull requests"},
 	}
@@ -815,7 +818,7 @@ func TestApplySkipsAIPullRequestScanWhenReadRefused(t *testing.T) {
 			t.Parallel()
 			service := &recordingService{fakeService: fakeService{
 				repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "private"},
-				codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+				codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "not-configured"},
 				aiScanErr:          &githubapi.APIError{StatusCode: 403, Message: message},
 			}}
 			engine, err := New(service)
@@ -837,6 +840,117 @@ func TestApplySkipsAIPullRequestScanWhenReadRefused(t *testing.T) {
 			}
 			if slices.Contains(service.mutations, "aiScan") {
 				t.Fatalf("mutations = %#v, want no AI Scan write when its read was refused", service.mutations)
+			}
+		})
+	}
+}
+
+// TestApplyDisablesAIPullRequestScanBeforeCodeQL guards docs/adr.md record
+// 10's ordering: turning both features off writes AI Scan first, so the
+// dependent feature is off before CodeQL default setup, its dependency, is.
+func TestApplyDisablesAIPullRequestScanBeforeCodeQL(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+		aiScan:             githubapi.AIScanSetting{PRScan: "enabled"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+		CodeQLDefaultSetup: &config.FeatureSetting{Enabled: false},
+		AIPullRequestScan:  &config.FeatureSetting{Enabled: false},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	codeql := slices.Index(service.mutations, "codeql")
+	aiScan := slices.Index(service.mutations, "aiScan")
+	if codeql == -1 || aiScan == -1 || aiScan > codeql {
+		t.Fatalf("mutations = %#v, want AI Scan disabled before CodeQL default setup", service.mutations)
+	}
+	if service.lastAIScan.PRScan != "disabled" {
+		t.Fatalf("lastAIScan.PRScan = %q, want %q", service.lastAIScan.PRScan, "disabled")
+	}
+}
+
+// TestApplySkipsConvergedCodeQLDefaultSetup guards against re-writing a CodeQL
+// default setup state that already holds, which would start another setup run
+// on GitHub, while AI Scan still sees its dependency satisfied.
+func TestApplySkipsConvergedCodeQLDefaultSetup(t *testing.T) {
+	t.Parallel()
+	service := &recordingService{fakeService: fakeService{
+		repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+		codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+		aiScan:             githubapi.AIScanSetting{PRScan: "disabled"},
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+		CodeQLDefaultSetup: &config.FeatureSetting{Enabled: true},
+		AIPullRequestScan:  &config.FeatureSetting{Enabled: true},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(service.mutations, "codeql") {
+		t.Fatalf("mutations = %#v, want no CodeQL default setup write when it is already configured", service.mutations)
+	}
+	if !slices.Contains(service.mutations, "aiScan") || service.lastAIScan.PRScan != "enabled" {
+		t.Fatalf("mutations = %#v, lastAIScan = %#v, want AI Scan enabled", service.mutations, service.lastAIScan)
+	}
+}
+
+// TestApplyAIPullRequestScanReadOutcomes guards docs/adr.md record 10 for the
+// AI Scan read itself: a 404 means the feature is unavailable, so enabling it
+// stops a required declaration and disabling it already holds, while a
+// rate-limited 403 says nothing about the feature and does not stop the write.
+func TestApplyAIPullRequestScanReadOutcomes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		readErr   error
+		aiScan    config.FeatureSetting
+		wantErr   string
+		wantWrite string
+	}{
+		{name: "not found, enabled, required", readErr: &githubapi.APIError{StatusCode: 404}, aiScan: config.FeatureSetting{Enabled: true}, wantErr: "GitHub did not report an AI Scan for pull requests setting"},
+		{name: "not found, enabled, optional", readErr: &githubapi.APIError{StatusCode: 404}, aiScan: config.FeatureSetting{Enabled: true, Optional: true}},
+		{name: "not found, disabled, required", readErr: &githubapi.APIError{StatusCode: 404}, aiScan: config.FeatureSetting{Enabled: false}},
+		{name: "rate limited", readErr: &githubapi.APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit.", RetryAfter: time.Minute}, aiScan: config.FeatureSetting{Enabled: true}, wantWrite: "enabled"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			service := &recordingService{fakeService: fakeService{
+				repository:         githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+				codeQLDefaultSetup: githubapi.CodeQLDefaultSetupStatus{State: "configured"},
+				aiScanErr:          tc.readErr,
+			}}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			aiScan := tc.aiScan
+			err = engine.applyRemainingSecurity(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, &config.SecurityConfig{
+				AIPullRequestScan: &aiScan,
+			})
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("applyRemainingSecurity() error = %v, want nil", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("applyRemainingSecurity() error = %v, want %q", err, tc.wantErr)
+			}
+			if tc.wantWrite == "" {
+				if slices.Contains(service.mutations, "aiScan") {
+					t.Fatalf("mutations = %#v, want no AI Scan write when it is unavailable", service.mutations)
+				}
+				return
+			}
+			if !slices.Contains(service.mutations, "aiScan") || service.lastAIScan.PRScan != tc.wantWrite {
+				t.Fatalf("mutations = %#v, lastAIScan = %#v, want AI Scan written as %q", service.mutations, service.lastAIScan, tc.wantWrite)
 			}
 		})
 	}

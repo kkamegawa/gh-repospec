@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
 	"github.com/kkamegawa/gh-repospec/internal/githubapi"
@@ -1045,28 +1046,37 @@ func TestBuildBlocksDependabotSecurityUpdatesOnNewRepository(t *testing.T) {
 // TestBuildAIPullRequestScanConvergesAgainstLiveState guards convergence for
 // security.aiPullRequestScan: a declaration that already matches the live
 // AI Scan setting plans a noop, a failed read is reported as an update rather
-// than guessed to be a noop, and a read refused with 403 while CodeQL default
-// setup is readable means AI Scan is unavailable (docs/adr.md record 9), so it
-// is blocked, or manual when optional, instead of drifting forever.
+// than guessed to be a noop, and a read refused with 403 or answered with 404
+// while CodeQL default setup is readable means AI Scan is unavailable
+// (docs/adr.md records 9 and 10), so enabling it is blocked, or manual when
+// optional, instead of drifting forever, and disabling it already holds. A
+// rate-limited 403 is not a refusal and stays an update.
 func TestBuildAIPullRequestScanConvergesAgainstLiveState(t *testing.T) {
 	t.Parallel()
+	refused := &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}
+	const refusedReason = "AI Scan for pull requests is not available for this repository (GitHub Advanced Security may not be enabled): Advanced Security must be enabled"
+	const notFoundReason = "GitHub did not report an AI Scan for pull requests setting for this repository (HTTP 404)"
 	cases := []struct {
-		name      string
-		declared  bool
-		optional  bool
-		live      string
-		liveErr   error
-		wantState ChangeState
+		name        string
+		declared    bool
+		optional    bool
+		live        string
+		liveErr     error
+		wantState   ChangeState
+		wantSummary string
 	}{
 		{name: "enabled matches live", declared: true, live: "enabled", wantState: ChangeNoop},
 		{name: "disabled matches live", declared: false, live: "disabled", wantState: ChangeNoop},
 		{name: "enabled differs from live", declared: true, live: "disabled", wantState: ChangeUpdate},
 		{name: "disabled differs from live", declared: false, live: "enabled", wantState: ChangeUpdate},
 		{name: "live read fails", declared: true, liveErr: &githubapi.APIError{StatusCode: 500}, wantState: ChangeUpdate},
-		{name: "live read not found", declared: true, liveErr: &githubapi.APIError{StatusCode: 404}, wantState: ChangeUpdate},
-		{name: "live read refused", declared: true, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeBlocked},
-		{name: "live read refused, optional", declared: true, optional: true, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeManual},
-		{name: "live read refused, disabled", declared: false, liveErr: &githubapi.APIError{StatusCode: 403, Message: "Advanced Security must be enabled"}, wantState: ChangeBlocked},
+		{name: "live read rate limited", declared: true, liveErr: &githubapi.APIError{StatusCode: 403, Message: "You have exceeded a secondary rate limit.", RetryAfter: time.Minute}, wantState: ChangeUpdate},
+		{name: "live read not found", declared: true, liveErr: &githubapi.APIError{StatusCode: 404}, wantState: ChangeBlocked, wantSummary: notFoundReason},
+		{name: "live read not found, optional", declared: true, optional: true, liveErr: &githubapi.APIError{StatusCode: 404}, wantState: ChangeManual, wantSummary: notFoundReason},
+		{name: "live read not found, disabled", declared: false, liveErr: &githubapi.APIError{StatusCode: 404}, wantState: ChangeNoop, wantSummary: "already disabled: " + notFoundReason},
+		{name: "live read refused", declared: true, liveErr: refused, wantState: ChangeBlocked, wantSummary: refusedReason},
+		{name: "live read refused, optional", declared: true, optional: true, liveErr: refused, wantState: ChangeManual, wantSummary: refusedReason},
+		{name: "live read refused, disabled", declared: false, liveErr: refused, wantState: ChangeNoop, wantSummary: "already disabled: " + refusedReason},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1098,10 +1108,10 @@ func TestBuildAIPullRequestScanConvergesAgainstLiveState(t *testing.T) {
 			if tc.wantState == ChangeNoop && plan.HasDrift() {
 				t.Fatalf("plan.HasDrift() = true, want false when AI Scan and CodeQL already match: %#v", plan.Changes)
 			}
-			if tc.wantState == ChangeBlocked || tc.wantState == ChangeManual {
+			if tc.wantSummary != "" {
 				change, _ := findChange(plan, "security.aiPullRequestScan")
-				if !strings.Contains(change.Summary, "code scanning is not available for this repository: Advanced Security must be enabled") {
-					t.Fatalf("security.aiPullRequestScan summary = %q, want the unavailable reason with GitHub's message", change.Summary)
+				if change.Summary != tc.wantSummary {
+					t.Fatalf("security.aiPullRequestScan summary = %q, want %q", change.Summary, tc.wantSummary)
 				}
 				// CodeQL default setup itself was readable, so it still
 				// converges normally.
@@ -1113,16 +1123,19 @@ func TestBuildAIPullRequestScanConvergesAgainstLiveState(t *testing.T) {
 	}
 }
 
-// TestBuildCodeScanningUnavailable guards docs/adr.md record 9: when GitHub
-// refuses the CodeQL default setup read with 403, code scanning is unavailable
-// on the repository, so codeqlDefaultSetup and aiPullRequestScan are both
-// blocked, or manual when optional, with GitHub's message as the reason. An
-// all-optional declaration must not drift, or plan --ci would exit 2 forever.
-// Any other failed read keeps reporting an update.
+// TestBuildCodeScanningUnavailable guards docs/adr.md records 9 and 10: when
+// GitHub refuses the CodeQL default setup read with 403, code scanning is
+// unavailable on the repository, so a declaration enabling codeqlDefaultSetup
+// or aiPullRequestScan is blocked, or manual when optional, with GitHub's
+// message as the reason, and one disabling it already holds as a noop. Such
+// declarations must not drift or block, or plan --ci would exit 2 forever.
+// Any other failed read, a rate-limited 403 included, keeps reporting an
+// update.
 func TestBuildCodeScanningUnavailable(t *testing.T) {
 	t.Parallel()
 	const message = "Code scanning is not enabled for this repository. Please enable code scanning in the repository settings."
 	refused := &githubapi.APIError{StatusCode: 403, Message: message}
+	rateLimited := &githubapi.APIError{StatusCode: 403, Message: "API rate limit exceeded", RetryAfter: time.Minute}
 	cases := []struct {
 		name       string
 		codeQLErr  error
@@ -1134,14 +1147,17 @@ func TestBuildCodeScanningUnavailable(t *testing.T) {
 		{name: "both optional", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeManual},
 		{name: "both required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeBlocked, wantAIScan: ChangeBlocked},
 		{name: "codeql optional, ai scan required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeBlocked},
-		{name: "codeql disabled, optional", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, wantCodeQL: ChangeManual},
+		{name: "codeql disabled, optional", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, wantCodeQL: ChangeNoop},
+		{name: "codeql disabled, required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false}, wantCodeQL: ChangeNoop},
 		{name: "ai scan only, optional", codeQLErr: refused, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantAIScan: ChangeManual},
-		{name: "ai scan disabled only, optional", codeQLErr: refused, aiScan: &config.FeatureSetting{Enabled: false, Optional: true}, wantAIScan: ChangeManual},
+		{name: "ai scan disabled only, optional", codeQLErr: refused, aiScan: &config.FeatureSetting{Enabled: false, Optional: true}, wantAIScan: ChangeNoop},
+		{name: "both disabled, required", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false}, aiScan: &config.FeatureSetting{Enabled: false}, wantCodeQL: ChangeNoop, wantAIScan: ChangeNoop},
 		// The dependency on a declared-disabled CodeQL default setup would
 		// also block AI Scan; unavailability is reported instead.
-		{name: "unavailable takes precedence over the dependency", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeManual, wantAIScan: ChangeManual},
+		{name: "unavailable takes precedence over the dependency", codeQLErr: refused, codeQL: &config.FeatureSetting{Enabled: false, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeNoop, wantAIScan: ChangeManual},
 		{name: "other read error, optional", codeQLErr: &githubapi.APIError{StatusCode: 500}, codeQL: &config.FeatureSetting{Enabled: true, Optional: true}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantCodeQL: ChangeUpdate, wantAIScan: ChangeUpdate},
 		{name: "other read error, ai scan only", codeQLErr: &githubapi.APIError{StatusCode: 500}, aiScan: &config.FeatureSetting{Enabled: true, Optional: true}, wantAIScan: ChangeManual},
+		{name: "rate limited read", codeQLErr: rateLimited, codeQL: &config.FeatureSetting{Enabled: true}, aiScan: &config.FeatureSetting{Enabled: true}, wantCodeQL: ChangeUpdate, wantAIScan: ChangeUpdate},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1185,18 +1201,24 @@ func TestBuildCodeScanningUnavailable(t *testing.T) {
 				}
 				if tc.codeQLErr == refused {
 					change, _ := findChange(plan, check.resource)
-					if want := "code scanning is not available for this repository: " + message; change.Summary != want {
+					want := "code scanning is not available for this repository: " + message
+					if !check.declared.Enabled {
+						want = "already disabled: " + want
+					}
+					if change.Summary != want {
 						t.Fatalf("%s summary = %q, want %q", check.resource, change.Summary, want)
 					}
 				}
 			}
-			allOptional := (tc.codeQL == nil || tc.codeQL.Optional) && (tc.aiScan == nil || tc.aiScan.Optional)
-			if tc.codeQLErr == refused && allOptional {
+			satisfiable := func(feature *config.FeatureSetting) bool {
+				return feature == nil || feature.Optional || !feature.Enabled
+			}
+			if tc.codeQLErr == refused && satisfiable(tc.codeQL) && satisfiable(tc.aiScan) {
 				if plan.HasDrift() {
-					t.Fatalf("plan.HasDrift() = true, want false when every unavailable declaration is optional: %#v", plan.Changes)
+					t.Fatalf("plan.HasDrift() = true, want false when no unavailable declaration is required to be enabled: %#v", plan.Changes)
 				}
 				if plan.HasBlocked() {
-					t.Fatalf("plan.HasBlocked() = true, want false when every unavailable declaration is optional: %#v", plan.Changes)
+					t.Fatalf("plan.HasBlocked() = true, want false when no unavailable declaration is required to be enabled: %#v", plan.Changes)
 				}
 			}
 		})
