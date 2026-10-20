@@ -1181,8 +1181,12 @@ func toRuleset(ruleset config.RulesetConfig, bypassActors []githubapi.BypassActo
 		}
 		rules = append(rules, entry)
 	}
-	include := slices.Clone(ruleset.Include)
-	exclude := slices.Clone(ruleset.Exclude)
+	// Copy into non-nil slices: slices.Clone(nil) returns nil, which marshals
+	// as null, and GitHub rejects a null ref_name include or exclude with 422.
+	// An undeclared exclude (always the case for an imported ruleset without
+	// one, since it is omitempty) must be sent as [].
+	include := append([]string{}, ruleset.Include...)
+	exclude := append([]string{}, ruleset.Exclude...)
 	return githubapi.Ruleset{
 		Name:        ruleset.Name,
 		Target:      ruleset.Target,

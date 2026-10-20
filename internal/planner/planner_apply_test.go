@@ -497,6 +497,66 @@ func TestApplySendsResolvedBypassActorsAndEvaluateEnforcement(t *testing.T) {
 	}
 }
 
+// TestApplySendsEmptyExcludeInsteadOfNull guards the wire shape of a ruleset
+// that declares no exclude patterns (the common case, and every imported
+// ruleset, since exclude is omitempty in configuration): GitHub rejects
+// "exclude": null with HTTP 422, so both create and update must send [].
+func TestApplySendsEmptyExcludeInsteadOfNull(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name     string
+		existing []githubapi.Ruleset
+	}{
+		{name: "create"},
+		{name: "update", existing: []githubapi.Ruleset{{ID: 7, Name: "protect-main"}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			service := &recordingService{fakeService: fakeService{
+				repository: githubapi.RepositoryInfo{ID: 1, Visibility: "public"},
+				rulesets:   test.existing,
+			}}
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = engine.Apply(context.Background(), &config.Config{
+				SchemaVersion: config.CurrentSchemaVersion,
+				Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+				Rulesets: []config.RulesetConfig{{
+					Name: "protect-main", Enforcement: "active", Target: "branch", Include: []string{"~DEFAULT_BRANCH"},
+					Rules: []config.RulesetRule{{Type: "deletion"}},
+				}},
+			}, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(service.mutations, "ruleset") {
+				t.Fatalf("ruleset was not written: %#v", service.mutations)
+			}
+			body, err := json.Marshal(service.lastRuleset)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(body), "null") {
+				t.Fatalf("ruleset request body contains null: %s", body)
+			}
+			var decoded struct {
+				Conditions struct {
+					RefName map[string]any `json:"ref_name"`
+				} `json:"conditions"`
+			}
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			exclude, ok := decoded.Conditions.RefName["exclude"].([]any)
+			if !ok || len(exclude) != 0 {
+				t.Fatalf("conditions.ref_name.exclude = %#v, want []: %s", decoded.Conditions.RefName["exclude"], body)
+			}
+		})
+	}
+}
+
 // TestApplyResolvesBypassActorsOncePerRun guards resolver reuse between plan
 // and apply: build resolves once during planning, and Apply must reuse that
 // resolver's cache rather than looking the same team up a second time.
