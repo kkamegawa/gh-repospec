@@ -137,6 +137,8 @@ New-Item -ItemType Directory -Path bin -Force
 go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
+If `plan` or `apply` reports an error, see [docs/troubleshooting.md](docs/troubleshooting.md) for common causes and fixes, including caveats when applying an imported configuration to another repository.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design. [docs/gh-infra-parity.md](docs/gh-infra-parity.md) records the feature comparison with `babarot/gh-infra`, including what this extension deliberately does not do.
 
 ## License
