@@ -135,6 +135,16 @@ GitHubのメッセージを理由としてblocked、`optional: true`ならmanual
 すべてのworkflow実行がブロックされます。検証では`selected`指定時の未設定、および
 `allowedActions`が`selected`でない場合の`selectedActions`指定をそれぞれ拒否します。
 
+environmentの保護設定も任意フィールドの契約に従います。`waitTimer`、
+`preventSelfReview`、`reviewers`を省略すると現在の値を変更せず、明示的な`0`、
+`false`、`[]`は無効化を意味します。GitHubはこれらのリクエストフィールドを保護ルールの
+書き込みとして扱い、Free、Pro、Teamプランではwait timerとrequired reviewersを
+public repositoryでしか提供しないため、private repositoryでは無効化の値でも拒否します。
+そのため`apply`は先に現在のenvironmentを読み取り、解除すべきルールが存在する場合に
+限って無効化の値を送信します。ルールを有効にする値は常に送信し、GitHubが拒否した場合は
+プランの制限を説明したうえで実行を停止します。まだ存在しないenvironmentに対する空の
+`customProtectionRules`は、新しいenvironmentにcustom ruleが無いためnoopです。
+
 ## 実行モデル
 
 `validate`は解析と検証のみを行います。`plan`は書き込みなしの変更レポートを作成し、

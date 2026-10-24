@@ -160,6 +160,18 @@ blocks every workflow run using an Action; validation rejects `selected`
 without it, and rejects `selectedActions` when `allowedActions` is not
 `selected`.
 
+Environment protection fields keep the optional-field contract: an omitted
+`waitTimer`, `preventSelfReview`, or `reviewers` leaves the live value alone,
+and an explicit `0`, `false`, or `[]` disables it. GitHub treats each of these
+request fields as a protection rule write, and Free, Pro, and Team plans offer
+wait timers and required reviewers only on public repositories, so they reject
+even a disabling value on a private repository. `apply` therefore reads the
+live environment first and sends a disabling value only when that environment
+has the rule to clear; a value that enables a rule is always sent, and a
+rejection from GitHub still stops the run with the plan limit explained. An
+empty `customProtectionRules` list on an environment that does not exist yet
+is a noop, because a new environment has no custom rules.
+
 ## Execution model
 
 `validate` only parses and validates. `plan` produces a no-write change report;

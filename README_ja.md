@@ -135,6 +135,8 @@ New-Item -ItemType Directory -Path bin -Force
 go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 ```
 
+`plan` や `apply` でエラーが発生した場合は、よくある原因と対処をまとめた [docs/troubleshooting_ja.md](docs/troubleshooting_ja.md) を参照してください。import した設定を別のリポジトリへ適用する場合の注意事項も記載しています。
+
 貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design_ja.md](docs/design_ja.md) を参照してください。`babarot/gh-infra` との機能比較と、本拡張が意図的に行わない範囲は [docs/gh-infra-parity_ja.md](docs/gh-infra-parity_ja.md) に記録しています。
 
 ## ライセンス

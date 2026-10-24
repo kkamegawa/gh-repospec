@@ -1140,10 +1140,28 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 		return err
 	}
 	environmentAPI, hasEnvironmentAPI := e.service.(environmentService)
+	live := map[string]githubapi.Environment{}
+	if len(desired.Environments) > 0 {
+		environments, err := e.service.ListEnvironments(ctx, repository)
+		if err != nil {
+			return fmt.Errorf("list Actions environments for %s: %w", repository, err)
+		}
+		for _, environment := range environments {
+			live[environment.Name] = environment
+		}
+	}
 	for _, environment := range desired.Environments {
-		request := environmentRequest(environment)
+		current, existed := live[environment.Name]
+		var actual *githubapi.Environment
+		if existed {
+			actual = &current
+		}
+		request := environmentRequest(environment, actual)
 		updated, err := e.service.CreateOrUpdateEnvironment(ctx, repository, environment.Name, request)
 		if err != nil {
+			if protectionPlanUnsupported(err) {
+				return fmt.Errorf("ensure Actions environment %q: %w (GitHub Free, Pro, and Team plans support required reviewers and wait timers only on public repositories)", environment.Name, err)
+			}
 			return fmt.Errorf("ensure Actions environment %q: %w", environment.Name, err)
 		}
 		if environment.BranchPolicies != nil {
@@ -1154,7 +1172,9 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 				return err
 			}
 		}
-		if environment.CustomProtectionRules != nil {
+		// A newly created environment has no custom rules, so an empty list
+		// already matches and needs no call to the custom rule API.
+		if environment.CustomProtectionRules != nil && (existed || len(*environment.CustomProtectionRules) > 0) {
 			protectionAPI, ok := e.service.(customDeploymentProtectionService)
 			if !ok {
 				return errors.New("custom deployment protection rule operations are unavailable from the configured GitHub service")
@@ -1172,9 +1192,35 @@ func (e *Engine) applyActions(ctx context.Context, repository githubapi.Reposito
 	return nil
 }
 
-func environmentRequest(environment config.Environment) githubapi.EnvironmentRequest {
-	request := githubapi.EnvironmentRequest{WaitTimer: environment.WaitTimer, PreventSelfReview: environment.PreventSelfReview}
-	if environment.Reviewers != nil {
+// environmentRequest builds the environment PUT body. A declared value that
+// disables a protection rule the live environment does not have is omitted:
+// GitHub treats wait_timer, reviewers, and prevent_self_review as protection
+// rule writes, which Free, Pro, and Team plans reject on private repositories
+// even when the values are zero, empty, or false. A disabling value is still
+// sent when the live environment has that rule, so it can be cleared. actual
+// is nil when the environment does not exist yet.
+func environmentRequest(environment config.Environment, actual *githubapi.Environment) githubapi.EnvironmentRequest {
+	hasWaitTimer, hasReviewerRule := false, false
+	if actual != nil {
+		for _, rule := range actual.ProtectionRules {
+			switch rule.Type {
+			case "wait_timer":
+				hasWaitTimer = true
+			case "required_reviewers":
+				hasReviewerRule = true
+			}
+		}
+	}
+	request := githubapi.EnvironmentRequest{}
+	if environment.WaitTimer != nil && (*environment.WaitTimer != 0 || hasWaitTimer) {
+		request.WaitTimer = environment.WaitTimer
+	}
+	enablingReviewers := environment.Reviewers != nil && len(*environment.Reviewers) > 0
+	reviewerRule := hasReviewerRule || enablingReviewers
+	if environment.PreventSelfReview != nil && (*environment.PreventSelfReview || reviewerRule) {
+		request.PreventSelfReview = environment.PreventSelfReview
+	}
+	if environment.Reviewers != nil && reviewerRule {
 		reviewers := make([]githubapi.EnvironmentReviewer, 0, len(*environment.Reviewers))
 		for _, reviewer := range *environment.Reviewers {
 			reviewers = append(reviewers, githubapi.EnvironmentReviewer{Type: reviewer.Type, ID: reviewer.ID})
@@ -1192,6 +1238,13 @@ func environmentRequest(environment config.Environment) githubapi.EnvironmentReq
 		request.DeploymentBranchPolicy = &policy
 	}
 	return request
+}
+
+// protectionPlanUnsupported reports GitHub's 422 for a deployment protection
+// rule the account's plan does not offer on this repository.
+func protectionPlanUnsupported(err error) bool {
+	var apiError *githubapi.APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == 422 && strings.Contains(strings.ToLower(apiError.Message), "billing plan")
 }
 
 func applyEnvironmentBranchPolicies(ctx context.Context, service environmentService, repository githubapi.Repository, desired config.Environment, environment githubapi.Environment) error {
@@ -2010,7 +2063,11 @@ func appendActionsChanges(ctx context.Context, service Service, plan *Plan, desi
 				if !known {
 					summary = capabilityError(err)
 				} else if _, ok := existing[environment.Name]; !ok {
-					state, summary = ChangeCreate, "create custom deployment protection rules with environment"
+					if len(*environment.CustomProtectionRules) == 0 {
+						state, summary = ChangeNoop, "no custom deployment protection rules on a new environment"
+					} else {
+						state, summary = ChangeCreate, "create custom deployment protection rules with environment"
+					}
 				} else if api, available := service.(customDeploymentProtectionService); !available {
 					state = ChangeBlocked
 				} else {
