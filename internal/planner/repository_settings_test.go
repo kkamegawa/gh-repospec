@@ -39,7 +39,14 @@ type repositorySettingsMemory struct {
 	// stickyImmutableSubject models a repository created after 2026-07-15,
 	// where GitHub keeps the immutable subject claim enabled.
 	stickyImmutableSubject bool
-	nextID                 int64
+	// environmentRequests records every environment PUT body.
+	environmentRequests []githubapi.EnvironmentRequest
+	// protectionUnsupported models a private repository on a plan without
+	// wait timers or required reviewers: GitHub rejects any protection rule
+	// field in the environment PUT body, even a disabling one.
+	protectionUnsupported bool
+	customRuleListCalls   int
+	nextID                int64
 }
 
 func (s *repositorySettingsMemory) GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error) {
@@ -111,6 +118,10 @@ func newRepositorySettingsMemory() *repositorySettingsMemory {
 }
 
 func (s *repositorySettingsMemory) CreateOrUpdateEnvironment(_ context.Context, _ githubapi.Repository, name string, request githubapi.EnvironmentRequest) (githubapi.Environment, error) {
+	s.environmentRequests = append(s.environmentRequests, request)
+	if s.protectionUnsupported && (request.WaitTimer != nil || request.PreventSelfReview != nil || request.Reviewers != nil) {
+		return githubapi.Environment{}, &githubapi.APIError{StatusCode: 422, Method: "PUT", Path: "/repos/octo/demo/environments/" + name, Message: "Failed to create the environment protection rule. Please ensure the billing plan supports the required reviewers protection rule."}
+	}
 	for i := range s.environments {
 		if s.environments[i].Name == name {
 			if request.DeploymentBranchPolicy != nil {
@@ -139,6 +150,7 @@ func (s *repositorySettingsMemory) customBranchPoliciesEnabled(name string) bool
 }
 
 func (s *repositorySettingsMemory) ListDeploymentProtectionRules(_ context.Context, _ githubapi.Repository, environment string) ([]githubapi.DeploymentProtectionRule, error) {
+	s.customRuleListCalls++
 	return s.customRules[environment], nil
 }
 
@@ -673,6 +685,117 @@ func TestCustomEnvironmentProtectionPlanBlocksUnavailableApp(t *testing.T) {
 	change, ok := findChange(plan, "actions.environment.production.customProtectionRules")
 	if !ok || change.State != ChangeBlocked {
 		t.Fatalf("custom protection change = %#v, want blocked when app is unavailable", change)
+	}
+}
+
+// importShapedUnprotectedEnvironment is the environment import writes for a
+// live environment without protection rules: every disabling value explicit.
+func importShapedUnprotectedEnvironment(name string) config.Environment {
+	wait, prevent := 0, false
+	reviewers := []config.EnvironmentReviewer{}
+	rules := []string{}
+	return config.Environment{
+		Name: name, WaitTimer: &wait, PreventSelfReview: &prevent, Reviewers: &reviewers,
+		DeploymentBranchPolicy: &config.DeploymentBranchPolicy{AllowAllBranches: true},
+		CustomProtectionRules:  &rules,
+	}
+}
+
+// TestUnprotectedEnvironmentOmitsDisabledProtectionFields reproduces a private
+// repository whose plan has no wait timers or required reviewers: declaring
+// them disabled must not send protection rule fields GitHub rejects.
+func TestUnprotectedEnvironmentOmitsDisabledProtectionFields(t *testing.T) {
+	for name, live := range map[string][]githubapi.Environment{
+		"new environment":      nil,
+		"existing environment": {{Name: "copilot"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			service := newRepositorySettingsMemory()
+			service.protectionUnsupported = true
+			service.environments = live
+			engine, err := New(service)
+			if err != nil {
+				t.Fatal(err)
+			}
+			desired := &config.ActionsConfig{Environments: []config.Environment{importShapedUnprotectedEnvironment("copilot")}}
+			repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+
+			before := Plan{}
+			appendActionsChanges(context.Background(), service, &before, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+			if hasChange(before, "actions.environment.copilot.customProtectionRules", ChangeCreate) {
+				t.Fatalf("plan = %#v, want no custom rule creation for an empty list", before.Changes)
+			}
+			calls := service.customRuleListCalls
+			if err := engine.applyActions(context.Background(), repository, desired, Options{}); err != nil {
+				t.Fatalf("applyActions() error = %v", err)
+			}
+			if live == nil && service.customRuleListCalls != calls {
+				t.Fatalf("custom rule API called %d times for a new environment with no custom rules", service.customRuleListCalls-calls)
+			}
+			request := service.environmentRequests[len(service.environmentRequests)-1]
+			body, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != `{"deployment_branch_policy":null}` {
+				t.Fatalf("environment request = %s, want only the deployment branch policy", body)
+			}
+			after := Plan{}
+			appendActionsChanges(context.Background(), service, &after, desired, repository, config.RepositoryConfig{}, githubapi.RepositoryInfo{})
+			for _, resource := range []string{"actions.environment.copilot", "actions.environment.copilot.customProtectionRules"} {
+				if !hasChange(after, resource, ChangeNoop) {
+					t.Fatalf("post-apply plan = %#v, want %s converged", after.Changes, resource)
+				}
+			}
+		})
+	}
+}
+
+func TestEnvironmentRequestKeepsProtectionWrites(t *testing.T) {
+	zero, five, no, yes := 0, 5, false, true
+	none := []config.EnvironmentReviewer{}
+	someone := []config.EnvironmentReviewer{{Type: "User", ID: 7}}
+	waitRule := githubapi.Environment{Name: "production", ProtectionRules: []githubapi.EnvironmentProtectionRule{{Type: "wait_timer", WaitTimer: 10}}}
+	reviewerRule := githubapi.Environment{Name: "production", ProtectionRules: []githubapi.EnvironmentProtectionRule{{Type: "required_reviewers", PreventSelfReview: true}}}
+	for name, tc := range map[string]struct {
+		desired config.Environment
+		actual  *githubapi.Environment
+		want    string
+	}{
+		"clears an existing wait timer":     {config.Environment{WaitTimer: &zero}, &waitRule, `{"wait_timer":0}`},
+		"sets a wait timer":                 {config.Environment{WaitTimer: &five}, nil, `{"wait_timer":5}`},
+		"clears existing reviewers":         {config.Environment{PreventSelfReview: &no, Reviewers: &none}, &reviewerRule, `{"prevent_self_review":false,"reviewers":[]}`},
+		"enables reviewers":                 {config.Environment{PreventSelfReview: &no, Reviewers: &someone}, nil, `{"prevent_self_review":false,"reviewers":[{"type":"User","id":7}]}`},
+		"keeps an enabling self-review ban": {config.Environment{PreventSelfReview: &yes}, nil, `{"prevent_self_review":true}`},
+		"leaves undeclared fields alone":    {config.Environment{}, &reviewerRule, `{}`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body, err := json.Marshal(environmentRequest(tc.desired, tc.actual))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(body) != tc.want {
+				t.Fatalf("environment request = %s, want %s", body, tc.want)
+			}
+		})
+	}
+}
+
+// TestEnvironmentProtectionPlanErrorIsExplained guards that a real protection
+// rule the plan does not offer still fails, with the plan limit explained,
+// rather than being silently dropped.
+func TestEnvironmentProtectionPlanErrorIsExplained(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	service.protectionUnsupported = true
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewers := []config.EnvironmentReviewer{{Type: "User", ID: 7}}
+	desired := &config.ActionsConfig{Environments: []config.Environment{{Name: "production", Reviewers: &reviewers}}}
+	err = engine.applyActions(context.Background(), githubapi.Repository{Owner: "octo", Name: "demo"}, desired, Options{})
+	if err == nil || !strings.Contains(err.Error(), "only on public repositories") || !strings.Contains(err.Error(), "HTTP 422") {
+		t.Fatalf("applyActions() error = %v, want the 422 with the plan limit explained", err)
 	}
 }
 
