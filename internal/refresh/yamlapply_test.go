@@ -62,6 +62,22 @@ func TestApplyYAMLUpdatesNestedActionsSelectedActionsField(t *testing.T) {
 	}
 }
 
+func TestApplyYAMLUpdatesDeclaredCopilotCodeReviewFields(t *testing.T) {
+	t.Parallel()
+	src := "settings:\n  copilotCodeReview:\n    reviewEffort: balanced # preserve this comment\n    mcpEnabled: true\n"
+	out, err := ApplyYAML([]byte(src), Plan{Scalars: []ScalarChange{
+		{Path: "settings.copilotCodeReview.reviewEffort", Value: stringValue("max")},
+		{Path: "settings.copilotCodeReview.mcpEnabled", Value: boolValue(false)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "settings:\n  copilotCodeReview:\n    reviewEffort: max # preserve this comment\n    mcpEnabled: false\n"
+	if string(out) != want {
+		t.Fatalf("out = %q, want %q", out, want)
+	}
+}
+
 // A full-line comment above a mapping key combined with a trailing comment
 // on the sibling line just before the edited field skews go-yaml's value
 // token offset backwards onto the key's own ": ". The edit must still land

@@ -126,6 +126,14 @@ func validateRepositorySettings(settings *RepositorySettings) error {
 	if settings == nil {
 		return nil
 	}
+	if review := settings.CopilotCodeReview; review != nil {
+		if review.ReviewEffort != nil && strings.TrimSpace(*review.ReviewEffort) == "" {
+			return errors.New("settings.copilotCodeReview.reviewEffort must not be blank")
+		}
+		if review.SeverityFilter != nil && !oneOf(*review.SeverityFilter, "no_filter", "low", "low_and_medium") {
+			return errors.New("settings.copilotCodeReview.severityFilter must be no_filter, low, or low_and_medium")
+		}
+	}
 	if interaction := settings.InteractionLimit; interaction != nil && interaction.Enabled {
 		if !oneOf(interaction.Limit, "existing_users", "contributors_only", "collaborators_only") {
 			return errors.New("settings.interactionLimit.limit must be existing_users, contributors_only, or collaborators_only")

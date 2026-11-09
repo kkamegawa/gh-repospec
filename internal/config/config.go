@@ -39,6 +39,14 @@ type RepositorySettings struct {
 	BranchProtections      []BranchProtectionConfig      `json:"branchProtections,omitempty" yaml:"branchProtections,omitempty"`
 	InteractionLimit       *InteractionLimitConfig       `json:"interactionLimit,omitempty" yaml:"interactionLimit,omitempty"`
 	PullRequestCreationCap *PullRequestCreationCapConfig `json:"pullRequestCreationCap,omitempty" yaml:"pullRequestCreationCap,omitempty"`
+	CopilotCodeReview      *CopilotCodeReviewConfig      `json:"copilotCodeReview,omitempty" yaml:"copilotCodeReview,omitempty"`
+}
+
+type CopilotCodeReviewConfig struct {
+	ReviewEffort              *string `json:"reviewEffort,omitempty" yaml:"reviewEffort,omitempty"`
+	CustomInstructionsEnabled *bool   `json:"customInstructionsEnabled,omitempty" yaml:"customInstructionsEnabled,omitempty"`
+	MCPEnabled                *bool   `json:"mcpEnabled,omitempty" yaml:"mcpEnabled,omitempty"`
+	SeverityFilter            *string `json:"severityFilter,omitempty" yaml:"severityFilter,omitempty"`
 }
 
 type InteractionLimitConfig struct {

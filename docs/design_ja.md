@@ -85,6 +85,18 @@ HTTP 422を返します。fork承認とは逆の条件です。そのため`impo
 として報告します。この実行でpublicから`private`へ変更するリポジトリでは、visibility変更の
 後に適用するupdateとして計画します。
 
+`settings.copilotCodeReview` は、リポジトリのレビュー深度、カスタム指示と MCP
+サーバーの利用、コメントの重大度フィルターを制御します。各項目は独立して管理します。
+`plan` は設定済みのレビュー深度を比較し、明示された値が対象リポジトリで利用できるかを
+確認します。`inherit` は取得できる上書き値を解除します。`apply` は設定を再取得し、
+宣言済みの差分を一つの PATCH にまとめます。リポジトリを新規作成する場合は作成後に
+実行します。自動レビューの依頼は `copilot_code_review` の branch ruleset で設定します。
+
+`import` はレビュー深度の設定済みの値が null なら診断を出し、その項目を省略します。
+レート制限以外の HTTP 403 または HTTP 404 では診断を出し、Copilot のセクションを
+省略します。それ以外の読み取りエラーでは失敗します。`import --into` は宣言済みで、
+GitHub から値を取得できた項目だけを更新します。
+
 `actions.oidcSubjectCustomization`は、リポジトリのActions OIDC subject claimテンプレートを
 設定します。`useImmutableSubject`は、ownerとリポジトリのIDを含む不変のclaim形式を選択します。
 GitHubは2026-07-15以降に作成または名前変更されたすべてのリポジトリでこの形式を有効にし、
@@ -278,7 +290,7 @@ bootstrapする場合は、Administration、Contents、およびsecretとvariabl
 現在のdefault branch treeを使用してrefをforce更新しません。
 
 `.github/mcp.json`、instructions、custom agent、skill、setup workflowなどのagentファイルは
-seed内容です。Copilot MCP serverのrepository設定、Copilot license/seat、組織ポリシー、
+seed内容です。Copilot license/seat、組織ポリシー、
 継承した組織rulesetには、対応するrepository-level自動化経路がなく、手動作業として
 レポートします。commandプロセスはOS sandboxではありません。ツールは承認済み実行ファイル、
 argv、repository workspace、出力上限、timeout、環境変数allowlistに制限します。

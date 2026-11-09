@@ -120,6 +120,9 @@ func computePlan(current, desired *config.Config) Plan {
 	if current.Security != nil && desired.Security != nil {
 		plan.Scalars = append(plan.Scalars, securityScalarChanges(current.Security, desired.Security)...)
 	}
+	if current.Settings != nil && desired.Settings != nil && current.Settings.CopilotCodeReview != nil && desired.Settings.CopilotCodeReview != nil {
+		plan.Scalars = append(plan.Scalars, copilotCodeReviewScalarChanges(current.Settings.CopilotCodeReview, desired.Settings.CopilotCodeReview)...)
+	}
 
 	if current.Labels != nil {
 		plan.Collections = append(plan.Collections, labelCollectionChange(current.Labels, desired.Labels))
@@ -144,6 +147,23 @@ func computePlan(current, desired *config.Config) Plan {
 		}
 	}
 	return plan
+}
+
+func copilotCodeReviewScalarChanges(current, desired *config.CopilotCodeReviewConfig) []ScalarChange {
+	var changes []ScalarChange
+	if current.ReviewEffort != nil && desired.ReviewEffort != nil && *current.ReviewEffort != *desired.ReviewEffort {
+		changes = append(changes, ScalarChange{Path: "settings.copilotCodeReview.reviewEffort", Value: stringValue(*desired.ReviewEffort)})
+	}
+	if current.CustomInstructionsEnabled != nil && desired.CustomInstructionsEnabled != nil && *current.CustomInstructionsEnabled != *desired.CustomInstructionsEnabled {
+		changes = append(changes, ScalarChange{Path: "settings.copilotCodeReview.customInstructionsEnabled", Value: boolValue(*desired.CustomInstructionsEnabled)})
+	}
+	if current.MCPEnabled != nil && desired.MCPEnabled != nil && *current.MCPEnabled != *desired.MCPEnabled {
+		changes = append(changes, ScalarChange{Path: "settings.copilotCodeReview.mcpEnabled", Value: boolValue(*desired.MCPEnabled)})
+	}
+	if current.SeverityFilter != nil && desired.SeverityFilter != nil && *current.SeverityFilter != *desired.SeverityFilter {
+		changes = append(changes, ScalarChange{Path: "settings.copilotCodeReview.severityFilter", Value: stringValue(*desired.SeverityFilter)})
+	}
+	return changes
 }
 
 func repositoryScalarChanges(current, desired config.RepositoryConfig) []ScalarChange {

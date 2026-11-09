@@ -18,24 +18,29 @@ import (
 // the apply-then-plan test exercises convergence without contacting GitHub.
 type repositorySettingsMemory struct {
 	*recordingService
-	pages                 githubapi.PagesSite
-	pagesEnabled          bool
-	webhooks              []githubapi.RepositoryWebhook
-	autolinks             []githubapi.Autolink
-	deployKeys            []githubapi.DeployKey
-	collaborators         []githubapi.Collaborator
-	teams                 []githubapi.RepositoryTeam
-	properties            []githubapi.CustomPropertyValue
-	customRules           map[string][]githubapi.DeploymentProtectionRule
-	branchPolicies        map[string][]githubapi.EnvironmentBranchPolicy
-	availableIntegrations map[string][]githubapi.AvailableDeploymentProtectionIntegration
-	interactionLimit      githubapi.RepositoryInteractionLimit
-	creationCap           githubapi.PullRequestCreationCap
-	creationCapBypasses   []githubapi.InteractionBypassUser
-	protections           map[string]map[string]any
-	signatures            map[string]bool
-	oidc                  githubapi.OIDCSubjectCustomization
-	oidcWrites            []githubapi.OIDCSubjectCustomization
+	pages                     githubapi.PagesSite
+	pagesEnabled              bool
+	webhooks                  []githubapi.RepositoryWebhook
+	autolinks                 []githubapi.Autolink
+	deployKeys                []githubapi.DeployKey
+	collaborators             []githubapi.Collaborator
+	teams                     []githubapi.RepositoryTeam
+	properties                []githubapi.CustomPropertyValue
+	customRules               map[string][]githubapi.DeploymentProtectionRule
+	branchPolicies            map[string][]githubapi.EnvironmentBranchPolicy
+	availableIntegrations     map[string][]githubapi.AvailableDeploymentProtectionIntegration
+	interactionLimit          githubapi.RepositoryInteractionLimit
+	creationCap               githubapi.PullRequestCreationCap
+	creationCapBypasses       []githubapi.InteractionBypassUser
+	copilotCodeReview         githubapi.CopilotCodeReviewSettings
+	copilotCodeReviewReadErr  error
+	copilotCodeReviewWriteErr error
+	copilotCodeReviewReads    int
+	copilotCodeReviewWrites   []githubapi.CopilotCodeReviewSettingsRequest
+	protections               map[string]map[string]any
+	signatures                map[string]bool
+	oidc                      githubapi.OIDCSubjectCustomization
+	oidcWrites                []githubapi.OIDCSubjectCustomization
 	// stickyImmutableSubject models a repository created after 2026-07-15,
 	// where GitHub keeps the immutable subject claim enabled.
 	stickyImmutableSubject bool
@@ -47,6 +52,39 @@ type repositorySettingsMemory struct {
 	protectionUnsupported bool
 	customRuleListCalls   int
 	nextID                int64
+}
+
+func (s *repositorySettingsMemory) GetCopilotCodeReviewSettings(context.Context, githubapi.Repository) (githubapi.CopilotCodeReviewSettings, error) {
+	s.copilotCodeReviewReads++
+	return s.copilotCodeReview, s.copilotCodeReviewReadErr
+}
+
+func (s *repositorySettingsMemory) UpdateCopilotCodeReviewSettings(_ context.Context, _ githubapi.Repository, request githubapi.CopilotCodeReviewSettingsRequest) error {
+	s.copilotCodeReviewWrites = append(s.copilotCodeReviewWrites, request)
+	if s.copilotCodeReviewWriteErr != nil {
+		return s.copilotCodeReviewWriteErr
+	}
+	if request.ReviewEffort != nil {
+		if *request.ReviewEffort == "inherit" {
+			s.copilotCodeReview.ReviewEffort.Configured = nil
+		} else {
+			value := *request.ReviewEffort
+			s.copilotCodeReview.ReviewEffort.Configured = &value
+		}
+	}
+	if request.CustomInstructionsEnabled != nil {
+		value := *request.CustomInstructionsEnabled
+		s.copilotCodeReview.CustomInstructionsEnabled = &value
+	}
+	if request.MCPEnabled != nil {
+		value := *request.MCPEnabled
+		s.copilotCodeReview.MCPEnabled = &value
+	}
+	if request.SeverityFilter != nil {
+		value := *request.SeverityFilter
+		s.copilotCodeReview.SeverityFilter = &value
+	}
+	return nil
 }
 
 func (s *repositorySettingsMemory) GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error) {
@@ -492,6 +530,96 @@ func TestRepositorySettingsApplyThenPlanHasNoDrift(t *testing.T) {
 		}
 	}
 }
+
+func TestCopilotCodeReviewSettingsPlanReportsFieldsAndBlocksUnavailableEffort(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	effort := "max"
+	service.copilotCodeReview.AvailableReviewEfforts = []string{"lite", "balanced"}
+	desired := &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{
+		ReviewEffort:              &effort,
+		CustomInstructionsEnabled: boolPointer(true),
+		MCPEnabled:                boolPointer(false),
+		SeverityFilter:            stringPointer("low_and_medium"),
+	}}
+	plan := Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, true, false)
+	for _, resource := range []string{"reviewEffort", "customInstructionsEnabled", "mcpEnabled", "severityFilter"} {
+		state := ChangeUpdate
+		if resource == "reviewEffort" {
+			state = ChangeBlocked
+		}
+		if !hasChange(plan, "settings.copilotCodeReview."+resource, state) {
+			t.Errorf("plan = %#v, missing %s for %s", plan.Changes, state, resource)
+		}
+	}
+
+	service.copilotCodeReviewReadErr = &githubapi.APIError{StatusCode: 403, Message: "forbidden"}
+	plan = Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, true, false)
+	for _, resource := range []string{"reviewEffort", "customInstructionsEnabled", "mcpEnabled", "severityFilter"} {
+		if !hasChange(plan, "settings.copilotCodeReview."+resource, ChangeBlocked) {
+			t.Errorf("read failure plan = %#v, missing blocked %s", plan.Changes, resource)
+		}
+	}
+}
+
+func TestCopilotCodeReviewSettingsApplyUsesOneChangedOnlyPatchAndConverges(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	balanced := "balanced"
+	service.copilotCodeReview.ReviewEffort = githubapi.CopilotReviewEffort{Configured: &balanced, Effective: "balanced"}
+	service.copilotCodeReview.AvailableReviewEfforts = []string{"lite", "balanced", "max"}
+	service.copilotCodeReview.CustomInstructionsEnabled = boolPointer(true)
+	desiredEffort := "inherit"
+	desired := &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{
+		ReviewEffort:              &desiredEffort,
+		CustomInstructionsEnabled: boolPointer(true),
+		MCPEnabled:                boolPointer(false),
+	}}
+	engine, err := New(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := githubapi.Repository{Owner: "octo", Name: "demo"}
+	if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+		t.Fatalf("applyRepositorySettings() error = %v", err)
+	}
+	if len(service.copilotCodeReviewWrites) != 1 {
+		t.Fatalf("Copilot settings PATCH count = %d, want 1", len(service.copilotCodeReviewWrites))
+	}
+	request := service.copilotCodeReviewWrites[0]
+	if request.ReviewEffort == nil || *request.ReviewEffort != "inherit" || request.MCPEnabled == nil || *request.MCPEnabled || request.CustomInstructionsEnabled != nil || request.SeverityFilter != nil {
+		t.Fatalf("Copilot settings PATCH = %#v, want only inherit reviewEffort and MCP false", request)
+	}
+	plan := Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, repository, true, false)
+	if !hasChange(plan, "settings.copilotCodeReview.reviewEffort", ChangeNoop) || !hasChange(plan, "settings.copilotCodeReview.mcpEnabled", ChangeNoop) || !hasChange(plan, "settings.copilotCodeReview.customInstructionsEnabled", ChangeNoop) {
+		t.Fatalf("converged plan = %#v", plan.Changes)
+	}
+	if err := engine.applyRepositorySettings(context.Background(), repository, desired); err != nil {
+		t.Fatalf("repeated applyRepositorySettings() error = %v", err)
+	}
+	if len(service.copilotCodeReviewWrites) != 1 {
+		t.Fatalf("repeated apply PATCH count = %d, want still 1", len(service.copilotCodeReviewWrites))
+	}
+}
+
+func TestCopilotCodeReviewSettingsAreDeferredForNewRepositories(t *testing.T) {
+	service := newRepositorySettingsMemory()
+	effort := "lite"
+	desired := &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{ReviewEffort: &effort, MCPEnabled: boolPointer(false)}}
+	plan := Plan{}
+	appendRepositorySettingsChanges(context.Background(), service, &plan, desired, githubapi.Repository{Owner: "octo", Name: "demo"}, false, true)
+	if !hasChange(plan, "settings.copilotCodeReview.reviewEffort", ChangeCreate) || !hasChange(plan, "settings.copilotCodeReview.mcpEnabled", ChangeCreate) {
+		t.Fatalf("new repository plan = %#v", plan.Changes)
+	}
+	if service.copilotCodeReviewReads != 0 {
+		t.Fatalf("new repository planning performed %d settings reads, want none", service.copilotCodeReviewReads)
+	}
+}
+
+func boolPointer(value bool) *bool { return &value }
+
+func stringPointer(value string) *string { return &value }
 
 func TestActionsOIDCSubjectCustomizationApplyThenPlanHasNoDrift(t *testing.T) {
 	service := newRepositorySettingsMemory()

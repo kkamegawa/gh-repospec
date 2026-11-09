@@ -65,10 +65,20 @@ Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, an
 | `agents` | Agent variables/secrets and repository-relative locations of MCP, instruction, agent, and skill files supplied by the seed. |
 | `labels` | Issue and pull request labels. Additive: labels absent from configuration are never deleted. |
 | `milestones` | Milestones. Additive: retire one with `state: closed` rather than removing it. |
-| `settings` | Pages, webhooks, autolinks, deploy keys, collaborators, teams, custom property values, classic branch protection, interaction limits, and the pull request creation cap. Branch protection `settings` use the field names of GitHub's update API; `import` writes them in that form. |
+| `settings` | Pages, webhooks, autolinks, deploy keys, collaborators, teams, custom property values, classic branch protection, interaction limits, the pull request creation cap, and Copilot Code Review. Branch protection `settings` use the field names of GitHub's update API, and `import` writes them in that form. |
 | `commands` | Explicitly approved, argv-based local initialization commands such as `apm init`. |
 
 Secrets contain a `sourceEnv` name, never a secret value. Their default update policy is `createOnly`; use `always` only when intentional rotation is required.
+
+### Copilot Code Review
+
+`settings.copilotCodeReview` manages `reviewEffort`, `customInstructionsEnabled`, `mcpEnabled`, and `severityFilter`. Omitted fields remain unmanaged. Set `reviewEffort` to an effort available on the target repository or to `inherit` to clear a visible override. The severity filter accepts `no_filter`, `low`, and `low_and_medium`. Configure automatic review requests with the `copilot_code_review` branch ruleset.
+
+- **Local GitHub CLI.** Use `gh auth login` as a repository administrator. The OAuth token or classic PAT needs the `repo` scope.
+- **Read-only CI (`plan` and `import`).** Pass a GitHub App token or fine-grained PAT with repository **Administration: read** to the CLI through `GH_TOKEN`.
+- **Apply CI.** Pass a GitHub App token or fine-grained PAT with repository **Administration: write** through `GH_TOKEN`. Include any additional permissions required by other settings in the same configuration.
+
+GitHub Actions workflow `permissions` cannot grant **Administration** to the built-in `GITHUB_TOKEN`.
 
 ## Commands
 
@@ -114,7 +124,7 @@ Neither example above needs quoting. Quote the expansion when it contains spaces
 
 ## Limits and manual work
 
-Repository-level automation cannot configure Copilot MCP servers in repository settings, Copilot licenses or seats, organization policies, or inherited organization rulesets. Put seed-managed files such as `.github/mcp.json`, instructions, custom agents, skills, and setup workflows in the source content instead. Unsupported plan-dependent features are blocked unless their configuration marks them `optional: true`; authorization failures always stop the run.
+Define Copilot MCP servers in seed content such as `.github/mcp.json`, alongside instructions, custom agents, skills, and setup workflows. `settings.copilotCodeReview.mcpEnabled` controls whether code reviews can use MCP servers. Copilot licenses and seats, organization policies, and inherited organization rulesets require manual setup. Unsupported plan-dependent features are blocked unless their configuration marks them `optional: true`. For Copilot Code Review, `plan` blocks on a failed read, and `import` reports a diagnostic if GitHub returns 404 or a 403 unrelated to rate limiting.
 
 ## Development
 

@@ -98,6 +98,19 @@ blocked without attempting the read, and a repository this run changes from
 public to `private` is planned as an update applied after the visibility
 change.
 
+`settings.copilotCodeReview` controls repository review effort, use of custom
+instructions and MCP servers, and comment severity filtering. Each field is
+managed independently. The planner compares the configured review effort and
+checks explicit efforts against those available on the target repository.
+`inherit` clears an observable override. Apply re-reads settings and groups
+all changed declarations in one PATCH after repository creation, if needed.
+Automatic review requests use the `copilot_code_review` branch ruleset.
+
+`import` reports an ambiguous null configured effort and omits that field.
+A non-rate-limit 403 or a 404 produces a diagnostic and omits the Copilot
+section. Other read failures fail the import. `import --into` updates only
+declared fields for which GitHub returned a readable value.
+
 `actions.oidcSubjectCustomization` sets the repository's Actions OIDC subject
 claim template. Its `useImmutableSubject` selects the immutable claim format,
 which carries the owner and repository IDs. GitHub enables that format for
@@ -336,9 +349,8 @@ Database API. Existing repositories use their current default-branch tree and
 never force-update a ref.
 
 Agent files such as `.github/mcp.json`, instructions, custom agents, skills,
-and setup workflows are seed content. Repository settings for Copilot MCP
-servers, Copilot licenses or seats, organization policies, and inherited
-organization rulesets have no supported repository-level automation path and
+and setup workflows are seed content. Copilot licenses or seats, organization
+policies, and inherited organization rulesets have no supported repository-level automation path and
 are reported as manual work. Command processes are not OS-sandboxed; the tool
 limits them to an approved executable, argv, repository workspace, bounded
 output, timeout, and an environment allowlist. The allowlist is exact: `PATH`
