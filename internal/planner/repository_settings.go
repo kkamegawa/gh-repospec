@@ -476,7 +476,7 @@ func applyCopilotCodeReviewSettings(ctx context.Context, service Service, reposi
 	}
 	api, ok := service.(copilotCodeReviewService)
 	if !ok {
-		return fmt.Errorf("Copilot code review settings API is unavailable")
+		return fmt.Errorf("cannot access the Copilot code review settings API")
 	}
 	actual, err := api.GetCopilotCodeReviewSettings(ctx, repository)
 	if err != nil {
