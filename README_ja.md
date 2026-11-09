@@ -64,10 +64,20 @@ gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 | `agents` | seed が提供する MCP、instructions、agents、skills の repository-relative path と agent variables / secrets。 |
 | `labels` | issue と pull request の label。追加的で、設定にない label は削除しません。 |
 | `milestones` | milestone。追加的で、廃止は削除ではなく `state: closed` で表します。 |
-| `settings` | Pages、webhook、autolink、deploy key、collaborator、team、custom property の値、旧 branch protection、interaction limit、pull request の作成上限。branch protection の `settings` は GitHub の更新 API のフィールド名で記述し、`import` もその形式で書き出す。 |
+| `settings` | Pages、webhook、autolink、deploy key、collaborator、team、custom property の値、旧 branch protection、interaction limit、pull request の作成上限、Copilot Code Review。branch protection の `settings` は GitHub の更新 API のフィールド名で記述し、`import` もその形式で書き出す。 |
 | `commands` | `apm init` などの、明示承認された argv 形式のローカル初期化コマンド。 |
 
 secret に記載するのは値ではなく `sourceEnv` 名です。既定の更新方針は `createOnly` であり、意図的なローテーション時だけ `always` を指定します。
+
+### Copilot Code Review
+
+`settings.copilotCodeReview` で `reviewEffort`、`customInstructionsEnabled`、`mcpEnabled`、`severityFilter` を管理します。省略した項目は管理対象外です。`reviewEffort` には対象リポジトリで利用できる値を指定します。取得できる上書き値を解除するには `inherit` を指定します。重大度フィルターには `no_filter`、`low`、`low_and_medium` を指定できます。自動レビューの依頼は `copilot_code_review` の branch ruleset で設定します。
+
+- **ローカルの GitHub CLI。** リポジトリ管理者として `gh auth login` を実行します。OAuth トークンまたは classic PAT には `repo` スコープが必要です。
+- **読み取り専用 CI（`plan` と `import`）。** リポジトリの **Administration: read** 権限を持つ GitHub App トークンまたは fine-grained PAT を `GH_TOKEN` で CLI に渡します。
+- **適用用 CI。** リポジトリの **Administration: write** 権限を持つ GitHub App トークンまたは fine-grained PAT を `GH_TOKEN` で渡します。同じ設定ファイルの他の項目に必要な権限も付与してください。
+
+GitHub Actions の workflow `permissions` では、組み込みの `GITHUB_TOKEN` に **Administration** 権限を付与できません。
 
 ## コマンド
 
@@ -113,7 +123,7 @@ gh rb plan --file bootstrap.yaml
 
 ## 手動作業となる制限
 
-リポジトリ設定画面の Copilot MCP servers、Copilot のライセンス・seat、組織ポリシー、継承された組織 ruleset は自動化できません。`.github/mcp.json`、instructions、custom agents、skills、setup workflow は seed のコンテンツとして管理してください。プラン依存機能は `optional: true` のときだけ skip 可能で、認可不足は常に停止します。
+Copilot MCP サーバーは、instructions、custom agents、skills、setup workflow と同様に `.github/mcp.json` などの seed コンテンツで定義します。`settings.copilotCodeReview.mcpEnabled` はコードレビューで MCP サーバーを利用するかを制御します。Copilot のライセンスやシート、組織ポリシー、継承された組織 ruleset は手動で設定します。プランに依存する機能は `optional: true` のときだけスキップできます。Copilot Code Review の設定を取得できない場合、`plan` は処理をブロックし、`import` は HTTP 404 またはレート制限以外の HTTP 403 に対して診断を表示します。
 
 ## 開発
 

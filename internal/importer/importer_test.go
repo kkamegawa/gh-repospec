@@ -26,6 +26,8 @@ type fakeReader struct {
 	getPagesErr               error
 	interactionLimit          githubapi.RepositoryInteractionLimit
 	interactionLimitErr       error
+	copilotCodeReview         githubapi.CopilotCodeReviewSettings
+	copilotCodeReviewErr      error
 	creationCap               githubapi.PullRequestCreationCap
 	creationCapErr            error
 	creationCapBypasses       []githubapi.InteractionBypassUser
@@ -80,6 +82,9 @@ func (f *fakeReader) GetPages(context.Context, githubapi.Repository) (githubapi.
 }
 func (f *fakeReader) GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error) {
 	return f.interactionLimit, f.interactionLimitErr
+}
+func (f *fakeReader) GetCopilotCodeReviewSettings(context.Context, githubapi.Repository) (githubapi.CopilotCodeReviewSettings, error) {
+	return f.copilotCodeReview, f.copilotCodeReviewErr
 }
 func (f *fakeReader) GetPullRequestCreationCap(context.Context, githubapi.Repository) (githubapi.PullRequestCreationCap, error) {
 	return f.creationCap, f.creationCapErr
@@ -355,6 +360,80 @@ func TestImportMapsRepositorySettings(t *testing.T) {
 	}
 	if repo.AllowVisibilityChange {
 		t.Fatal("AllowVisibilityChange was set from repository state; it is local intent")
+	}
+}
+
+func TestImportMapsCopilotCodeReviewSettingsAndPreservesFalse(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	reviewEffort := "max"
+	customInstructions := false
+	mcp := true
+	severity := "low_and_medium"
+	reader.copilotCodeReview = githubapi.CopilotCodeReviewSettings{
+		ReviewEffort:              githubapi.CopilotReviewEffort{Configured: &reviewEffort, Effective: "max"},
+		AvailableReviewEfforts:    []string{"lite", "balanced", "max"},
+		CustomInstructionsEnabled: &customInstructions, MCPEnabled: &mcp, SeverityFilter: &severity,
+	}
+
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := result.Config.Settings.CopilotCodeReview
+	if settings == nil || settings.ReviewEffort == nil || *settings.ReviewEffort != "max" || settings.CustomInstructionsEnabled == nil || *settings.CustomInstructionsEnabled || settings.MCPEnabled == nil || !*settings.MCPEnabled || settings.SeverityFilter == nil || *settings.SeverityFilter != severity {
+		t.Fatalf("CopilotCodeReview = %#v, want configured value and explicit false preserved", settings)
+	}
+}
+
+func TestImportReportsAmbiguousCopilotReviewEffortAndDoesNotImportEffectiveValue(t *testing.T) {
+	t.Parallel()
+	reader := newFakeReader()
+	customInstructions := true
+	mcp := false
+	severity := "no_filter"
+	reader.copilotCodeReview = githubapi.CopilotCodeReviewSettings{
+		ReviewEffort:              githubapi.CopilotReviewEffort{Effective: "balanced"},
+		AvailableReviewEfforts:    []string{"lite", "balanced", "max"},
+		CustomInstructionsEnabled: &customInstructions, MCPEnabled: &mcp, SeverityFilter: &severity,
+	}
+	result, err := Import(context.Background(), reader, testRepo())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := result.Config.Settings.CopilotCodeReview
+	if settings == nil || settings.ReviewEffort != nil || settings.MCPEnabled == nil || *settings.MCPEnabled {
+		t.Fatalf("CopilotCodeReview = %#v, want null effort omitted and false retained", settings)
+	}
+	if !hasDiagnostic(result.Diagnostics, "settings.copilotCodeReview.reviewEffort") {
+		t.Fatalf("Diagnostics = %#v, want ambiguous effort diagnostic", result.Diagnostics)
+	}
+}
+
+func TestImportReportsCopilotSettings403And404ButReturnsOtherFailures(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{403, 404} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			t.Parallel()
+			reader := newFakeReader()
+			reader.copilotCodeReviewErr = &githubapi.APIError{StatusCode: status, Method: "GET"}
+			result, err := Import(context.Background(), reader, testRepo())
+			if err != nil {
+				t.Fatalf("Import() error = %v", err)
+			}
+			if result.Config.Settings.CopilotCodeReview != nil || !hasDiagnostic(result.Diagnostics, "settings.copilotCodeReview") {
+				t.Fatalf("CopilotCodeReview = %#v, diagnostics = %#v", result.Config.Settings.CopilotCodeReview, result.Diagnostics)
+			}
+		})
+	}
+	reader := newFakeReader()
+	reader.copilotCodeReviewErr = &githubapi.APIError{StatusCode: 403, Method: "GET", Message: "API rate limit exceeded"}
+	if _, err := Import(context.Background(), reader, testRepo()); err == nil {
+		t.Fatal("Import() succeeded after a rate-limited Copilot settings read")
+	}
+	reader.copilotCodeReviewErr = errors.New("transport unavailable")
+	if _, err := Import(context.Background(), reader, testRepo()); err == nil {
+		t.Fatal("Import() succeeded after a transport failure")
 	}
 }
 

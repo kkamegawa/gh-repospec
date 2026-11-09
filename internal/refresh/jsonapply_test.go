@@ -61,3 +61,32 @@ func TestApplyJSONSetsSecurityAIPullRequestScanKeepingOptional(t *testing.T) {
 		t.Fatal("ApplyJSON mutated current.Security.AIPullRequestScan")
 	}
 }
+
+func TestApplyJSONUpdatesDeclaredCopilotCodeReviewFields(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public"},
+		Settings: &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{
+			ReviewEffort: strPtr("balanced"), MCPEnabled: boolPtr(true),
+		}},
+	}
+	data, err := ApplyJSON(current, Plan{Scalars: []ScalarChange{
+		{Path: "settings.copilotCodeReview.reviewEffort", Value: stringValue("max")},
+		{Path: "settings.copilotCodeReview.mcpEnabled", Value: boolValue(false)},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated config.Config
+	if err := json.Unmarshal(data, &updated); err != nil {
+		t.Fatal(err)
+	}
+	settings := updated.Settings.CopilotCodeReview
+	if settings.ReviewEffort == nil || *settings.ReviewEffort != "max" || settings.MCPEnabled == nil || *settings.MCPEnabled {
+		t.Fatalf("CopilotCodeReview = %#v", settings)
+	}
+	if *current.Settings.CopilotCodeReview.MCPEnabled != true {
+		t.Fatal("ApplyJSON mutated the source configuration")
+	}
+}

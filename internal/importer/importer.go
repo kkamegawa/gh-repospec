@@ -35,6 +35,7 @@ type Reader interface {
 	GetImmutableReleases(context.Context, githubapi.Repository) (githubapi.ImmutableReleases, error)
 	GetPages(context.Context, githubapi.Repository) (githubapi.PagesSite, error)
 	GetRepositoryInteractionLimit(context.Context, githubapi.Repository) (githubapi.RepositoryInteractionLimit, error)
+	GetCopilotCodeReviewSettings(context.Context, githubapi.Repository) (githubapi.CopilotCodeReviewSettings, error)
 	GetPullRequestCreationCap(context.Context, githubapi.Repository) (githubapi.PullRequestCreationCap, error)
 	ListPullRequestCreationCapBypassUsers(context.Context, githubapi.Repository) ([]githubapi.InteractionBypassUser, error)
 	ListWebhooks(context.Context, githubapi.Repository) ([]githubapi.RepositoryWebhook, error)

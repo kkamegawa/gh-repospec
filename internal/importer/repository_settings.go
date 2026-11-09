@@ -15,6 +15,22 @@ func importRepositorySettings(ctx context.Context, reader Reader, repository git
 	settings := &config.RepositorySettings{}
 	var diagnostics []Diagnostic
 
+	copilot, err := reader.GetCopilotCodeReviewSettings(ctx, repository)
+	if err != nil {
+		switch {
+		case githubapi.IsRefused(err):
+			diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview", Message: "GitHub refused access to Copilot Code Review settings; the settings were not imported"})
+		case githubapi.IsNotFound(err):
+			diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview", Message: "GitHub did not expose Copilot Code Review settings for this repository"})
+		default:
+			return nil, nil, fmt.Errorf("get Copilot Code Review settings for %s: %w", repository, err)
+		}
+	} else {
+		copilotSettings, copilotDiagnostics := importCopilotCodeReviewSettings(copilot)
+		settings.CopilotCodeReview = copilotSettings
+		diagnostics = append(diagnostics, copilotDiagnostics...)
+	}
+
 	interactionLimit, err := reader.GetRepositoryInteractionLimit(ctx, repository)
 	if err != nil {
 		return nil, nil, fmt.Errorf("get repository interaction limit for %s: %w", repository, err)
@@ -186,6 +202,46 @@ func importRepositorySettings(ctx context.Context, reader Reader, repository git
 	})
 
 	return settings, diagnostics, nil
+}
+
+func importCopilotCodeReviewSettings(value githubapi.CopilotCodeReviewSettings) (*config.CopilotCodeReviewConfig, []Diagnostic) {
+	var settings config.CopilotCodeReviewConfig
+	var diagnostics []Diagnostic
+	if value.ReviewEffort.Configured == nil {
+		diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview.reviewEffort", Message: "GitHub reports no configured review effort or a value that is no longer available; the effective value is not imported as an override"})
+	} else {
+		available := false
+		for _, effort := range value.AvailableReviewEfforts {
+			if effort == *value.ReviewEffort.Configured {
+				available = true
+				break
+			}
+		}
+		if available {
+			settings.ReviewEffort = value.ReviewEffort.Configured
+		} else {
+			diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview.reviewEffort", Message: fmt.Sprintf("GitHub reports configured review effort %q, which is not currently available; it is not imported", *value.ReviewEffort.Configured)})
+		}
+	}
+	if value.CustomInstructionsEnabled == nil {
+		diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview.customInstructionsEnabled", Message: "GitHub did not return this Copilot Code Review setting"})
+	} else {
+		settings.CustomInstructionsEnabled = value.CustomInstructionsEnabled
+	}
+	if value.MCPEnabled == nil {
+		diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview.mcpEnabled", Message: "GitHub did not return this Copilot Code Review setting"})
+	} else {
+		settings.MCPEnabled = value.MCPEnabled
+	}
+	if value.SeverityFilter == nil {
+		diagnostics = append(diagnostics, Diagnostic{Resource: "settings.copilotCodeReview.severityFilter", Message: "GitHub did not return this Copilot Code Review setting"})
+	} else {
+		settings.SeverityFilter = value.SeverityFilter
+	}
+	if settings.ReviewEffort == nil && settings.CustomInstructionsEnabled == nil && settings.MCPEnabled == nil && settings.SeverityFilter == nil {
+		return nil, diagnostics
+	}
+	return &settings, diagnostics
 }
 
 func interactionExpiryPreset(expiresAt string, now time.Time) (string, error) {

@@ -130,6 +130,14 @@ func applyScalarsToConfig(cfg *config.Config, scalars []ScalarChange) error {
 			cfg.Security.AIPullRequestScan.Enabled = sc.Value.Bool
 		case "security.privateVulnerabilityReporting.enabled":
 			cfg.Security.PrivateVulnerabilityReporting.Enabled = sc.Value.Bool
+		case "settings.copilotCodeReview.reviewEffort":
+			cfg.Settings.CopilotCodeReview.ReviewEffort = strPtr(sc.Value.Str)
+		case "settings.copilotCodeReview.customInstructionsEnabled":
+			cfg.Settings.CopilotCodeReview.CustomInstructionsEnabled = boolPtr(sc.Value.Bool)
+		case "settings.copilotCodeReview.mcpEnabled":
+			cfg.Settings.CopilotCodeReview.MCPEnabled = boolPtr(sc.Value.Bool)
+		case "settings.copilotCodeReview.severityFilter":
+			cfg.Settings.CopilotCodeReview.SeverityFilter = strPtr(sc.Value.Str)
 		default:
 			return fmt.Errorf("unrecognized scalar path %q", sc.Path)
 		}

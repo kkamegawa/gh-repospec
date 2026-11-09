@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +23,11 @@ type repositoryInteractionService interface {
 	ListPullRequestCreationCapBypassUsers(context.Context, githubapi.Repository) ([]githubapi.InteractionBypassUser, error)
 	AddPullRequestCreationCapBypassUsers(context.Context, githubapi.Repository, []string) error
 	RemovePullRequestCreationCapBypassUsers(context.Context, githubapi.Repository, []string) error
+}
+
+type copilotCodeReviewService interface {
+	GetCopilotCodeReviewSettings(context.Context, githubapi.Repository) (githubapi.CopilotCodeReviewSettings, error)
+	UpdateCopilotCodeReviewSettings(context.Context, githubapi.Repository, githubapi.CopilotCodeReviewSettingsRequest) error
 }
 
 type repositorySettingsService interface {
@@ -120,6 +126,9 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 			}
 			append("pullRequestCreationCap.bypassUsers", state, summary)
 		}
+	}
+	if desired.CopilotCodeReview != nil {
+		appendCopilotCodeReviewChanges(ctx, service, append, desired.CopilotCodeReview, repository, exists)
 	}
 	if desired.Pages != nil {
 		switch {
@@ -388,11 +397,146 @@ func appendRepositorySettingsChanges(ctx context.Context, service Service, plan 
 	}
 }
 
+func appendCopilotCodeReviewChanges(ctx context.Context, service Service, appendChange func(string, ChangeState, string), desired *config.CopilotCodeReviewConfig, repository githubapi.Repository, exists bool) {
+	if !hasCopilotCodeReviewDeclarations(desired) {
+		return
+	}
+	fields := []struct {
+		name      string
+		requested bool
+	}{
+		{name: "reviewEffort", requested: desired.ReviewEffort != nil},
+		{name: "customInstructionsEnabled", requested: desired.CustomInstructionsEnabled != nil},
+		{name: "mcpEnabled", requested: desired.MCPEnabled != nil},
+		{name: "severityFilter", requested: desired.SeverityFilter != nil},
+	}
+	if !exists {
+		for _, field := range fields {
+			if field.requested {
+				appendChange("copilotCodeReview."+field.name, ChangeCreate, "configure Copilot code review after repository creation")
+			}
+		}
+		return
+	}
+	api, ok := service.(copilotCodeReviewService)
+	if !ok {
+		for _, field := range fields {
+			if field.requested {
+				appendChange("copilotCodeReview."+field.name, ChangeBlocked, "Copilot code review settings API is unavailable")
+			}
+		}
+		return
+	}
+	actual, err := api.GetCopilotCodeReviewSettings(ctx, repository)
+	if err != nil {
+		for _, field := range fields {
+			if field.requested {
+				appendChange("copilotCodeReview."+field.name, ChangeBlocked, capabilityError(err))
+			}
+		}
+		return
+	}
+	if desired.ReviewEffort != nil {
+		requested := *desired.ReviewEffort
+		switch {
+		case !copilotReviewEffortAvailable(requested, actual.AvailableReviewEfforts):
+			appendChange("copilotCodeReview.reviewEffort", ChangeBlocked, unavailableCopilotReviewEffort(requested, actual.AvailableReviewEfforts))
+		case copilotReviewEffortMatches(requested, actual.ReviewEffort.Configured):
+			appendChange("copilotCodeReview.reviewEffort", ChangeNoop, "Copilot review effort already converged")
+		default:
+			appendChange("copilotCodeReview.reviewEffort", ChangeUpdate, "set Copilot review effort")
+		}
+	}
+	if desired.CustomInstructionsEnabled != nil {
+		appendCopilotBooleanChange(appendChange, "customInstructionsEnabled", *desired.CustomInstructionsEnabled, actual.CustomInstructionsEnabled)
+	}
+	if desired.MCPEnabled != nil {
+		appendCopilotBooleanChange(appendChange, "mcpEnabled", *desired.MCPEnabled, actual.MCPEnabled)
+	}
+	if desired.SeverityFilter != nil {
+		if actual.SeverityFilter != nil && *actual.SeverityFilter == *desired.SeverityFilter {
+			appendChange("copilotCodeReview.severityFilter", ChangeNoop, "Copilot comment severity filter already converged")
+		} else {
+			appendChange("copilotCodeReview.severityFilter", ChangeUpdate, "set Copilot comment severity filter")
+		}
+	}
+}
+
+func appendCopilotBooleanChange(appendChange func(string, ChangeState, string), field string, desired bool, actual *bool) {
+	if actual != nil && *actual == desired {
+		appendChange("copilotCodeReview."+field, ChangeNoop, "Copilot code review setting already converged")
+		return
+	}
+	appendChange("copilotCodeReview."+field, ChangeUpdate, "set Copilot code review setting")
+}
+
+func applyCopilotCodeReviewSettings(ctx context.Context, service Service, repository githubapi.Repository, desired *config.CopilotCodeReviewConfig) error {
+	if !hasCopilotCodeReviewDeclarations(desired) {
+		return nil
+	}
+	api, ok := service.(copilotCodeReviewService)
+	if !ok {
+		return fmt.Errorf("Copilot code review settings API is unavailable")
+	}
+	actual, err := api.GetCopilotCodeReviewSettings(ctx, repository)
+	if err != nil {
+		return fmt.Errorf("get Copilot code review settings for %s: %w", repository, err)
+	}
+	request := githubapi.CopilotCodeReviewSettingsRequest{}
+	if desired.ReviewEffort != nil {
+		value := *desired.ReviewEffort
+		if !copilotReviewEffortAvailable(value, actual.AvailableReviewEfforts) {
+			return fmt.Errorf("configure Copilot code review settings for %s: %s", repository, unavailableCopilotReviewEffort(value, actual.AvailableReviewEfforts))
+		}
+		if !copilotReviewEffortMatches(value, actual.ReviewEffort.Configured) {
+			request.ReviewEffort = desired.ReviewEffort
+		}
+	}
+	if desired.CustomInstructionsEnabled != nil && (actual.CustomInstructionsEnabled == nil || *actual.CustomInstructionsEnabled != *desired.CustomInstructionsEnabled) {
+		request.CustomInstructionsEnabled = desired.CustomInstructionsEnabled
+	}
+	if desired.MCPEnabled != nil && (actual.MCPEnabled == nil || *actual.MCPEnabled != *desired.MCPEnabled) {
+		request.MCPEnabled = desired.MCPEnabled
+	}
+	if desired.SeverityFilter != nil && (actual.SeverityFilter == nil || *actual.SeverityFilter != *desired.SeverityFilter) {
+		request.SeverityFilter = desired.SeverityFilter
+	}
+	if request == (githubapi.CopilotCodeReviewSettingsRequest{}) {
+		return nil
+	}
+	if err := api.UpdateCopilotCodeReviewSettings(ctx, repository, request); err != nil {
+		return fmt.Errorf("update Copilot code review settings for %s: %w", repository, err)
+	}
+	return nil
+}
+
+func hasCopilotCodeReviewDeclarations(desired *config.CopilotCodeReviewConfig) bool {
+	return desired != nil && *desired != (config.CopilotCodeReviewConfig{})
+}
+
+func copilotReviewEffortAvailable(desired string, available []string) bool {
+	return desired == "inherit" || slices.Contains(available, desired)
+}
+
+func copilotReviewEffortMatches(desired string, configured *string) bool {
+	if desired == "inherit" {
+		return configured == nil
+	}
+	return configured != nil && *configured == desired
+}
+
+func unavailableCopilotReviewEffort(desired string, available []string) string {
+	return fmt.Sprintf("requested Copilot review effort %q is unavailable (available efforts: %v)", desired, available)
+}
+
 func (e *Engine) applyRepositorySettings(ctx context.Context, repository githubapi.Repository, desired *config.RepositorySettings) error {
 	if desired == nil {
 		return nil
 	}
 	if err := applyRepositoryInteractionSettings(ctx, e.service, repository, desired); err != nil {
+		return err
+	}
+	if err := applyCopilotCodeReviewSettings(ctx, e.service, repository, desired.CopilotCodeReview); err != nil {
 		return err
 	}
 	api, ok := e.service.(repositorySettingsService)

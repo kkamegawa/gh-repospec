@@ -90,6 +90,15 @@ rulesets:
         parameters:
           required_approving_review_count: 1
 
+# Automatic review requests are configured separately in branch rulesets.
+# Uncomment for repositories with access to the Copilot Code Review settings API.
+# settings:
+#   copilotCodeReview:
+#     reviewEffort: inherit
+#     customInstructionsEnabled: true
+#     mcpEnabled: false
+#     severityFilter: low
+
 security:
   dependencyGraph:
     enabled: true

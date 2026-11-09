@@ -28,6 +28,24 @@ func TestComputePlanOnlyTouchesDeclaredScalars(t *testing.T) {
 	}
 }
 
+func TestComputePlanRefreshesOnlyDeclaredCopilotReviewSettings(t *testing.T) {
+	t.Parallel()
+	current := &config.Config{Settings: &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{
+		ReviewEffort: strPtr("lite"), CustomInstructionsEnabled: boolPtr(true), MCPEnabled: boolPtr(false),
+		SeverityFilter: strPtr("low"),
+	}}}
+	desired := &config.Config{Settings: &config.RepositorySettings{CopilotCodeReview: &config.CopilotCodeReviewConfig{
+		CustomInstructionsEnabled: boolPtr(false), MCPEnabled: boolPtr(true), SeverityFilter: strPtr("low_and_medium"),
+	}}}
+	plan := computePlan(current, desired)
+	if len(plan.Scalars) != 3 {
+		t.Fatalf("Scalars = %#v, want only three readable declared fields changed", plan.Scalars)
+	}
+	if hasScalarPath(plan.Scalars, "settings.copilotCodeReview.reviewEffort") {
+		t.Fatal("plan updates review effort from an ambiguous null configured value")
+	}
+}
+
 func TestComputePlanNoopWhenValuesAlreadyMatch(t *testing.T) {
 	t.Parallel()
 	cfg := func() config.RepositoryConfig {
