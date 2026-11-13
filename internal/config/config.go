@@ -8,11 +8,18 @@ import (
 	"time"
 )
 
-const CurrentSchemaVersion = 1
+const (
+	// CurrentSchemaVersion is the default for repository exports.
+	CurrentSchemaVersion = 1
+	SchemaVersion2       = 2
+	ScopeRepository      = "repository"
+	ScopePersonal        = "personal"
+)
 
-// Config is the complete schemaVersion 1 bootstrap document.
+// Config is a v1 or v2 repository bootstrap document.
 type Config struct {
 	SchemaVersion int                 `json:"schemaVersion" yaml:"schemaVersion"`
+	Scope         string              `json:"scope,omitempty" yaml:"scope,omitempty"`
 	Repository    RepositoryConfig    `json:"repository" yaml:"repository"`
 	Seed          *SeedConfig         `json:"seed,omitempty" yaml:"seed,omitempty"`
 	Actions       *ActionsConfig      `json:"actions,omitempty" yaml:"actions,omitempty"`

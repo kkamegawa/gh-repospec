@@ -101,6 +101,20 @@ func (c *Client) setRetryWait(wait func(context.Context, time.Duration) error) {
 }
 
 func (c *Client) do(ctx context.Context, method, apiPath string, input, output any) error {
+	return c.doWithRetry(ctx, method, apiPath, input, output, true, "")
+}
+
+// doWithoutRetry performs a single request for operations where retrying an
+// ambiguous success could replace server-assigned resource identities.
+func (c *Client) doWithoutRetry(ctx context.Context, method, apiPath string, input, output any) error {
+	return c.doWithRetry(ctx, method, apiPath, input, output, false, "")
+}
+
+func (c *Client) doGraphQL(ctx context.Context, feature, query string, output any) error {
+	return c.doWithRetry(ctx, http.MethodPost, "/graphql", map[string]string{"query": query}, output, false, feature)
+}
+
+func (c *Client) doWithRetry(ctx context.Context, method, apiPath string, input, output any, allowRetry bool, graphQLFeature string) error {
 	if !strings.HasPrefix(apiPath, "/") {
 		return fmt.Errorf("GitHub API path must start with '/': %q", apiPath)
 	}
@@ -115,6 +129,9 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 
 	policy, wait := c.retryConfiguration()
 	attempts := policy.MaxAttempts
+	if !allowRetry {
+		attempts = 1
+	}
 	for attempt := 1; attempt <= attempts; attempt++ {
 		requestURL, err := c.resolveAPIPath(apiPath)
 		if err != nil {
@@ -126,6 +143,9 @@ func (c *Client) do(ctx context.Context, method, apiPath string, input, output a
 		}
 		req.Header.Set("Accept", "application/vnd.github+json")
 		req.Header.Set("X-GitHub-Api-Version", APIVersion)
+		if graphQLFeature != "" {
+			req.Header.Set("GraphQL-Features", graphQLFeature)
+		}
 		if input != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}

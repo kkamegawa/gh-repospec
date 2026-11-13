@@ -22,9 +22,11 @@ rulesetは削除しません。
 
 ## 設定契約
 
-公開設定形式は`schemaVersion: 1`であり、
-[`schema/repospec.schema.json`](../schema/repospec.schema.json)
-で定義します。YAMLとJSONを受け付けます。解析は厳密で、未知フィールド、重複した
+リポジトリ設定は `schemaVersion: 1` と、`scope: repository` を持つ
+`schemaVersion: 2` を受け付けます。
+[`schema/repospec.schema.json`](../schema/repospec.schema.json) で定義します。
+個人アカウント用の仕様は [スキーマ v2 の設定スコープ](architecture/schema-v2_ja.md) を参照してください。
+YAMLとJSONを受け付けます。解析は厳密で、未知フィールド、重複した
 mapping key、未対応のenum値、複数ドキュメントを拒否します。環境変数は展開しません。
 
 トップレベルのセクションは`repository`、`seed`、`actions`、`rulesets`、
@@ -194,7 +196,9 @@ rulesetは最後に適用します。全体はトランザクションでは
 ## import
 
 `import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`は既存リポジトリを
-取得し、`schemaVersion: 1`の文書を生成します。位置引数の代わりに`-R`/`--repo`を使えますが、
+取得し、既定で `schemaVersion: 1` の文書を生成します。`--schema-version 2` で
+リポジトリ用の v2 を出力できます。既存ファイルの更新は更新先のバージョンを維持します。
+位置引数の代わりに`-R`/`--repo`を使えますが、
 両方の指定は拒否します。標準出力の既定形式はYAMLで、自動処理向けにJSONも選べます。診断は
 標準エラーへ出力するため、標準出力をリダイレクトした文書はそのまま有効です。importは
 GitHubを読み取るだけで、リポジトリへの書き込みは行いません。

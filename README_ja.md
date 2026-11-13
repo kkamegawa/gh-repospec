@@ -6,7 +6,7 @@
 
 ## 対象範囲
 
-Version 1 は GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team の組織を対象にします。GitHub Enterprise Server は拒否し、Enterprise Cloud はサポート対象外です。
+リポジトリ設定のバージョン1と2は、GitHub.com 上の個人リポジトリと GitHub Free、Pro、Team の組織を対象にします。バージョン2では個人アカウントの Issue types と Issue fields にも対応します。GitHub Enterprise Server は拒否し、Enterprise Cloud はサポート対象外です。
 
 ## インストール
 
@@ -50,7 +50,7 @@ gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 
 ## 設定
 
-公開設定契約は `schemaVersion: 1` です。YAML と JSON を受け付け、JSON Schema は [`schema/repospec.schema.json`](schema/repospec.schema.json) にあります。
+リポジトリ設定は `schemaVersion: 1` と `schemaVersion: 2` を受け付けます。バージョン2では `scope: repository` が必須で、バージョン1と同じリポジトリ設定を記述します。リポジトリの新規 import は既定でバージョン1を出力します。YAML と JSON を受け付け、JSON Schema は [`schema/repospec.schema.json`](schema/repospec.schema.json) にあります。
 
 未知フィールド、YAML の重複キー、不正な enum 値、複数ドキュメント、暗黙的な環境変数展開は拒否します。相対的な directory / ZIP seed のパスは、設定ファイルからの相対パスです。
 
@@ -79,19 +79,40 @@ secret に記載するのは値ではなく `sourceEnv` 名です。既定の更
 
 GitHub Actions の workflow `permissions` では、組み込みの `GITHUB_TOKEN` に **Administration** 権限を付与できません。
 
+### 個人アカウントの Issue 設定
+
+Issue types と Issue fields は GitHub の個人アカウントに属し、そのアカウントが所有するリポジトリで利用できます。これらは別の個人用ファイルに置き、`schemaVersion: 2`、`scope: personal`、アカウントのログイン名を指定します。`issueTypes` と `issueFields` に選択肢を含めた定義を記述します。フィールドのピン留めと表示順は GitHub の設定で管理します。詳細は[スキーマ v2 の設計](docs/architecture/schema-v2_ja.md)を参照してください。
+
+```yaml
+schemaVersion: 2
+scope: personal
+account: octocat
+issueTypes:
+  - name: Bug
+    isEnabled: true
+issueFields:
+  - name: Target date
+    dataType: date
+```
+
+`personal plan`、`personal apply`、`personal import` は認証中のユーザーのアカウント共通定義を管理します。`account` は GitHub CLI のログインと一致する必要があります。個人設定を適用すると、そのアカウントが所有する全リポジトリの Issue に反映されます。import と plan には個人アカウントの Issue Types と Issue Fields API へのアクセス権が必要です。クラシックトークンまたは OAuth の場合、読み取りには `read:user`、書き込みには `user` スコープを使います。個人用フィールドの更新では、未宣言の選択肢と既存の選択肢 ID を保持します。
+
 ## コマンド
 
 ```text
 gh repospec validate --file <path>
 gh repospec plan --file <path> [-R owner/repository] [--format text|json] [--ci]
 gh repospec apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
-gh repospec import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
+gh repospec import <owner/repository> [--format yaml|json] [--schema-version 1|2] [--into <path> [--yes]]
+gh repospec personal plan --file <path> [--format text|json] [--ci]
+gh repospec personal apply --file <path> [--format text|json] [--yes]
+gh repospec personal import [--format yaml|json] [--into <path> [--yes]]
 gh repospec version
 ```
 
 `-R` / `--repo` は設定ファイル内の対象リポジトリを上書きします。`--approve-command` は繰り返し指定でき、設定済み command ごとに必須です。`--version` / `-v` は `version` の別名として使用できます。
 
-`plan --ci` は、スケジュール実行の workflow 向けにプランをドリフト検査へ変えます。`apply --force-secrets` はその実行に限りすべての設定済み secret を再設定するため、ファイルを編集せずに資格情報をローテーションできます。`import` はリポジトリを読み取って設定を書き出し、`--into` を付けると既存ファイルをコメントとキー順を保ったまま更新します。refresh はファイルが既に宣言している範囲だけを触り、リポジトリ側に存在しない宣言を削除しません。その項目は残したまま、未適用として報告します。secret の値は GitHub API から取得できないため、`import` は値を作らず secret 名を報告します。
+`plan --ci` は、スケジュール実行の workflow 向けにプランをドリフト検査へ変えます。`apply --force-secrets` はその実行に限りすべての設定済み secret を再設定するため、ファイルを編集せずに資格情報をローテーションできます。リポジトリの新規 import は既定でバージョン1を出力し、`--schema-version 2` で v2 を選べます。`--into` を指定したときは更新先のバージョンに従い、宣言済みの項目だけを更新して YAML のコメントとキー順を保ちます。個人用コマンドは別のアカウント設定ファイルと個人の Issue 定義 API を使い、個人用 import はバージョン2を書き出します。secret の値は GitHub API から取得できないため、リポジトリの `import` は値を作らず secret 名を報告します。
 
 | 終了コード | 意味 |
 | --- | --- |
@@ -147,7 +168,7 @@ go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 
 `plan` や `apply` でエラーが発生した場合は、よくある原因と対処をまとめた [docs/troubleshooting_ja.md](docs/troubleshooting_ja.md) を参照してください。import した設定を別のリポジトリへ適用する場合の注意事項も記載しています。
 
-貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、確定済みの設計は [docs/design_ja.md](docs/design_ja.md) を参照してください。`babarot/gh-infra` との機能比較と、本拡張が意図的に行わない範囲は [docs/gh-infra-parity_ja.md](docs/gh-infra-parity_ja.md) に記録しています。
+貢献手順は [CONTRIBUTING_ja.md](CONTRIBUTING_ja.md)、リポジトリ設計は [docs/design_ja.md](docs/design_ja.md)、個人設定とリポジトリ設定のスキーマ v2 は [docs/architecture/schema-v2_ja.md](docs/architecture/schema-v2_ja.md) を参照してください。`babarot/gh-infra` との機能比較と、本拡張が意図的に行わない範囲は [docs/gh-infra-parity_ja.md](docs/gh-infra-parity_ja.md) に記録しています。
 
 ## ライセンス
 

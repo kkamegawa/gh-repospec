@@ -37,24 +37,53 @@ func load(path string, validate func(*Config) error) (*Config, error) {
 		return nil, fmt.Errorf("read configuration %q: %w", path, err)
 	}
 
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var cfg Config
-	if err := decoder.Decode(&cfg); err != nil {
+	return loadRepository(path, data, validate)
+}
+
+func loadRepository(path string, data []byte, validate func(*Config) error) (*Config, error) {
+	cfg, err := DecodeRepository(data)
+	if err != nil {
 		return nil, fmt.Errorf("decode configuration %q: %w", path, err)
+	}
+	resolveLocalSeedPath(cfg, filepath.Dir(path))
+	if err := validate(cfg); err != nil {
+		return nil, fmt.Errorf("validate configuration %q: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// DecodeRepository decodes the repository contract without accessing the filesystem.
+func DecodeRepository(data []byte) (*Config, error) {
+	var cfg Config
+	if err := decodeDocument(data, &cfg, true); err != nil {
+		return nil, err
+	}
+	if cfg.SchemaVersion == CurrentSchemaVersion {
+		var keys map[string]yaml.Node
+		if err := decodeDocument(data, &keys, false); err != nil {
+			return nil, err
+		}
+		if _, present := keys["scope"]; present {
+			return nil, errors.New("scope is only supported in schemaVersion 2")
+		}
+	}
+	return &cfg, nil
+}
+
+func decodeDocument(data []byte, target any, knownFields bool) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(knownFields)
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
 	var extra yaml.Node
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return nil, fmt.Errorf("decode configuration %q: multiple documents are not allowed", path)
+			return errors.New("multiple documents are not allowed")
 		}
-		return nil, fmt.Errorf("decode configuration %q: %w", path, err)
+		return err
 	}
-	resolveLocalSeedPath(&cfg, filepath.Dir(path))
-	if err := validate(&cfg); err != nil {
-		return nil, fmt.Errorf("validate configuration %q: %w", path, err)
-	}
-	return &cfg, nil
+	return nil
 }
 
 // resolveLocalSeedPath makes local seed paths independent of the caller's
@@ -89,8 +118,17 @@ func validate(cfg *Config, checkSeedFilesystem bool) error {
 	if cfg == nil {
 		return errors.New("configuration is required")
 	}
-	if cfg.SchemaVersion != CurrentSchemaVersion {
-		return fmt.Errorf("schemaVersion must be %d", CurrentSchemaVersion)
+	switch cfg.SchemaVersion {
+	case CurrentSchemaVersion:
+		if cfg.Scope != "" {
+			return errors.New("scope is only supported in schemaVersion 2")
+		}
+	case SchemaVersion2:
+		if cfg.Scope != ScopeRepository {
+			return errors.New("schemaVersion 2 repository configuration requires scope: repository")
+		}
+	default:
+		return fmt.Errorf("schemaVersion must be %d or %d", CurrentSchemaVersion, SchemaVersion2)
 	}
 	if err := validateRepository(cfg.Repository); err != nil {
 		return err
@@ -381,7 +419,7 @@ func validateLocalSeedPath(field, path string, zip bool) error {
 	if path == "" {
 		return fmt.Errorf("%s is required", field)
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) //nolint:gosec // Local seed sources support explicit absolute and configuration-relative paths.
 	if err != nil {
 		return fmt.Errorf("%s: %w", field, err)
 	}
