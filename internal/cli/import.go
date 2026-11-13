@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
@@ -22,10 +24,12 @@ import (
 // takes a positional repository (or the -R/--repo substitute) and its own
 // --format range (yaml|json, not text|json).
 type importOptions struct {
-	repository string
-	format     string
-	into       string
-	yes        bool
+	repository    string
+	format        string
+	formatSet     bool
+	into          string
+	yes           bool
+	schemaVersion int
 }
 
 // importValueFlags and importBoolFlags name every flag import accepts, by
@@ -35,7 +39,7 @@ type importOptions struct {
 // otherwise make "import OWNER/REPO --format json" treat --format as a
 // second positional argument.
 var (
-	importValueFlags = map[string]bool{"repo": true, "R": true, "format": true, "into": true}
+	importValueFlags = map[string]bool{"repo": true, "R": true, "format": true, "into": true, "schema-version": true}
 	importBoolFlags  = map[string]bool{"yes": true}
 )
 
@@ -53,6 +57,7 @@ func parseImportFlags(args []string, stderr io.Writer) (importOptions, error) {
 	flags.StringVar(&repoFlag, "R", "", "target repository in owner/name form")
 	flags.StringVar(&options.format, "format", "yaml", "output format: yaml or json")
 	flags.StringVar(&options.into, "into", "", "refresh an existing configuration file in place instead of writing a new document")
+	flags.IntVar(&options.schemaVersion, "schema-version", config.CurrentSchemaVersion, "schema version for a new repository export (1 or 2)")
 	flags.BoolVar(&options.yes, "yes", false, "skip the --into confirmation prompt")
 	if err := flags.Parse(flagArgs); err != nil {
 		return importOptions{}, err
@@ -76,6 +81,17 @@ func parseImportFlags(args []string, stderr io.Writer) (importOptions, error) {
 	}
 	if options.yes && options.into == "" {
 		return importOptions{}, errors.New("--yes has no effect without --into")
+	}
+	if options.schemaVersion != config.CurrentSchemaVersion && options.schemaVersion != config.SchemaVersion2 {
+		return importOptions{}, errors.New("--schema-version must be 1 or 2")
+	}
+	var versionSet bool
+	flags.Visit(func(f *flag.Flag) {
+		options.formatSet = options.formatSet || f.Name == "format"
+		versionSet = versionSet || f.Name == "schema-version"
+	})
+	if versionSet && options.into != "" {
+		return importOptions{}, errors.New("--schema-version cannot be used with --into; the destination determines the version")
 	}
 	return options, nil
 }
@@ -135,6 +151,13 @@ func executeImport(ctx context.Context, options importOptions, stdin io.Reader, 
 	if err != nil {
 		return err
 	}
+	var destination *repositoryRefresh
+	if options.into != "" {
+		destination, err = readRepositoryRefresh(options)
+		if err != nil {
+			return err
+		}
+	}
 	client, err := githubapi.NewAuthenticatedClient()
 	if err != nil {
 		return err
@@ -149,13 +172,17 @@ func executeImport(ctx context.Context, options importOptions, stdin io.Reader, 
 		}
 	}
 
-	if options.into == "" {
+	if destination == nil {
+		if options.schemaVersion == config.SchemaVersion2 {
+			result.Config.SchemaVersion = config.SchemaVersion2
+			result.Config.Scope = config.ScopeRepository
+		}
 		return writeImportDocument(stdout, result.Config, options.format)
 	}
-	return executeImportInto(result, options, stdin, stdout, stderr)
+	return destination.refresh(result, options, stdin, stdout, stderr)
 }
 
-func writeImportDocument(output io.Writer, cfg config.Config, format string) error {
+func writeImportDocument(output io.Writer, cfg any, format string) error {
 	if format == "json" {
 		encoder := json.NewEncoder(output)
 		encoder.SetIndent("", "  ")
@@ -169,21 +196,33 @@ func writeImportDocument(output io.Writer, cfg config.Config, format string) err
 	return encoder.Close()
 }
 
-func executeImportInto(result importer.Result, options importOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+type repositoryRefresh struct {
+	original []byte
+	format   refresh.Format
+	current  *config.Config
+}
+
+func readRepositoryRefresh(options importOptions) (*repositoryRefresh, error) {
 	original, err := os.ReadFile(options.into)
 	if err != nil {
-		return fmt.Errorf("read %s: %w", options.into, err)
+		return nil, fmt.Errorf("read %s: %w", options.into, err)
 	}
 	format, err := resolveIntoFormat(options, original)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	current, err := config.LoadForRefresh(options.into)
+	current, err := config.DecodeRepository(original)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("decode configuration %q: %w", options.into, err)
 	}
+	if err := config.ValidateDeclaredSurface(current); err != nil {
+		return nil, fmt.Errorf("validate configuration %q: %w", options.into, err)
+	}
+	return &repositoryRefresh{original: original, format: format, current: current}, nil
+}
 
-	outcome, err := refresh.Refresh(original, format, current, &result.Config)
+func (r *repositoryRefresh) refresh(result importer.Result, options importOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+	outcome, err := refresh.Refresh(r.original, r.format, r.current, &result.Config)
 	if err != nil {
 		return err
 	}
@@ -195,11 +234,15 @@ func executeImportInto(result importer.Result, options importOptions, stdin io.R
 	if err := printRefreshPlan(stderr, outcome.Plan); err != nil {
 		return err
 	}
-	if !options.yes {
+	return saveRefresh(options.into, r.original, outcome.Updated, options.yes, stdin, stdout, stderr)
+}
+
+func saveRefresh(path string, original, updated []byte, yes bool, stdin io.Reader, stdout, stderr io.Writer) error {
+	if !yes {
 		if !isTerminal(stdin) {
 			return errors.New("refusing to prompt on non-interactive input; pass --yes to confirm --into without a prompt")
 		}
-		confirmed, err := confirm(stdin, stderr, fmt.Sprintf("Write the refreshed configuration to %s?", options.into))
+		confirmed, err := confirm(stdin, stderr, fmt.Sprintf("Write the refreshed configuration to %s?", path))
 		if err != nil {
 			return err
 		}
@@ -208,11 +251,46 @@ func executeImportInto(result importer.Result, options importOptions, stdin io.R
 		}
 	}
 
-	if err := os.WriteFile(options.into, outcome.Updated, 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", options.into, err)
+	current, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("re-read %s: %w", path, err)
 	}
-	_, err = fmt.Fprintf(stdout, "refreshed %s\n", options.into)
+	if !bytes.Equal(current, original) {
+		return fmt.Errorf("%s changed during refresh; retry with the current file", path)
+	}
+	if err := replaceRefreshFile(path, updated); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	_, err = fmt.Fprintf(stdout, "refreshed %s\n", path)
 	return err
+}
+
+func replaceRefreshFile(path string, updated []byte) error {
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(target)
+	if err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(filepath.Dir(target), ".repospec-refresh-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if _, err := file.Write(updated); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Chmod(info.Mode().Perm()); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	return os.Rename(file.Name(), target)
 }
 
 // resolveIntoFormat detects the existing file's actual format and rejects an
@@ -234,12 +312,10 @@ func resolveIntoFormat(options importOptions, original []byte) (refresh.Format, 
 	return detected, nil
 }
 
-// explicitFormat reports the --format value only when it differs from the
-// flag's own default, since parseImportFlags has no way to distinguish a
-// default from an explicit "yaml".
+// explicitFormat reports the --format value when the caller supplied it.
 func explicitFormat(options importOptions) string {
-	if options.format == "json" {
-		return "json"
+	if options.formatSet || options.format == "json" {
+		return options.format
 	}
 	return ""
 }

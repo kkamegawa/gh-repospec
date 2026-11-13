@@ -6,7 +6,7 @@
 
 ## Status
 
-Version 1 targets personal repositories and GitHub Free, Pro, and Team organizations on GitHub.com. GitHub Enterprise Server is rejected. Enterprise Cloud is outside the supported scope.
+Repository configuration version 1 and version 2 target personal repositories and GitHub Free, Pro, and Team organizations on GitHub.com. Version 2 also supports personal account issue types and fields. GitHub Enterprise Server is rejected. Enterprise Cloud is outside the supported scope.
 
 ## Install
 
@@ -51,7 +51,7 @@ gh repospec import OWNER/REPOSITORY > bootstrap.yaml
 
 ## Configuration
 
-The public contract is `schemaVersion: 1`. YAML and JSON are accepted; the bundled JSON Schema is [`schema/repospec.schema.json`](schema/repospec.schema.json).
+Repository configuration accepts `schemaVersion: 1` and `schemaVersion: 2`. Version 2 requires `scope: repository` and carries the same repository settings as version 1. New repository imports use version 1 by default. YAML and JSON are accepted; the bundled JSON Schema is [`schema/repospec.schema.json`](schema/repospec.schema.json).
 
 Unknown fields, duplicate YAML keys, invalid enum values, multiple documents, and implicit environment-variable expansion are rejected. Relative directory and ZIP seed paths are resolved relative to the configuration file.
 
@@ -80,19 +80,40 @@ Secrets contain a `sourceEnv` name, never a secret value. Their default update p
 
 GitHub Actions workflow `permissions` cannot grant **Administration** to the built-in `GITHUB_TOKEN`.
 
+### Personal account issue settings
+
+Issue types and issue fields belong to the GitHub personal account. GitHub makes them available across repositories owned by that account. Keep these settings in a separate personal document with `schemaVersion: 2`, `scope: personal`, and the account login. The document declares `issueTypes` and `issueFields`, including select field options. Issue field pinning and display order are configured in GitHub settings. See the [schema v2 design](docs/architecture/schema-v2.md) for the full contract and behavior.
+
+```yaml
+schemaVersion: 2
+scope: personal
+account: octocat
+issueTypes:
+  - name: Bug
+    isEnabled: true
+issueFields:
+  - name: Target date
+    dataType: date
+```
+
+`personal plan`, `personal apply`, and `personal import` manage the authenticated user's account-wide definitions. The declared account must match the GitHub CLI login. Applying personal settings can change issue behavior in every repository owned by that account. Imports and plans require access to the personal Issue Types and Issue Fields APIs. With classic or OAuth credentials, reads require `read:user` and writes require `user`. Personal field updates preserve undeclared options and existing option IDs.
+
 ## Commands
 
 ```text
 gh repospec validate --file <path>
 gh repospec plan --file <path> [-R owner/repository] [--format text|json] [--ci]
 gh repospec apply --file <path> [-R owner/repository] [--yes] [--approve-command <id>] [--force-secrets]
-gh repospec import <owner/repository> [--format yaml|json] [--into <path> [--yes]]
+gh repospec import <owner/repository> [--format yaml|json] [--schema-version 1|2] [--into <path> [--yes]]
+gh repospec personal plan --file <path> [--format text|json] [--ci]
+gh repospec personal apply --file <path> [--format text|json] [--yes]
+gh repospec personal import [--format yaml|json] [--into <path> [--yes]]
 gh repospec version
 ```
 
 The `-R`/`--repo` flag overrides the repository declared in the configuration. `--approve-command` is repeatable and required for every configured command, including with `--yes`. `--version`/`-v` are accepted as aliases for `version`.
 
-`plan --ci` turns the plan into a drift check for scheduled workflows. `apply --force-secrets` re-sets every configured secret in that run, which is how a credential rotation is applied without editing the file. `import` reads a repository and writes configuration; with `--into` it refreshes an existing file in place, preserving its comments and key order. A refresh only touches what the file already declares, and it never deletes a declaration the repository does not have — that entry is kept and reported as not yet applied. Secret values are never returned by the GitHub API, so `import` reports secret names rather than inventing values.
+`plan --ci` turns the plan into a drift check for scheduled workflows. `apply --force-secrets` re-sets every configured secret in that run, which is how a credential rotation is applied without editing the file. New repository imports use schema version 1 by default, and `--schema-version 2` opts into the repository scope in v2. With `--into`, the destination determines the schema version, and the command refreshes declared entries while preserving YAML comments and key order. Personal commands use a separate account document and GitHub's personal issue definition APIs. Personal import writes version 2. Secret values are never returned by the GitHub API, so repository import reports secret names rather than inventing values.
 
 | Exit code | Meaning |
 | --- | --- |
@@ -149,7 +170,7 @@ go build -o bin/gh-repospec.exe ./cmd/gh-repospec
 
 If `plan` or `apply` reports an error, see [docs/troubleshooting.md](docs/troubleshooting.md) for common causes and fixes, including caveats when applying an imported configuration to another repository.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow and [docs/design.md](docs/design.md) for the settled design. [docs/gh-infra-parity.md](docs/gh-infra-parity.md) records the feature comparison with `babarot/gh-infra`, including what this extension deliberately does not do.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution workflow, [docs/design.md](docs/design.md) for the repository design, and [docs/architecture/schema-v2.md](docs/architecture/schema-v2.md) for the personal and repository schema v2 design. [docs/gh-infra-parity.md](docs/gh-infra-parity.md) records the feature comparison with `babarot/gh-infra`, including what this extension deliberately does not do.
 
 ## License
 

@@ -49,7 +49,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if _, err := config.Load(file); err != nil {
+		if err := config.ValidateFile(file); err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(stdout, "configuration is valid")
@@ -72,6 +72,8 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 			return err
 		}
 		return executeImport(context.Background(), options, stdin, stdout, stderr)
+	case "personal":
+		return runPersonal(context.Background(), args[1:], stdin, stdout, stderr)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return nil
@@ -305,10 +307,11 @@ func printUsage(w io.Writer) {
 	_, _ = fmt.Fprint(w, `Usage: gh repospec <command> [flags]
 
 Commands:
-  validate --file <path>                          Validate a schemaVersion 1 YAML or JSON configuration.
+  validate --file <path>                          Validate a v1 or v2 YAML or JSON configuration.
   plan --file <path> [-R owner/repository] [--ci] Preview changes without modifying GitHub.
   apply --file <path> [-R owner/repository]       Confirm and apply supported changes.
   import <owner/repository> [--into <path>]       Read a repository and write or refresh a configuration.
+  personal <plan|apply|import>                   Manage issue definitions for the authenticated account.
   version, --version, -v                          Print the gh-repospec version.
 
 Common flags:
@@ -316,6 +319,7 @@ Common flags:
   -R, --repo <owner/name>  Override the repository declared in the configuration, or substitute for
                            import's positional repository (not both).
   --format <text|json>     Select plan output format (import instead uses --format <yaml|json>).
+  --schema-version <1|2>   Select the schema version for a new repository import (default 1).
 
 Plan flags:
   --ci                     Exit 2 when the plan contains a difference, 1 when it is blocked. Secret
