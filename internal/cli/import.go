@@ -251,7 +251,7 @@ func saveRefresh(path string, original, updated []byte, yes bool, stdin io.Reade
 		}
 	}
 
-	current, err := os.ReadFile(path)
+	current, err := os.ReadFile(path) //nolint:gosec // Re-read the explicit --into destination to detect edits before replacing it.
 	if err != nil {
 		return fmt.Errorf("re-read %s: %w", path, err)
 	}
@@ -278,7 +278,10 @@ func replaceRefreshFile(path string, updated []byte) error {
 	if err != nil {
 		return err
 	}
-	defer os.Remove(file.Name())
+	defer func() {
+		// The temporary path is already absent after a successful rename.
+		_ = os.Remove(file.Name())
+	}()
 	if _, err := file.Write(updated); err != nil {
 		_ = file.Close()
 		return err

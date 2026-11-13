@@ -419,7 +419,7 @@ func validateLocalSeedPath(field, path string, zip bool) error {
 	if path == "" {
 		return fmt.Errorf("%s is required", field)
 	}
-	info, err := os.Stat(path)
+	info, err := os.Stat(path) //nolint:gosec // Local seed sources support explicit absolute and configuration-relative paths.
 	if err != nil {
 		return fmt.Errorf("%s: %w", field, err)
 	}

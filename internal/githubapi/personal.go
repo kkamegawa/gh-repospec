@@ -171,7 +171,7 @@ func (c *Client) ListPersonalIssueFields(ctx context.Context) ([]PersonalIssueFi
 		for _, option := range node.Options {
 			id := int64(0)
 			if option.DatabaseID != nil {
-				id = int64(*option.DatabaseID)
+				id = *option.DatabaseID
 			}
 			options = append(options, PersonalIssueFieldOption{ID: id, Name: option.Name, Description: option.Description, Color: strings.ToLower(option.Color), Priority: option.Priority})
 		}
@@ -292,10 +292,7 @@ func personalIssueFieldOptions(options []PersonalIssueFieldOption) []personalIss
 	}
 	result := make([]personalIssueFieldOptionInput, 0, len(options))
 	for _, option := range options {
-		result = append(result, personalIssueFieldOptionInput{
-			ID: option.ID, Name: option.Name, Description: option.Description,
-			Color: option.Color, Priority: option.Priority,
-		})
+		result = append(result, personalIssueFieldOptionInput(option))
 	}
 	return result
 }
