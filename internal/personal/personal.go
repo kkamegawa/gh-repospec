@@ -263,7 +263,13 @@ func buildPlan(cfg *config.PersonalConfig, types []githubapi.PersonalIssueType, 
 		live, found := findField(fields, desired.Name)
 		resource := "issueField." + desired.Name
 		if !found {
-			plan.Changes = append(plan.Changes, planner.Change{Stage: "personal", Resource: resource, State: planner.ChangeCreate, Summary: fmt.Sprintf("create issue field %q", desired.Name)})
+			state := planner.ChangeCreate
+			summary := fmt.Sprintf("create issue field %q", desired.Name)
+			if problem := fieldCreateProblem(desired); problem != "" {
+				state = planner.ChangeBlocked
+				summary = problem
+			}
+			plan.Changes = append(plan.Changes, planner.Change{Stage: "personal", Resource: resource, State: state, Summary: summary})
 			continue
 		}
 		if problem := fieldBlocked(desired, live); problem != "" {
@@ -365,9 +371,16 @@ func apiType(value config.IssueTypeConfig) (githubapi.PersonalIssueType, error) 
 	}, nil
 }
 
-func apiField(value config.IssueFieldConfig) (githubapi.PersonalIssueField, error) {
+func fieldCreateProblem(value config.IssueFieldConfig) string {
 	if (value.DataType == "single_select" || value.DataType == "multi_select") && len(value.Options) == 0 {
-		return githubapi.PersonalIssueField{}, fmt.Errorf("new select issue field %q requires options", value.Name)
+		return fmt.Sprintf("new select issue field %q requires options", value.Name)
+	}
+	return ""
+}
+
+func apiField(value config.IssueFieldConfig) (githubapi.PersonalIssueField, error) {
+	if problem := fieldCreateProblem(value); problem != "" {
+		return githubapi.PersonalIssueField{}, errors.New(problem)
 	}
 	field := githubapi.PersonalIssueField{
 		Name: value.Name, Description: cloneString(value.Description), DataType: value.DataType,

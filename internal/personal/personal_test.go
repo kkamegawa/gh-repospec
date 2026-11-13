@@ -186,6 +186,31 @@ func TestBuildBlocksDataTypeChangesBeforeAnyWrite(t *testing.T) {
 	}
 }
 
+func TestNewSelectFieldsWithoutOptionsBlockApplyBeforeWrites(t *testing.T) {
+	t.Parallel()
+	for _, dataType := range []string{"single_select", "multi_select"} {
+		t.Run(dataType, func(t *testing.T) {
+			service := &fakeService{user: githubapi.Owner{Login: "octocat"}}
+			cfg := testConfig()
+			cfg.IssueFields[0].DataType = dataType
+			cfg.IssueFields[0].Options = nil
+			engine := New(service)
+			ctx := context.Background()
+			plan, err := engine.Build(ctx, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Changes) != 2 || plan.Changes[0].State != planner.ChangeCreate ||
+				plan.Changes[1].State != planner.ChangeBlocked {
+				t.Fatalf("expected an issue type creation and a blocked field, got %+v", plan.Changes)
+			}
+			if err := engine.Apply(ctx, cfg); err == nil || service.writes != 0 {
+				t.Fatalf("expected apply to fail before writes, got %v and %d writes", err, service.writes)
+			}
+		})
+	}
+}
+
 func TestImportReturnsAuthenticatedAccountAndAllDefinitions(t *testing.T) {
 	enabled := true
 	visibility := "restricted"

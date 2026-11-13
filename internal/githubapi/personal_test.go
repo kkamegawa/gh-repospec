@@ -16,6 +16,9 @@ func TestListPersonalIssueSettingsJoinsRESTIdentityAndGraphQLState(t *testing.T)
 		if got := r.Header.Get("X-GitHub-Api-Version"); got != APIVersion {
 			assertions.Errorf("API version = %q, want %q", got, APIVersion)
 		}
+		if r.URL.Path != "/graphql" && r.Header.Get("GraphQL-Features") != "" {
+			assertions.Errorf("GraphQL feature header sent to REST endpoint %s", r.URL.Path)
+		}
 		switch r.Method + " " + r.URL.Path {
 		case "GET /user/issue-types":
 			_ = json.NewEncoder(w).Encode([]PersonalIssueType{{ID: 4, NodeID: "type-node", Name: "Bug", Description: personalStringPointer("REST description")}})
@@ -30,8 +33,14 @@ func TestListPersonalIssueSettingsJoinsRESTIdentityAndGraphQLState(t *testing.T)
 			}
 			switch {
 			case strings.Contains(request.Query, "PersonalIssueTypes"):
+				if got := r.Header.Get("GraphQL-Features"); got != "issue_types" {
+					assertions.Errorf("issue types feature header = %q, want issue_types", got)
+				}
 				_, _ = w.Write([]byte(`{"data":{"viewer":{"issueTypes":{"nodes":[{"id":"type-node","name":"Bug","description":"Bug","color":"BLUE","isEnabled":true}]}}}}`))
 			case strings.Contains(request.Query, "PersonalIssueFields"):
+				if got := r.Header.Get("GraphQL-Features"); got != "issue_fields" {
+					assertions.Errorf("issue fields feature header = %q, want issue_fields", got)
+				}
 				_, _ = w.Write([]byte(`{"data":{"viewer":{"issueFields":{"nodes":[{"id":"field-node","name":"Priority","description":null,"dataType":"SINGLE_SELECT","visibility":"RESTRICTED","options":[{"id":"option-node","databaseId":999,"name":"High","description":null,"color":"GREEN","priority":4}]}]}}}}`))
 			default:
 				assertions.Errorf("unexpected GraphQL query %q", request.Query)

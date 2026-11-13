@@ -113,7 +113,7 @@ func (c *Client) ListPersonalIssueTypes(ctx context.Context) ([]PersonalIssueTyp
 		return nil, err
 	}
 	var state graphQLIssueTypes
-	if err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{"query": personalIssueStateQuery}, &state); err != nil {
+	if err := c.doGraphQL(ctx, "issue_types", personalIssueStateQuery, &state); err != nil {
 		return nil, fmt.Errorf("read personal issue type state: %w", err)
 	}
 	if len(state.Errors) > 0 {
@@ -156,7 +156,7 @@ func (c *Client) ListPersonalIssueFields(ctx context.Context) ([]PersonalIssueFi
 		return nil, err
 	}
 	var state graphQLIssueFields
-	if err := c.do(ctx, http.MethodPost, "/graphql", map[string]string{"query": personalIssueFieldsQuery}, &state); err != nil {
+	if err := c.doGraphQL(ctx, "issue_fields", personalIssueFieldsQuery, &state); err != nil {
 		return nil, fmt.Errorf("read personal issue field state: %w", err)
 	}
 	if len(state.Errors) > 0 {
