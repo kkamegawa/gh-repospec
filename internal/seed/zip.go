@@ -74,23 +74,42 @@ func ExtractZIP(archivePath, destination string, limits ZipLimits) error {
 		total += file.UncompressedSize64
 	}
 
+	destRootAbs, err := filepath.Abs(destination)
+	if err != nil {
+		return fmt.Errorf("resolve destination path: %w", err)
+	}
+
 	for _, file := range reader.File {
-		name, _ := safeZIPName(file.Name)
+		if !filepath.IsLocal(file.Name) {
+			return fmt.Errorf("zip archive contains an unsafe path: %q", file.Name)
+		}
+		name, err := safeZIPName(file.Name)
+		if err != nil {
+			return err
+		}
 		target := filepath.Join(destination, filepath.FromSlash(name))
+		targetAbs, err := filepath.Abs(target)
+		if err != nil {
+			return fmt.Errorf("resolve zip entry target %q: %w", name, err)
+		}
+		relToDest, err := filepath.Rel(destRootAbs, targetAbs)
+		if err != nil || relToDest == ".." || strings.HasPrefix(relToDest, ".."+string(os.PathSeparator)) || filepath.IsAbs(relToDest) {
+			return fmt.Errorf("zip archive contains an unsafe path: %q", file.Name)
+		}
 		if file.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o700); err != nil {
+			if err := os.MkdirAll(targetAbs, 0o700); err != nil {
 				return fmt.Errorf("create zip directory: %w", err)
 			}
 			continue
 		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Dir(targetAbs), 0o700); err != nil {
 			return fmt.Errorf("create zip parent directory: %w", err)
 		}
 		input, err := file.Open()
 		if err != nil {
 			return fmt.Errorf("open zip entry %q: %w", name, err)
 		}
-		output, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777) //nolint:gosec // target is derived from safeZIPName, which rejects absolute, traversal, and .git paths above
+		output, err := os.OpenFile(targetAbs, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.Mode().Perm()&0o777) //nolint:gosec // target is validated to remain under destination and safeZIPName rejects traversal/absolute/.git paths
 		if err != nil {
 			_ = input.Close()
 			return fmt.Errorf("create zip entry %q: %w", name, err)

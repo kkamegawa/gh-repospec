@@ -40,11 +40,31 @@ func TestExtractZIP(t *testing.T) {
 }
 
 func TestExtractZIPRejectsUnsafeEntries(t *testing.T) {
-	cases := []string{"../escape", ".git/config", "dir\\file"}
-	for _, name := range cases {
-		t.Run(name, func(t *testing.T) {
-			if _, err := safeZIPName(name); err == nil {
-				t.Fatal("safeZIPName() unexpectedly accepted unsafe path")
+	cases := []struct {
+		name      string
+		entryName string
+	}{
+		{name: "parent traversal", entryName: "../escape"},
+		{name: "git metadata", entryName: ".git/config"},
+		{name: "backslash path", entryName: "dir\\file"},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			archive := filepath.Join(root, "seed.zip")
+			writeZIP(t, archive, map[string]string{test.entryName: "payload"})
+			destination := filepath.Join(root, "destination")
+			if err := os.Mkdir(destination, 0o700); err != nil {
+				t.Fatal(err)
+			}
+
+			if err := ExtractZIP(archive, destination, ZipLimits{}); err == nil {
+				t.Fatal("ExtractZIP() unexpectedly accepted unsafe path")
+			}
+			if test.name == "parent traversal" {
+				if _, err := os.Stat(filepath.Join(root, "escape")); !errors.Is(err, os.ErrNotExist) {
+					t.Fatalf("parent traversal created an outside file: %v", err)
+				}
 			}
 		})
 	}
