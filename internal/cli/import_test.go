@@ -2,8 +2,10 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"flag"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -343,5 +345,76 @@ func TestExecuteImportIntoNoopReportsNoChanges(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "no changes") {
 		t.Fatalf("stdout = %q, want a no-changes report", stdout.String())
+	}
+}
+
+func executeImportInto(result importer.Result, options importOptions, stdin io.Reader, stdout, stderr io.Writer) error {
+	destination, err := readRepositoryRefresh(options)
+	if err != nil {
+		return err
+	}
+	return destination.refresh(result, options, stdin, stdout, stderr)
+}
+
+func TestRepositoryImportVersionOptions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		args []string
+		want int
+	}{
+		{[]string{"octo/demo"}, 1},
+		{[]string{"octo/demo", "--schema-version", "2"}, 2},
+		{[]string{"octo/demo", "--schema-version", "3"}, 0},
+		{[]string{"octo/demo", "--schema-version", "2", "--into", "file.yaml"}, 0},
+	} {
+		options, err := parseImportFlags(tc.args, io.Discard)
+		if tc.want == 0 {
+			if err == nil {
+				t.Errorf("%v unexpectedly accepted", tc.args)
+			}
+			continue
+		}
+		if err != nil || options.schemaVersion != tc.want {
+			t.Errorf("%v: version %d, error %v; want version %d", tc.args, options.schemaVersion, err, tc.want)
+		}
+	}
+}
+
+func TestRepositoryCommandsRejectPersonalFileBeforeAuthentication(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "personal.yaml")
+	if err := os.WriteFile(path, []byte("schemaVersion: 2\nscope: personal\naccount: octo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadEngine(path); err == nil || !strings.Contains(err.Error(), "account not found") {
+		t.Fatalf("repository plan/apply rejected personal file with %v", err)
+	}
+	options := importOptions{repository: "octo/demo", into: path}
+	if err := executeImport(context.Background(), options, strings.NewReader(""), io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "account not found") {
+		t.Fatalf("repository import rejected personal destination with %v", err)
+	}
+}
+
+func TestRepositoryRefreshKeepsV2ScopeAndComment(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "repository.yaml")
+	original := "schemaVersion: 2\nscope: repository # keep\nrepository:\n  owner: octo\n  name: demo\n  visibility: public\n  description: old\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	description := "new"
+	result := importer.Result{Config: config.Config{
+		SchemaVersion: 1,
+		Repository:    config.RepositoryConfig{Owner: "octo", Name: "demo", Visibility: "public", Description: &description},
+	}}
+	if err := executeImportInto(result, importOptions{into: path, yes: true}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(path) //nolint:gosec // temporary test file
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(original, "description: old", "description: new", 1); string(got) != want {
+		t.Errorf("refreshed file = %q, want %q", got, want)
 	}
 }

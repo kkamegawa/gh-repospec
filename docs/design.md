@@ -23,8 +23,11 @@ generated APM dependency tree is isolated by `apm_modules/go.mod`.
 
 ## Configuration contract
 
-The public document contract is `schemaVersion: 1`, described by
+The repository document contract accepts `schemaVersion: 1` and
+`schemaVersion: 2` with `scope: repository`, as described by
 [`schema/repospec.schema.json`](../schema/repospec.schema.json).
+See [Configuration scopes in schema v2](architecture/schema-v2.md) for the
+personal account contract.
 YAML and JSON are accepted. Parsing is strict: unknown fields, duplicate mapping
 keys, unsupported enum values, and multiple documents are rejected. Environment
 variables are not interpolated.
@@ -229,7 +232,9 @@ blocks a change this run was also supposed to make.
 ## import
 
 `import <owner/repository> [--format yaml|json] [--into <path> [--yes]]`
-fetches an existing repository and produces a `schemaVersion: 1` document.
+fetches an existing repository and produces a `schemaVersion: 1` document
+by default. Use `--schema-version 2` for a v2 repository export. Refresh
+keeps the destination's version.
 `-R`/`--repo` substitutes for the positional repository, but the two forms
 cannot be combined. YAML is the default stdout format; JSON is available for
 automation. Diagnostics go to standard error, so a redirected document stays

@@ -1,11 +1,9 @@
 package refresh
 
 import (
-	"bytes"
 	"fmt"
 
 	"github.com/kkamegawa/gh-repospec/internal/config"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Format is a configuration file's serialization.
@@ -66,16 +64,12 @@ func Refresh(original []byte, format Format, current, desired *config.Config) (R
 	return Result{Updated: updated, Changed: true, Plan: plan}, nil
 }
 
-// validateCandidate decodes data the same strict way config.Load does
-// (gopkg.in/yaml.v3, which also accepts JSON as a YAML subset, with
-// KnownFields so an unknown field is rejected) and validates it, skipping
-// the seed filesystem checks Refresh's own doc comment explains.
+// validateCandidate uses the same repository contract as config.Load,
+// skipping seed filesystem checks.
 func validateCandidate(data []byte) error {
-	decoder := yamlv3.NewDecoder(bytes.NewReader(data))
-	decoder.KnownFields(true)
-	var cfg config.Config
-	if err := decoder.Decode(&cfg); err != nil {
+	cfg, err := config.DecodeRepository(data)
+	if err != nil {
 		return fmt.Errorf("decode: %w", err)
 	}
-	return config.ValidateDeclaredSurface(&cfg)
+	return config.ValidateDeclaredSurface(cfg)
 }

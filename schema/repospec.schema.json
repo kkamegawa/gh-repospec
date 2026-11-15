@@ -2,12 +2,68 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/kkamegawa/gh-repospec/blob/main/schema/repospec.schema.json",
   "title": "gh-repospec configuration",
-  "description": "SchemaVersion 1 declarative GitHub repository bootstrap configuration.",
+  "description": "Versioned GitHub repository bootstrap and personal issue settings.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "repository"],
+  "required": ["schemaVersion"],
+  "oneOf": [
+    {
+      "properties": { "schemaVersion": { "const": 1 } },
+      "required": ["repository"],
+      "not": { "anyOf": [
+        { "required": ["scope"] },
+        { "required": ["account"] },
+        { "required": ["issueTypes"] },
+        { "required": ["issueFields"] }
+      ] }
+    },
+    {
+      "properties": { "schemaVersion": { "const": 2 }, "scope": { "const": "repository" } },
+      "required": ["scope", "repository"],
+      "not": { "anyOf": [
+        { "required": ["account"] },
+        { "required": ["issueTypes"] },
+        { "required": ["issueFields"] }
+      ] }
+    },
+    {
+      "properties": { "schemaVersion": { "const": 2 }, "scope": { "const": "personal" } },
+      "required": ["scope", "account"],
+      "not": { "anyOf": [
+        { "required": ["repository"] },
+        { "required": ["seed"] },
+        { "required": ["actions"] },
+        { "required": ["rulesets"] },
+        { "required": ["security"] },
+        { "required": ["agents"] },
+        { "required": ["labels"] },
+        { "required": ["milestones"] },
+        { "required": ["commands"] },
+        { "required": ["settings"] }
+      ] }
+    }
+  ],
   "properties": {
-    "schemaVersion": { "const": 1 },
+    "schemaVersion": { "enum": [1, 2] },
+    "scope": { "enum": ["repository", "personal"] },
+    "account": {
+      "type": "string",
+      "pattern": "^[^ /\\t\\r\\n]+$"
+    },
+    "issueTypes": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "$ref": "#/$defs/personalIssueType"
+      }
+    },
+    "issueFields": {
+      "type": "array",
+      "maxItems": 25,
+      "items": {
+        "$ref": "#/$defs/personalIssueField"
+      }
+    },
     "repository": { "$ref": "#/$defs/repository" },
     "seed": { "$ref": "#/$defs/seed" },
     "actions": { "$ref": "#/$defs/actions" },
@@ -20,6 +76,123 @@
     "settings": { "$ref": "#/$defs/settings" }
   },
   "$defs": {
+    "personalName": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\S(?:[\\s\\S]*\\S)?$"
+    },
+    "issueColor": {
+      "enum": [
+        "gray",
+        "blue",
+        "green",
+        "yellow",
+        "orange",
+        "red",
+        "pink",
+        "purple"
+      ]
+    },
+    "personalIssueType": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "isEnabled"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/personalName"
+        },
+        "description": {
+          "type": "string"
+        },
+        "color": {
+          "$ref": "#/$defs/issueColor"
+        },
+        "isEnabled": {
+          "type": "boolean"
+        }
+      }
+    },
+    "personalIssueField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "dataType"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/personalName"
+        },
+        "description": {
+          "type": "string"
+        },
+        "dataType": {
+          "enum": [
+            "text",
+            "number",
+            "date",
+            "single_select",
+            "multi_select"
+          ]
+        },
+        "visibility": {
+          "enum": [
+            "restricted",
+            "all"
+          ]
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/personalIssueFieldOption"
+          }
+        }
+      },
+      "if": {
+        "properties": {
+          "dataType": {
+            "enum": [
+              "text",
+              "number",
+              "date"
+            ]
+          }
+        }
+      },
+      "then": {
+        "not": {
+          "required": [
+            "options"
+          ]
+        }
+      }
+    },
+    "personalIssueFieldOption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "color",
+        "priority"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/personalName"
+        },
+        "description": {
+          "type": "string"
+        },
+        "color": {
+          "$ref": "#/$defs/issueColor"
+        },
+        "priority": {
+          "type": "integer"
+        }
+      }
+    },
     "repository": {
       "type": "object", "additionalProperties": false,
       "required": ["owner", "name", "visibility"],
