@@ -80,6 +80,9 @@ func ExtractZIP(archivePath, destination string, limits ZipLimits) error {
 	}
 
 	for _, file := range reader.File {
+		if !filepath.IsLocal(file.Name) {
+			return fmt.Errorf("zip archive contains an unsafe path: %q", file.Name)
+		}
 		name, err := safeZIPName(file.Name)
 		if err != nil {
 			return err
