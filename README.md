@@ -98,6 +98,40 @@ issueFields:
 
 `personal plan`, `personal apply`, and `personal import` manage the authenticated user's account-wide definitions. The declared account must match the GitHub CLI login. Applying personal settings can change issue behavior in every repository owned by that account. Imports and plans require access to the personal Issue Types and Issue Fields APIs. With classic or OAuth credentials, reads require `read:user` and writes require `user`. Personal field updates preserve undeclared options and existing option IDs.
 
+#### GitHub CLI permissions
+
+Repository administration does not grant access to personal-account Issue Types or Issue Fields. For OAuth app tokens and classic PATs, `personal plan` and `personal import` need the `read:user` scope, while `personal apply` needs the `user` scope. Refresh the stored GitHub CLI credentials for the commands you intend to run:
+
+```bash
+# Read-only commands: personal plan and personal import
+gh auth refresh --hostname github.com --scopes read:user
+
+# Also enable personal apply
+gh auth refresh --hostname github.com --scopes read:user,user
+```
+
+```powershell
+# Read-only commands: personal plan and personal import
+gh auth refresh --hostname github.com --scopes read:user
+
+# Also enable personal apply
+gh auth refresh --hostname github.com --scopes read:user,user
+```
+
+Complete the browser or device authorization flow. Then check the active account and granted scopes; the login must match the document's `account`:
+
+```bash
+gh auth status -h github.com
+gh api user --jq .login
+```
+
+```powershell
+gh auth status -h github.com
+gh api user --jq .login
+```
+
+Fine-grained PATs do not use OAuth scopes. Grant the token user-level **Issue Types** and **Issue Fields** permissions: read for `plan` and `import`, and write for `apply`. Repository-level **Administration** permission alone is not sufficient.
+
 ## Commands
 
 ```text

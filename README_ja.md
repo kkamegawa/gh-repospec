@@ -97,6 +97,40 @@ issueFields:
 
 `personal plan`、`personal apply`、`personal import` は認証中のユーザーのアカウント共通定義を管理します。`account` は GitHub CLI のログインと一致する必要があります。個人設定を適用すると、そのアカウントが所有する全リポジトリの Issue に反映されます。import と plan には個人アカウントの Issue Types と Issue Fields API へのアクセス権が必要です。クラシックトークンまたは OAuth の場合、読み取りには `read:user`、書き込みには `user` スコープを使います。個人用フィールドの更新では、未宣言の選択肢と既存の選択肢 ID を保持します。
 
+#### GitHub CLI の権限
+
+リポジトリの管理者権限だけでは、個人アカウントの Issue Types や Issue Fields にはアクセスできません。OAuth app token または classic PAT の場合、`personal plan` と `personal import` には `read:user` スコープ、`personal apply` には `user` スコープが必要です。実行するコマンドに応じて、GitHub CLI に保存された認証情報のスコープを更新します。
+
+```bash
+# 読み取り専用の personal plan / personal import
+gh auth refresh --hostname github.com --scopes read:user
+
+# personal apply も実行する場合
+gh auth refresh --hostname github.com --scopes read:user,user
+```
+
+```powershell
+# 読み取り専用の personal plan / personal import
+gh auth refresh --hostname github.com --scopes read:user
+
+# personal apply も実行する場合
+gh auth refresh --hostname github.com --scopes read:user,user
+```
+
+ブラウザーまたはデバイス認証を完了した後、使用中のアカウントと付与されたスコープを確認します。ログイン名は設定ファイルの `account` と一致する必要があります。
+
+```bash
+gh auth status -h github.com
+gh api user --jq .login
+```
+
+```powershell
+gh auth status -h github.com
+gh api user --jq .login
+```
+
+Fine-grained PAT は OAuth スコープを使いません。ユーザーレベルの **Issue Types** と **Issue Fields** 権限を付与してください。`plan` と `import` には読み取り、`apply` には書き込みが必要です。リポジトリの **Administration** 権限だけでは不十分です。
+
 ## コマンド
 
 ```text
